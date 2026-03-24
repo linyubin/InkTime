@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 import json
+import re
 import datetime as dt
 import os
 from typing import List, Dict, Any, Tuple, Optional
@@ -53,27 +54,42 @@ TEXT_AREA_HEIGHT = 100
 
 # ========== DB 与 EXIF 处理 ==========
 
-def extract_date_from_exif(exif_json: Optional[str]) -> str:
+def extract_date_from_exif(exif_json: Optional[str], filepath: str = "") -> str:
     """
     从 EXIF JSON 中提取拍摄日期，返回 YYYY-MM-DD 格式，失败则返回空字符串。
     逻辑与 review_web.py 中保持一致。
     """
-    if not exif_json:
-        return ""
-    try:
-        data = json.loads(exif_json)
-    except Exception:
-        return ""
-    dt_str = data.get("datetime")
-    if not dt_str:
-        return ""
-    try:
-        date_part = str(dt_str).split()[0]
-        parts = date_part.replace(":", "-").split("-")
-        if len(parts) >= 3:
-            return f"{parts[0]}-{parts[1]}-{parts[2]}"
-    except Exception:
-        return ""
+    date_str = ""
+    if exif_json:
+        try:
+            data = json.loads(exif_json)
+            dt_str = data.get("datetime")
+            if dt_str:
+                date_part = str(dt_str).split()[0]
+                parts = date_part.replace(":", "-").split("-")
+                if len(parts) >= 3:
+                    date_str = f"{parts[0]}-{parts[1]}-{parts[2]}"
+        except Exception:
+            pass
+            
+    if date_str and len(date_str) == 10:
+        return date_str
+        
+    if filepath:
+        clean_path = filepath.replace('\\', '/')
+        # 1. YYYY-MM-DD 或 YYYY_MM_DD 或 YYYY.MM.DD
+        m1 = re.search(r'(20\d{2}|19\d{2})[-_ \.](0[1-9]|1[0-2])[-_ \.](0[1-9]|[12]\d|3[01])', clean_path)
+        if m1:
+            return f"{m1.group(1)}-{m1.group(2)}-{m1.group(3)}"
+        # 2. YYYYMMDD (如 20231225)
+        m2 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9]|$)', clean_path)
+        if m2:
+            return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
+        # 3. YYYYMM (如 201607)
+        m3 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(?:[^0-9]|$)', clean_path)
+        if m3:
+            return f"{m3.group(1)}-{m3.group(2)}-01"
+            
     return ""
 
 
@@ -109,7 +125,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
 
     items: List[Dict[str, Any]] = []
     for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
-        date_str = extract_date_from_exif(exif_json)
+        date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
         # 再次兜底过滤 Screenshot 等
@@ -438,12 +454,26 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 10
     text_width = CANVAS_WIDTH - 2 * padding_x
 
-    try:
-        font_big = ImageFont.truetype(str(FONT_PATH), 22)  # 文案
-        font_small = ImageFont.truetype(str(FONT_PATH), 20)  # 日期/地点
-    except Exception:
-        font_big = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+    def _get_font(path: str, size: int):
+        if path and Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+        
+        # Windows 系统中文字体回退
+        if os.name == "nt":
+            for fallback in [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc", r"C:\Windows\Fonts\simhei.ttf"]:
+                if os.path.exists(fallback):
+                    try:
+                        return ImageFont.truetype(fallback, size)
+                    except Exception:
+                        continue
+        
+        return ImageFont.load_default()
+
+    font_big = _get_font(str(FONT_PATH), 22)  # 文案
+    font_small = _get_font(str(FONT_PATH), 20)  # 日期/地点
 
     side_text = item.get("side") or ""
 

@@ -5,9 +5,9 @@ IMAGE_DIR = "./test"
 DB_PATH = "./photos.db"
 
 # VLM 模型接口（如 LM Studio）
-API_URL = "http://127.0.0.1:1234/v1/chat/completions"
-MODEL_NAME = "qwen3-vl-32b-instruct"
-API_KEY = ""
+API_URL = "http://127.0.0.1:11434/api"
+MODEL_NAME = "qwen3.5:9b"
+API_KEY = "ollama"
 
 # 每次最多处理多少张的图片
 BATCH_LIMIT = None
@@ -52,3 +52,6 @@ MEMORY_THRESHOLD = 70.0
 
 # 每日挑选的照片数量
 DAILY_PHOTO_QUANTITY = 5
+
+# 排除包含以下关键词或特征的路径或文件名（全路径匹配，不区分大小写）
+EXCLUDE_KEYWORDS = ["screenshot", "截屏", "屏幕截图", "cache"]

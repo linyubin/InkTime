@@ -9,6 +9,9 @@ import mimetypes
 import sqlite3
 import json
 import html
+import re
+import urllib.parse
+import unicodedata
 import config as cfg
 from io import BytesIO
 import render_daily_photo as rdp
@@ -70,12 +73,12 @@ def _load_all_md_list() -> list[str]:
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    rows = c.execute("SELECT exif_json FROM photo_scores").fetchall()
+    rows = c.execute("SELECT path, exif_json FROM photo_scores").fetchall()
     conn.close()
 
     s: set[str] = set()
-    for (exif_json,) in rows:
-        d = extract_date_from_exif(exif_json)
+    for (path, exif_json) in rows:
+        d = extract_date_from_exif(exif_json, str(path))
         if d and len(d) >= 10:
             md = d[5:10]
             if len(md) == 5 and md[2] == "-":
@@ -131,8 +134,8 @@ def _make_image_url(path_str: str) -> str:
 # --------------------------
 
 
-def load_rows(page: int = 1, page_size: int = REVIEW_PAGE_SIZE, md: str = "", sort: str = "memory"):
-    """分页读取 review 数据。支持按 MM-DD 过滤与排序。返回 (rows, total_count)."""
+def load_rows(page: int = 1, page_size: int = REVIEW_PAGE_SIZE, md: str = "", sort: str = "memory", path_inc: str = "", path_exc: str = ""):
+    """分页读取 review 数据。支持按 MM-DD 过滤、路径包含/排除过滤与排序。返回 (rows, total_count)."""
     if not DB_PATH.exists():
         raise SystemExit(f"找不到数据库文件: {DB_PATH}")
 
@@ -151,13 +154,27 @@ def load_rows(page: int = 1, page_size: int = REVIEW_PAGE_SIZE, md: str = "", so
     dt_expr = "json_extract(exif_json, '$.datetime')"
     md_expr = f"(substr({dt_expr}, 6, 2) || '-' || substr({dt_expr}, 9, 2))"
 
-    where_sql = ""
+    where_clauses = []
     params: list[object] = []
 
     md = (md or "").strip()
     if md and len(md) == 5 and md[2] == "-":
-        where_sql = f"WHERE {dt_expr} IS NOT NULL AND {md_expr} = ?"
+        where_clauses.append(f"{dt_expr} IS NOT NULL AND {md_expr} = ?")
         params.append(md)
+
+    path_inc = (path_inc or "").strip()
+    if path_inc:
+        where_clauses.append("path LIKE ?")
+        params.append(f"%{path_inc}%")
+
+    path_exc = (path_exc or "").strip()
+    if path_exc:
+        where_clauses.append("path NOT LIKE ?")
+        params.append(f"%{path_exc}%")
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
 
     # total_count 也要跟随过滤
     if where_sql:
@@ -291,6 +308,9 @@ def get_photo_meta_by_path(abs_path: str):
     从 DB 找到渲染需要的字段：date/side/lat/lon/city。
     abs_path 必须是数据库里 photo_scores.path 的原值（通常是绝对路径）。
     """
+    if not abs_path:
+        return None
+    abs_path = unicodedata.normalize('NFC', abs_path)
     if not DB_PATH.exists():
         return None
 
@@ -306,7 +326,7 @@ def get_photo_meta_by_path(abs_path: str):
                exif_gps_lon,
                exif_city
         FROM photo_scores
-        WHERE path = ?
+        WHERE path = ? COLLATE NOCASE
         LIMIT 1
         """,
         (abs_path,),
@@ -317,9 +337,7 @@ def get_photo_meta_by_path(abs_path: str):
         return None
 
     path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city = row
-    date_str = extract_date_from_exif(exif_json)
-    if not date_str:
-        return None
+    date_str = extract_date_from_exif(exif_json, str(path)) or ""
 
     return {
         "path": str(path),
@@ -377,23 +395,38 @@ def summarize_exif(exif_json: str | None) -> str:
     return "；".join(str(p) for p in parts if p)
 
 
-def extract_date_from_exif(exif_json: str | None) -> str:
-    if not exif_json:
-        return ""
-    try:
-        data = json.loads(exif_json)
-    except Exception:
-        return ""
-    dtv = data.get("datetime")
-    if not dtv:
-        return ""
-    try:
-        date_part = str(dtv).split()[0]  # "2018:03:18"
-        parts = date_part.replace(":", "-").split("-")
-        if len(parts) >= 3:
-            return f"{parts[0]}-{parts[1]}-{parts[2]}"
-    except Exception:
-        return ""
+def extract_date_from_exif(exif_json: str | None, filepath: str = "") -> str:
+    date_str = ""
+    if exif_json:
+        try:
+            data = json.loads(exif_json)
+            dtv = data.get("datetime")
+            if dtv:
+                date_part = str(dtv).split()[0]  # "2018:03:18"
+                parts = date_part.replace(":", "-").split("-")
+                if len(parts) >= 3:
+                    date_str = f"{parts[0]}-{parts[1]}-{parts[2]}"
+        except Exception:
+            pass
+            
+    if date_str and len(date_str) == 10:
+        return date_str
+        
+    if filepath:
+        clean_path = filepath.replace('\\', '/')
+        # 1. YYYY-MM-DD 或 YYYY_MM_DD 或 YYYY.MM.DD
+        m1 = re.search(r'(20\d{2}|19\d{2})[-_ \.](0[1-9]|1[0-2])[-_ \.](0[1-9]|[12]\d|3[01])', clean_path)
+        if m1:
+            return f"{m1.group(1)}-{m1.group(2)}-{m1.group(3)}"
+        # 2. YYYYMMDD (如 20231225)
+        m2 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9]|$)', clean_path)
+        if m2:
+            return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
+        # 3. YYYYMM (如 201607)
+        m3 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(?:[^0-9]|$)', clean_path)
+        if m3:
+            return f"{m3.group(1)}-{m3.group(2)}-01"
+            
     return ""
 
 
@@ -401,7 +434,7 @@ def extract_date_from_exif(exif_json: str | None) -> str:
 # HTML builders
 # --------------------------
 
-def build_html(rows, page: int, page_size: int, total_count: int):
+def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str = "", path_exc: str = ""):
     items_html = []
 
     for path, caption, ptype, m_score, b_score, reason, exif_json, width, height, orientation, used_at, side_caption in rows:
@@ -412,7 +445,7 @@ def build_html(rows, page: int, page_size: int, total_count: int):
         exif_summary = summarize_exif(exif_json)
         safe_exif = html.escape(exif_summary or "")
 
-        date_str = extract_date_from_exif(exif_json)
+        date_str = extract_date_from_exif(exif_json, str(path))
         safe_date = html.escape(date_str or "")
 
         md_str = ""
@@ -454,7 +487,7 @@ def build_html(rows, page: int, page_size: int, total_count: int):
              data-memory="{m_score if m_score is not None else ''}"
              data-beauty="{b_score if b_score is not None else ''}">
             <div class="img-wrap">
-                <a class="img-link" href="/sim?img={html.escape(img_uri)}" title="打开该照片的模拟器" onclick="window.stop();">
+                <a class="img-link" href="/sim?img={urllib.parse.quote(img_uri)}" title="打开该照片的模拟器" onclick="window.stop();">
                     <img src="{img_uri}" loading="lazy">
                 </a>
             </div>
@@ -561,9 +594,19 @@ def build_html(rows, page: int, page_size: int, total_count: int):
       border-radius: 10px;
       outline: none;
     }}
-    .controls select:focus{{
+    .controls select:focus, .controls input:focus{{
       border-color: rgba(138,180,255,0.7);
       box-shadow: 0 0 0 3px rgba(138,180,255,0.16);
+    }}
+    .controls input{{
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      outline: none;
+      width: 140px;
     }}
     .controls button{{
       padding: 7px 12px;
@@ -733,6 +776,15 @@ def build_html(rows, page: int, page_size: int, total_count: int):
           <option value="time_old">按时间（旧→新）</option>
         </select>
       </label>
+      <label>
+        包含路径：
+        <input type="text" id="pathIncInput" placeholder="关键词..." value="{html.escape(path_inc)}">
+      </label>
+      <label>
+        排除路径：
+        <input type="text" id="pathExcInput" placeholder="关键词..." value="{html.escape(path_exc)}">
+      </label>
+      <button type="button" id="applyPathBtn">应用</button>
       <button type="button" id="randomDateBtn">随机一天</button>
       <button type="button" id="homeBtn">回到首页</button>
     </div>
@@ -791,13 +843,21 @@ def build_html(rows, page: int, page_size: int, total_count: int):
         const md = (url.searchParams.get('md') || '').trim();
         const sort = (url.searchParams.get('sort') || '').trim() || 'memory';
         const page = parseInt(url.searchParams.get('page') || '1', 10) || 1;
-        return {{ url, md, sort, page }};
+        const path_inc = (url.searchParams.get('path_inc') || '').trim();
+        const path_exc = (url.searchParams.get('path_exc') || '').trim();
+        return {{ url, md, sort, page, path_inc, path_exc }};
       }}
 
       function setSelectsFromUrl() {{
         const p = getParams();
         // sort
         if (sortSelect) sortSelect.value = p.sort;
+        // path inputs
+        const pathIncInput = document.getElementById('pathIncInput');
+        const pathExcInput = document.getElementById('pathExcInput');
+        if (pathIncInput) pathIncInput.value = p.path_inc;
+        if (pathExcInput) pathExcInput.value = p.path_exc;
+
         // md -> month/day
         if (p.md && p.md.length === 5 && p.md.indexOf('-') === 2) {{
           const parts = p.md.split('-');
@@ -813,25 +873,29 @@ def build_html(rows, page: int, page_size: int, total_count: int):
         }}
       }}
 
-      function buildReviewUrl(md, sort, page) {{
+      function buildReviewUrl(md, sort, page, path_inc, path_exc) {{
         const url = new URL(window.location.href);
         url.pathname = '/review';
         if (md && md.length === 5 && md.indexOf('-') === 2) url.searchParams.set('md', md);
         else url.searchParams.delete('md');
         if (sort) url.searchParams.set('sort', sort);
         else url.searchParams.delete('sort');
+        if (path_inc) url.searchParams.set('path_inc', path_inc);
+        else url.searchParams.delete('path_inc');
+        if (path_exc) url.searchParams.set('path_exc', path_exc);
+        else url.searchParams.delete('path_exc');
         url.searchParams.set('page', String(page || 1));
         return url.toString();
       }}
 
       function goPage(p) {{
         const params = getParams();
-        navigateTo(buildReviewUrl(params.md, params.sort, p));
+        navigateTo(buildReviewUrl(params.md, params.sort, p, params.path_inc, params.path_exc));
       }}
 
       function goHome() {{
         const params = getParams();
-        navigateTo(buildReviewUrl('', params.sort || 'memory', 1));
+        navigateTo(buildReviewUrl('', params.sort || 'memory', 1, '', ''));
       }}
 
       async function pickRandomDate() {{
@@ -850,7 +914,7 @@ def build_html(rows, page: int, page_size: int, total_count: int):
           const idx = Math.floor(Math.random() * arr.length);
           const md = String(arr[idx] || '').trim();
           const params = getParams();
-          navigateTo(buildReviewUrl(md, params.sort || 'memory', 1));
+          navigateTo(buildReviewUrl(md, params.sort || 'memory', 1, params.path_inc, params.path_exc));
         }} catch (e) {{
           if (statusLine) statusLine.textContent = '随机失败：' + e;
         }}
@@ -862,12 +926,14 @@ def build_html(rows, page: int, page_size: int, total_count: int):
         const sortBy = (sortSelect && sortSelect.value) ? sortSelect.value : 'memory';
 
         if (!mVal && !dVal) {{
-          navigateTo(buildReviewUrl('', sortBy, 1));
+          const params = getParams();
+          navigateTo(buildReviewUrl('', sortBy, 1, params.path_inc, params.path_exc));
           return;
         }}
         if (mVal && dVal) {{
           const md = mVal + '-' + dVal;
-          navigateTo(buildReviewUrl(md, sortBy, 1));
+          const params = getParams();
+          navigateTo(buildReviewUrl(md, sortBy, 1, params.path_inc, params.path_exc));
           return;
         }}
         // 只选了一个，不跳转，避免生成无意义的 md
@@ -876,7 +942,14 @@ def build_html(rows, page: int, page_size: int, total_count: int):
       function onSortChange() {{
         const params = getParams();
         const sortBy = (sortSelect && sortSelect.value) ? sortSelect.value : 'memory';
-        navigateTo(buildReviewUrl(params.md, sortBy, 1));
+        navigateTo(buildReviewUrl(params.md, sortBy, 1, params.path_inc, params.path_exc));
+      }}
+
+      function onPathApply() {{
+        const params = getParams();
+        const pathInc = document.getElementById('pathIncInput').value.trim();
+        const pathExc = document.getElementById('pathExcInput').value.trim();
+        navigateTo(buildReviewUrl(params.md, params.sort, 1, pathInc, pathExc));
       }}
 
       // 分页按钮
@@ -902,6 +975,12 @@ def build_html(rows, page: int, page_size: int, total_count: int):
       if (sortSelect) sortSelect.addEventListener('change', onSortChange);
       if (randomBtn) randomBtn.addEventListener('click', pickRandomDate);
       if (homeBtn) homeBtn.addEventListener('click', goHome);
+
+      const applyPathBtn = document.getElementById('applyPathBtn');
+      if (applyPathBtn) applyPathBtn.addEventListener('click', onPathApply);
+      const onEnter = (e) => {{ if (e.key === 'Enter') onPathApply(); }};
+      if (document.getElementById('pathIncInput')) document.getElementById('pathIncInput').addEventListener('keydown', onEnter);
+      if (document.getElementById('pathExcInput')) document.getElementById('pathExcInput').addEventListener('keydown', onEnter);
 
       // 兜底：用户在图片疯狂加载时点击任何链接/按钮，先 stop()，避免导航请求排队
       document.addEventListener('click', function (ev) {{
@@ -986,9 +1065,7 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
         gps_lon,
         exif_city,
     ) in sim_rows:
-        date_str = extract_date_from_exif(exif_json)
-        if not date_str:
-            continue
+        date_str = extract_date_from_exif(exif_json, str(path)) or ""
         img_uri = _make_image_url(str(path))
         if not img_uri:
             continue
@@ -1881,8 +1958,10 @@ def review():
 
     md = (request.args.get('md', '') or '').strip()
     sort = (request.args.get('sort', '') or 'memory').strip() or 'memory'
+    path_inc = (request.args.get('path_inc', '') or '').strip()
+    path_exc = (request.args.get('path_exc', '') or '').strip()
 
-    rows, total_count = load_rows(page=page, page_size=REVIEW_PAGE_SIZE, md=md, sort=sort)
+    rows, total_count = load_rows(page=page, page_size=REVIEW_PAGE_SIZE, md=md, sort=sort, path_inc=path_inc, path_exc=path_exc)
     if not rows:
         return Response(
             "数据库里没有可展示的数据。请先运行你的分析脚本生成评分与文案。",
@@ -1890,7 +1969,7 @@ def review():
             mimetype="text/plain; charset=utf-8",
         )
 
-    html_str = build_html(rows, page=page, page_size=REVIEW_PAGE_SIZE, total_count=total_count)
+    html_str = build_html(rows, page=page, page_size=REVIEW_PAGE_SIZE, total_count=total_count, path_inc=path_inc, path_exc=path_exc)
     return Response(html_str, mimetype="text/html; charset=utf-8")
 
 
@@ -1931,6 +2010,23 @@ def sim():
                     dates = [base_date]
 
                 sim_rows = load_sim_rows_for_dates(dates)
+
+            # 关键：无论 base_date 是否由正则产生，SQL 可能都查不到它（如果 JSON 里的 datetime 是空的）
+            # 所以我们必须确保 selected_img 对应的这行数据一定在 sim_rows 里
+            if not any(str(r[0]).lower() == str(p).lower() for r in sim_rows):
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                row = c.execute("""
+                    SELECT path, caption, type, memory_score, beauty_score,
+                           reason, side_caption, exif_json, width, height,
+                           orientation, used_at, exif_gps_lat, exif_gps_lon, exif_city
+                    FROM photo_scores
+                    WHERE path = ? COLLATE NOCASE
+                    LIMIT 1
+                """, (str(p),)).fetchone()
+                conn.close()
+                if row:
+                    sim_rows.insert(0, row)
 
     html_str = build_simulator_html(sim_rows, selected_img=selected_img)
     return Response(html_str, mimetype="text/html; charset=utf-8")

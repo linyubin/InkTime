@@ -787,13 +787,83 @@ def call_vlm(image_path: Path) -> dict:
 
     # content 应该是 JSON 字符串
     try:
-        obj = json.loads(content)
+        # 使用增强逻辑提取并解析 JSON
+        extracted = extract_json_from_text(content)
+        obj = json.loads(extracted)
     except Exception:
         print("[DEBUG] 非 JSON 输出：", content)
         raise RuntimeError("解析失败：模型未按 JSON 输出")
 
     return obj, exif_info
 
+
+
+
+def extract_json_from_text(text: str) -> str:
+    """从可能包含 Markdown 代码块或解释性文字的字符串中提取 JSON 子串。"""
+    import re
+    text = text.strip()
+    
+    # 移除 <think> 标签内容（如果存在）
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    
+    # 查找 Markdown 代码块
+    if '```json' in text:
+        try:
+            content = text.split('```json')[1].split('```')[0].strip()
+            return content
+        except Exception:
+            pass
+    elif '```' in text:
+        try:
+            content = text.split('```')[1].split('```')[0].strip()
+            return content
+        except Exception:
+            pass
+
+    # 兜底：查找第一个 '{' 和最后一个 '}'
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        return text[start:end+1]
+    return text
+
+def normalize_type_to_list(type_val) -> str:
+    """将各种格式的 type 字段标准化为 JSON list 字符串，如 ["人物", "旅行"]。"""
+    import ast as _ast
+    import json
+    import re
+    if type_val is None or str(type_val).strip() == "":
+        return "[]"
+    s = str(type_val).strip()
+    # 尝试解析为合法 JSON list
+    try:
+        parsed = json.loads(s)
+        if isinstance(parsed, list):
+            result = [str(t).strip() for t in parsed if str(t).strip()]
+            return json.dumps(result, ensure_ascii=False)
+    except Exception:
+        pass
+    # 处理 Python list 字面量
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            parsed = _ast.literal_eval(s)
+            if isinstance(parsed, list):
+                result = [str(t).strip() for t in parsed if str(t).strip()]
+                return json.dumps(result, ensure_ascii=False)
+        except Exception:
+            pass
+    # 处理斜杠分隔
+    if "/" in s:
+        parts = [p.strip() for p in s.split("/") if p.strip()]
+        return json.dumps(parts, ensure_ascii=False)
+    # 处理中英文逗号分隔
+    if "," in s or "，" in s:
+        parts = re.split(r"[,，]\s*", s)
+        parts = [p.strip().strip("\'\" ") for p in parts if p.strip().strip("\'\" ")]
+        return json.dumps(parts, ensure_ascii=False)
+    # 单个值
+    return json.dumps([s], ensure_ascii=False)
 
 def main():
     filelist_path = ROOT_DIR / "filelist.txt"
@@ -913,7 +983,7 @@ def main():
         vlm_cost = t_after_vlm - t_photo_start
 
         caption = str(result.get("caption", "")).strip()
-        ptype = str(result.get("type", "")).strip()
+        ptype = normalize_type_to_list(result.get("type", ""))
         try:
             memory_score = float(result.get("memory_score", 0.0))
         except Exception:
