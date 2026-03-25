@@ -21,6 +21,7 @@ def check_exiftool():
                 ["exiftool", "-ver"], 
                 capture_output=True, 
                 text=True, 
+                encoding="utf-8",
                 check=True
             )
             print(f"🎉 成功！您安装的 exiftool 版本为: {result.stdout.strip()}")

@@ -165,6 +165,8 @@ CITY_MAX_DISTANCE_KM = float(getattr(cfg, "CITY_MAX_DISTANCE_KM", 80.0) or 80.0)
 HOME_LAT = float(getattr(cfg, "HOME_LAT", 22.543096) or 22.543096)
 HOME_LON = float(getattr(cfg, "HOME_LON", 114.057865) or 114.057865)
 HOME_RADIUS_KM = float(getattr(cfg, "HOME_RADIUS_KM", 60.0) or 60.0)
+# 排除关键字（全路径匹配，不区分大小写）
+EXCLUDE_KEYWORDS = getattr(cfg, "EXCLUDE_KEYWORDS", [])
 # ==================================================
 
 # exiftool 是否可用：缺失时只降级 GPS/部分 EXIF，不中断流程
@@ -368,26 +370,41 @@ def generate_side_caption(image_path: Path) -> str | None:
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
 
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                    },
-                ],
-            },
-        ],
-        "temperature": 0.7,
-        "max_tokens": 64,
-        "top_p": 0.9,
-        "stream": False,
-    }
+    is_ollama_native = API_URL.rstrip("/").endswith("/api/chat")
+
+    if is_ollama_native:
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt, "images": [img_b64]},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.7, "top_p": 0.9},
+            "think": False,
+        }
+    else:
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.7,
+            "max_tokens": 64,
+            "top_p": 0.9,
+            "stream": False,
+            "think": False,
+        }
 
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=min(120, TIMEOUT))
@@ -399,7 +416,10 @@ def generate_side_caption(image_path: Path) -> str | None:
 
     try:
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        if is_ollama_native:
+            content = data["message"]["content"]
+        else:
+            content = data["choices"][0]["message"]["content"]
     except Exception:
         return None
 
@@ -419,6 +439,12 @@ def list_images(limit: int | None = None) -> list[Path]:
         scanned += 1
         if scanned % 500 == 0:
             print(f"[SCAN] 已扫描文件数：{scanned} …")
+        
+        # 路径过滤：检查全路径是否包含排除关键字
+        path_str = str(p).lower()
+        if any(kw.lower() in path_str for kw in EXCLUDE_KEYWORDS):
+            continue
+
         if p.is_file() and p.suffix.lower() in exts:
             if is_screenshot(p):
                 continue
@@ -439,12 +465,18 @@ def filter_unscored(conn: sqlite3.Connection, paths: list[Path]) -> list[Path]:
         return []
 
     cur = conn.cursor()
-    placeholders = ",".join("?" for _ in paths)
-    rows = cur.execute(
-        f"SELECT path FROM photo_scores WHERE path IN ({placeholders})",
-        [str(p) for p in paths],
-    ).fetchall()
-    already = {row[0] for row in rows}
+    already: set[str] = set()
+    # SQLite 的 IN (...) 参数数量有上限（约 32766），分批查询
+    CHUNK = 2000
+    str_paths = [str(p) for p in paths]
+    for i in range(0, len(str_paths), CHUNK):
+        batch = str_paths[i : i + CHUNK]
+        placeholders = ",".join("?" for _ in batch)
+        rows = cur.execute(
+            f"SELECT path FROM photo_scores WHERE path IN ({placeholders})",
+            batch,
+        ).fetchall()
+        already.update(row[0] for row in rows)
     return [p for p in paths if str(p) not in already]
 
 
@@ -464,6 +496,8 @@ def read_gps_with_exiftool(path: Path):
             ["exiftool", "-n", "-json", str(path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
     except FileNotFoundError:
@@ -480,13 +514,17 @@ def read_gps_with_exiftool(path: Path):
     lat = data.get("GPSLatitude")
     lon = data.get("GPSLongitude")
     alt = data.get("GPSAltitude")
-    if lat is None or lon is None:
+    # 同时过滤 None 和空字符串，防止 float('') 抛出 ValueError
+    if not lat or not lon:
         return None
-    return {
-        "lat": float(lat),
-        "lon": float(lon),
-        "alt": float(alt) if alt is not None else None,
-    }
+    try:
+        return {
+            "lat": float(lat),
+            "lon": float(lon),
+            "alt": float(alt) if alt not in (None, "") else None,
+        }
+    except (ValueError, TypeError):
+        return None
 
 
 def read_exif(path: Path) -> dict:
@@ -751,26 +789,44 @@ def call_vlm(image_path: Path) -> dict:
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
 
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{img_b64}"
+    # 根据 API_URL 区分 Ollama native (/api/chat) 与 OpenAI 兼容格式
+    is_ollama_native = API_URL.rstrip("/").endswith("/api/chat")
+
+    if is_ollama_native:
+        # Ollama native：图片放 images，content 为纯文本字符串
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text, "images": [img_b64]},
+            ],
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.2},
+        }
+    else:
+        # OpenAI 兼容：content 为对象数组，图片用 image_url
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_b64}"
+                            },
                         },
-                    },
-                ],
-            },
-        ],
-        "temperature": 0.2,
-        "stream": False,
-    }
+                    ],
+                },
+            ],
+            "temperature": 0.2,
+            "stream": False,
+            "think": False,
+        }
 
     resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
     if not resp.ok:
@@ -780,10 +836,13 @@ def call_vlm(image_path: Path) -> dict:
 
     data = resp.json()
     try:
-        content = data["choices"][0]["message"]["content"].strip()
+        if is_ollama_native:
+            content = data["message"]["content"].strip()
+        else:
+            content = data["choices"][0]["message"]["content"].strip()
     except Exception:
         print("[DEBUG] 返回内容：", data)
-        raise RuntimeError("解析失败：无法从 choices[0].message.content 读取内容")
+        raise RuntimeError("解析失败：无法从响应中读取 content")
 
     # content 应该是 JSON 字符串
     try:

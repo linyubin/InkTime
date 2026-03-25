@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>InkTime 独立数据中心</title>
+    <!-- DataTables CSS & jQuery -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f111a;
+            --panel-bg: #1e2130;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --border-c: #334155;
+        }
+        body {
+            margin: 0; padding: 0;
+            font-family: -apple-system, system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        #left-pane { flex: 7; padding: 20px; overflow-y: auto; border-right: 1px solid var(--border-c); background: var(--panel-bg); }
+        #right-pane { flex: 3; padding: 20px; display: flex; flex-direction: column; overflow-y: auto; background: var(--bg-dark); }
+        
+        /* Table styles */
+        table.dataTable { color: var(--text-main); font-size: 13px; table-layout: fixed; width: 100%; border-collapse: collapse !important;}
+        .dataTables_wrapper .dataTables_length, .dataTables_wrapper .dataTables_filter, .dataTables_wrapper .dataTables_info, .dataTables_wrapper .dataTables_processing, .dataTables_wrapper .dataTables_paginate { color: var(--text-muted); }
+        table.dataTable tbody tr { background-color: transparent; transition: background 0.1s; cursor: pointer; }
+        table.dataTable tbody tr:hover { background-color: rgba(59, 130, 246, 0.15) !important; }
+        table.dataTable tbody td { border-top: 1px solid var(--border-c); padding: 10px 8px; overflow: hidden; white-space: normal; vertical-align: middle; }
+        table.dataTable thead th { border-bottom: 2px solid var(--border-c); color: #fff; vertical-align: top; position: relative; padding: 10px 8px !important; }
+
+        /* Custom Resizer Handle */
+        .col-resizer { width: 6px; height: 100%; position: absolute; right: 0; top: 0; cursor: col-resize; z-index: 10; touch-action: none; background: transparent; transition: background 0.2s;}
+        .col-resizer:hover, .col-resizer.dragging { background: var(--accent); opacity: 0.5; }
+
+        /* Filter controls */
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+        .filter-group.row-layout { flex-direction: row; align-items: center; }
+        
+        .dt-select, .dt-input { box-sizing: border-box; background: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; color: var(--text-main) !important; padding: 4px; border-radius: 4px; font-size: 11px; width: 100%; height: 26px; }
+        .dt-input::placeholder { color: var(--text-muted); }
+        
+        .exclude-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; display: flex; align-items: center; gap: 2px; margin-top:2px; cursor: pointer; }
+
+        /* Select2 Dark Theme Customization & Fixes */
+        .select2-container { margin-bottom: 2px; width: 100% !important; }
+        .select2-container--default .select2-selection--multiple { background-color: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; min-height: 28px !important; display: flex !important; align-items: center !important; }
+        .select2-container--default .select2-selection--multiple .select2-selection__rendered { padding: 0 4px !important; display: flex !important; flex-wrap: wrap !important; align-items: center !important; }
+        .select2-dropdown { background-color: var(--panel-bg) !important; border: 1px solid var(--border-c) !important; font-size: 12px; z-index: 9999; }
+        .select2-container--default .select2-selection--multiple .select2-selection__choice { background-color: rgba(59, 130, 246, 0.2) !important; border: 1px solid rgba(59, 130, 246, 0.5) !important; color: #fff !important; margin: 2px 4px 2px 0 !important; padding: 0 4px !important; font-size: 11px; display: flex !important; align-items: center !important; }
+        /* Fix the 'x' alignment in Select2 choice */
+        .select2-container--default .select2-selection--multiple .select2-selection__choice__remove { color: #fff !important; margin-right: 4px !important; position: static !important; float: none !important; border: none !important; }
+        .select2-container--default .select2-selection--multiple .select2-selection__choice__remove:hover { color: #f87171 !important; background: transparent !important; }
+        .select2-search__field { color: #fff !important; margin: 2px 0 !important; background: transparent !important;}
+        .select2-results__option { color: var(--text-main); padding: 4px 8px !important; font-size: 12px; }
+        .select2-container--default .select2-results__option--highlighted[aria-selected] { background-color: var(--accent) !important; }
+        .select2-container--default .select2-selection--single { background: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; height: 28px !important; display: flex !important; align-items: center !important; }
+        .select2-container--default .select2-selection--single .select2-selection__rendered { color: var(--text-main) !important; font-size: 11px; line-height: 26px !important; }
+        .select2-container--default .select2-selection--single .select2-selection__arrow { height: 26px !important; }
+        
+        /* Preview styles */
+        #preview-img-container { width: 100%; height: 40vh; background: #000; display: flex; align-items: center; justify-content: center; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-c); }
+        #preview-img-container img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        #preview-meta { font-size: 13px; line-height: 1.6; }
+        #preview-meta h3 { margin-top: 0; color: #fff; border-bottom: 1px solid var(--border-c); padding-bottom: 8px; }
+        .meta-group { margin-bottom: 12px; }
+        .meta-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .meta-value { color: var(--text-main); word-break: break-all; }
+        .empty-state { color: var(--text-muted); font-style: italic; text-align: center; }
+
+        /* tags (horizontal layout) */
+        .tag-container { display: flex; flex-wrap: wrap; gap: 4px; }
+        .tag-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; border: 1px solid; font-weight: 500; white-space: nowrap; }
+        
+        .score-good { color: #34d399; font-weight: bold; }
+        .score-avg { color: #fbbf24; }
+        .score-bad { color: #f87171; }
+        
+        .dataTables_length select { background: var(--panel-bg); color: white; border: 1px solid var(--border-c); padding:2px 6px;}
+        .dataTables_filter input { background: transparent; border: 1px solid var(--border-c); color: #fff; margin-left: 5px; padding:2px 6px;}
+        .dataTables_wrapper .dataTables_paginate .paginate_button { color: var(--text-muted) !important; padding: 4px 8px;}
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current, .dataTables_wrapper .dataTables_paginate .paginate_button.current:hover { color: #fff !important; background: var(--accent) !important; border-color: var(--accent) !important; }
+    </style>
+</head>
+<body>
+    <div id="left-pane">
+        <h2 style="margin-top:0;">InkTime 照片管理面板</h2>
+        <table id="photos-table" class="display">
+            <thead>
+                <tr>
+                    <th style="width:110px;">日期</th>
+                    <th style="width:250px;">层级路径</th>
+                    <th style="width:130px;">分类</th>
+                    <th style="width:110px;">城市</th>
+                    <th style="width:65px;">回忆</td>
+                    <th style="width:65px;">美观</td>
+                    <th style="width:75px;">状态</th>
+                </tr>
+            </thead>
+            <!-- search boxes -->
+            <thead id="header-filters">
+                <tr>
+                    <th>
+                        <div class="filter-group">
+                            <select class="dt-select date-op"><option value="=">当日</option><option value="<">之前</option><option value=">">之后</option></select>
+                            <input type="date" class="dt-input date-val">
+                        </div>
+                    </th>
+                    <th>
+                        <div class="filter-group">
+                            <select id="path-selector" class="path-sel-select2 dt-select" style="width:100% !important;">
+                                <option value="">载入中...</option>
+                            </select>
+                            <label class="exclude-label"><input type="checkbox" class="path-exclude"> 排除该层层级</label>
+                        </div>
+                    </th>
+                    <th>
+                        <select class="dt-select multi-select type-sel" multiple>
+                            <!-- 动态加载 -->
+                        </select>
+                    </th>
+                    <th>
+                        <select class="dt-select multi-select city-sel" multiple>
+                            <!-- 动态加载 -->
+                        </select>
+                    </th>
+                    <th>
+                        <div class="filter-group row-layout">
+                            <select class="dt-select mem-op" style="width:35px; padding:4px 0;"><option value=">">&gt;</option><option value="=">=</option><option value="<">&lt;</option></select>
+                            <input type="number" class="dt-input mem-val" placeholder="值">
+                        </div>
+                    </th>
+                    <th>
+                        <div class="filter-group row-layout">
+                            <select class="dt-select bf-op" style="width:35px; padding:4px 0;"><option value=">">&gt;</option><option value="=">=</option><option value="<">&lt;</option></select>
+                            <input type="number" class="dt-input bf-val" placeholder="值">
+                        </div>
+                    </th>
+                    <th>
+                        <select class="dt-select used-sel">
+                            <option value="">所有</option>
+                            <option value="已上屏">已上屏</option>
+                            <option value="未上屏">未上屏</option>
+                        </select>
+                    </th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    
+    <div id="right-pane">
+        <div id="preview-img-container">
+            <span class="empty-state">← 点击表格记录在此处预览大图</span>
+        </div>
+        <div id="preview-meta">
+            <!-- Dynamically populated -->
+        </div>
+    </div>
+
+    <script>
+        const TYPE_COLORS = {
+            "人物": "#ec4899", "孩子": "#f43f5e", "家庭": "#f97316", 
+            "旅行": "#3b82f6", "风景": "#10b981", "风光": "#10b981", 
+            "建筑": "#8b5cf6", "物品": "#6366f1", "动物": "#eab308", 
+            "萌宠": "#eab308", "美食": "#ef4444", "合影": "#d946ef", "其他": "#64748b"
+        };
+        
+        function hashColor(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            let c = (Math.abs(hash) & 0x00FFFFFF).toString(16).toUpperCase();
+            return '#' + '00000'.substring(0, 6 - c.length) + c;
+        }
+
+        $(document).ready(function() {
+            // 初始化 Select2 并修复样式映射
+            $('.city-sel, .type-sel').select2({
+                placeholder: "选择类别...",
+                allowClear: true,
+                closeOnSelect: false
+            });
+            $('#path-selector').select2({
+                placeholder: "所在文件夹(全部)",
+                allowClear: true,
+                width: 'resolve'
+            });
+
+            // 联动重绘
+            $('.type-sel, .city-sel, .path-sel-select2').on('change', function() {
+                $('#photos-table').DataTable().draw();
+            });
+
+            // 自定义搜索过滤器逻辑
+            $.fn.dataTable.ext.search.push(
+                function( settings, data, dataIndex, rowData ) {
+                    // 1. Date
+                    let dateOp = $('.date-op').val();
+                    let dateVal = $('.date-val').val();
+                    let dtDate = rowData.date;
+                    if (dateVal && dtDate) {
+                        if (dateOp === '=' && dtDate !== dateVal) return false;
+                        if (dateOp === '<' && dtDate >= dateVal) return false;
+                        if (dateOp === '>' && dtDate <= dateVal) return false;
+                    }
+
+                    // 2. Path (Sub-level + Exclude)
+                    let pathSel = $('#path-selector').val();
+                    let pathExclude = $('.path-exclude').is(':checked');
+                    let dtPath = (rowData.path || "").replace(/\\/g, '/');
+                    if (pathSel) {
+                        let contains = dtPath.indexOf(pathSel) !== -1;
+                        if (pathExclude && contains) return false;
+                        if (!pathExclude && !contains) return false;
+                    }
+
+                    // 3. Types (Multi-Select)
+                    let selectedTypes = $('.type-sel').val() || [];
+                    if (selectedTypes.length > 0) {
+                        let rowType = rowData.type || "";
+                        let match = false;
+                        selectedTypes.forEach(t => { if (rowType.includes(t)) match = true; });
+                        if (!match) return false;
+                    }
+
+                    // 4. City (Multi-Select)
+                    let selectedCities = $('.city-sel').val() || [];
+                    if (selectedCities.length > 0) {
+                        let dtCity = rowData.city || "";
+                        if (!selectedCities.includes(dtCity)) return false;
+                    }
+
+                    // 5. Memory Score
+                    let memOp = $('.mem-op').val();
+                    let memVal = parseFloat($('.mem-val').val());
+                    let dtMem = parseFloat(rowData.memory);
+                    if (!isNaN(memVal) && !isNaN(dtMem)) {
+                        if (memOp === '>' && dtMem <= memVal) return false;
+                        if (memOp === '<' && dtMem >= memVal) return false;
+                        if (memOp === '=' && Math.abs(dtMem - memVal) > 0.01) return false;
+                    }
+
+                    // 6. Beauty Score
+                    let bfOp = $('.bf-op').val();
+                    let bfVal = parseFloat($('.bf-val').val());
+                    let dtBf = parseFloat(rowData.beauty);
+                    if (!isNaN(bfVal) && !isNaN(dtBf)) {
+                        if (bfOp === '>' && dtBf <= bfVal) return false;
+                        if (bfOp === '<' && dtBf >= bfVal) return false;
+                        if (bfOp === '=' && Math.abs(dtBf - bfVal) > 0.01) return false;
+                    }
+
+                    // 7. Status
+                    let usedSel = $('.used-sel').val();
+                    if (usedSel && rowData.used !== usedSel) return false;
+
+                    return true;
+                }
+            );
+
+            var table = $('#photos-table').DataTable({
+                ajax: '/api/photos',
+                autoWidth: false,
+                deferRender: true,
+                pageLength: 50,
+                lengthMenu: [25, 50, 100, 200, 500, 1000],
+                order: [[ 4, 'desc' ]],
+                columns: [
+                    { data: 'date' },
+                    { data: 'path', render: function(data) {
+                        let parts = data.split(/[\\\/]/);
+                        let name = parts.pop();
+                        return '<div style="font-size:10px;color:#94a3b8;word-break:break-all;" title="' + data + '">' + name + '</div>';
+                    }},
+                    { data: 'type', render: function(data) {
+                        if (!data) return '';
+                        let arr = [];
+                        try { arr = JSON.parse(data.replace(/'/g, '"')); } catch(e) { arr = [data]; }
+                        if (!Array.isArray(arr)) arr = [arr];
+                        
+                        let html = '<div class="tag-container">';
+                        arr.forEach(t => {
+                            if(!t) return;
+                            let c = TYPE_COLORS[t] || hashColor(t);
+                            html += `<span class="tag-pill" style="background:${c}25; border-color:${c}60; color:${c};">${t}</span>`;
+                        });
+                        html += '</div>';
+                        return html;
+                    }},
+                    { data: 'city' },
+                    { data: 'memory', render: function(data) {
+                        if(data < 0) return '-';
+                        let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
+                        return `<span class="${cls}">${data}</span>`;
+                    }},
+                    { data: 'beauty', render: function(data) {
+                        if(data < 0) return '-';
+                        let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
+                        return `<span class="${cls}">${data}</span>`;
+                    }},
+                    { data: 'used' }
+                ],
+                language: { url: "https://cdn.datatables.net/plug-ins/1.13.6/i18n/zh-HANS.json" }
+            });
+            
+            // Populate Dropdowns array handling fix
+            table.on('xhr', function() {
+                let json = table.ajax.json();
+                if(!json) return;
+                let _data = json.data || [];
+                if(!_data || _data.length === 0) return;
+                
+                let dirs = new Set();
+                let cities = new Set();
+                let types = new Set();
+                
+                _data.forEach(item => {
+                    // Windows \ or Linux / to /
+                    let cleanPath = (item.path || "").replace(/\\/g, '/');
+                    let idx = cleanPath.lastIndexOf("/");
+                    if (idx > 0) {
+                        let dir = cleanPath.substring(0, idx);
+                        dirs.add(dir);
+                    }
+                    if (item.city) cities.add(item.city);
+                    if (item.type) {
+                        try {
+                            let parsed = JSON.parse(item.type.replace(/'/g, '"'));
+                            if (Array.isArray(parsed)) parsed.forEach(t => types.add(t));
+                            else types.add(parsed);
+                        } catch(e) { types.add(item.type); }
+                    }
+                });
+                
+                let psel = $('#path-selector');
+                psel.empty().append(new Option("", ""));
+                Array.from(dirs).sort().forEach(d => {
+                    let parts = d.split('/');
+                    let label = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : d;
+                    psel.append(new Option(label, d));
+                });
+                psel.trigger('change');
+
+                let csel = $('.city-sel');
+                csel.empty();
+                Array.from(cities).sort().forEach(d => csel.append(new Option(d, d)));
+                csel.trigger('change');
+                
+                let tsel = $('.type-sel');
+                tsel.empty();
+                Array.from(types).sort().forEach(t => {
+                    if (t && t.length < 20 && !t.includes('{') && !t.includes('[')) tsel.append(new Option(t, t));
+                });
+                tsel.trigger('change');
+            });
+
+            // Handle Column Resizing
+            let isResizing = false, currentTh, startColWidth, startX;
+            $('#photos-table thead tr:first-child th').each(function() {
+                let handle = $('<div class="col-resizer"></div>');
+                $(this).append(handle);
+                handle.on('mousedown', function(e) {
+                    isResizing = true;
+                    currentTh = $(this).parent();
+                    startColWidth = currentTh.width();
+                    startX = e.pageX;
+                    $(this).addClass('dragging');
+                    e.stopPropagation();
+                    e.preventDefault();
+                });
+            });
+
+            $(document).on('mousemove', function(e) {
+                if (isResizing && currentTh) {
+                    let newWidth = startColWidth + (e.pageX - startX);
+                    if(newWidth > 30) {
+                        currentTh.css('width', newWidth + 'px');
+                    }
+                }
+            }).on('mouseup', function() {
+                if(isResizing) {
+                    isResizing = false;
+                    $('.col-resizer').removeClass('dragging');
+                }
+            });
+
+            // Bind filters
+            $('#header-filters input, .date-op, .mem-op, .bf-op, .used-sel, .path-exclude').on('keyup change', function() { 
+                table.draw(); 
+            });
+
+            // Handle row click preview
+            $('#photos-table tbody').on('click', 'tr', function () {
+                let rowData = table.row(this).data();
+                if (!rowData) return;
+                $(this).siblings().css('background-color', 'transparent');
+                $(this).css('background-color', 'rgba(59, 130, 246, 0.2)');
+                let imgSrc = rowData.image_url || "";
+                if (imgSrc) {
+                    $('#preview-img-container').html(`<img src="${imgSrc}" style="opacity: 0; transition: opacity 0.3s" onload="this.style.opacity=1" onerror="$(this).replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">`);
+                }
+                let exif = {};
+                try { exif = JSON.parse(rowData.exif_json) || {}; } catch (e) {}
+                let cam = ((exif.make || '') + ' ' + (exif.model || '')).trim() || '未知设备';
+                let reasonText = (rowData.reason || '').replace(/\\n/g, '<br>');
+                let sideText = (rowData.side_caption || '').replace(/\\n/g, '<br>');
+                let captionText = (rowData.caption || '').replace(/\\n/g, '<br>');
+                let metaHtml = `
+                    <h3>${rowData.city || '未知地点'} - ${rowData.date || '未知日期'}</h3>
+                    <div class="meta-group"><div class="meta-label">原始路径</div><div class="meta-value" style="font-family: monospace; font-size:11px; word-break:break-all;">${rowData.path}</div></div>
+                    <div class="meta-group"><div class="meta-label">画面描述 (Caption)</div><div class="meta-value" style="font-size:12px; color:#e2e8f0; margin-bottom: 8px;">${captionText || '无可见描述'}</div></div>
+                    <div class="meta-group"><div class="meta-label">AI 长文旁白记录</div><div class="meta-value" style="font-style: italic; color:#bae6fd; margin-bottom: 8px; font-size: 13px;">${sideText || '暂无，需生成'}</div></div>
+                    <div class="meta-group"><div class="meta-label">判定原因与得分</div><div class="meta-value" style="margin-bottom:6px;">回忆度 <strong>${rowData.memory >= 0 ? rowData.memory : '-'}</strong> | 美观度 <strong>${rowData.beauty >= 0 ? rowData.beauty : '-'}</strong></div><div class="meta-value" style="font-size:12px; border-left: 2px solid var(--accent); padding-left: 8px; margin-bottom: 8px;">${reasonText || '-'}</div></div>
+                    <div class="meta-group">
+                        <div class="meta-label">详细参数 (EXIF)</div>
+                        <div class="meta-value" style="font-size:12px;">
+                            <table style="width:100%; color:var(--text-muted); margin-top:4px;">
+                                <tr><td style="width:50%">设备: ${cam}</td><td>焦距: ${exif.focal_length ? exif.focal_length : '-'}</td></tr>
+                                <tr><td>光圈: ${exif.f_number ? exif.f_number : '-'}</td><td>曝光: ${exif.exposure_time ? exif.exposure_time : '-'}</td></tr>
+                                <tr><td>ISO: ${exif.iso || '-'}</td><td>GPS: ${exif.gps_lat || '-'} , ${exif.gps_lon || '-'}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                `;
+                $('#preview-meta').html(metaHtml);
+            });
+        });
+    </script>
+</body>
+</html>
