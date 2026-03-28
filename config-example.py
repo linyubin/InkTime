@@ -55,3 +55,17 @@ DAILY_PHOTO_QUANTITY = 5
 
 # 排除包含以下关键词或特征的路径或文件名（全路径匹配，不区分大小写）
 EXCLUDE_KEYWORDS = ["screenshot", "截屏", "屏幕截图", "cache"]
+
+# ── EPD-nRF5 蓝牙推送配置 ────────────────────────────────
+# 目标墨水屏设备的蓝牙 MAC 地址
+# 填写后 push_to_epd_ble.py 将跳过扫描步骤，直接连接（推荐，更快更稳定）
+# 在 NAS 上可通过以下命令获取：
+#   sudo bluetoothctl
+#   > power on
+#   > scan on
+#   > (等待出现 NRF_EPD_XXXX，记录其 MAC 地址)
+EPD_DEVICE_MAC = ""  # 例："AA:BB:CC:DD:EE:FF"
+
+# BLE 传输块大小（字节），单次 GATT write 的 data 部分（不含命令头）
+# 默认 238（MTU 244 - 6 字节开销），连接不稳或数据错乱时可调小至 128 或 64
+EPD_BLE_CHUNK_SIZE = 238
