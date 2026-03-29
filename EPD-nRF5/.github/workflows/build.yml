@@ -1,0 +1,25 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+      - name: Build
+        run: make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emulator
+          path: emulator.exe
