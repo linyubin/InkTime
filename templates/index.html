@@ -187,8 +187,15 @@
             return '#' + '00000'.substring(0, 6 - c.length) + c;
         }
 
+        // 防抖函数：避免过滤条件变化时频繁请求
+        let _drawTimer = null;
+        function debounceDraw(table, delay) {
+            clearTimeout(_drawTimer);
+            _drawTimer = setTimeout(() => { table.draw(); }, delay || 400);
+        }
+
         $(document).ready(function() {
-            // 初始化 Select2 并修复样式映射
+            // 初始化 Select2
             $('.city-sel, .type-sel').select2({
                 placeholder: "选择类别...",
                 allowClear: true,
@@ -200,93 +207,69 @@
                 width: 'resolve'
             });
 
-            // 联动重绘
-            $('.type-sel, .city-sel, .path-sel-select2').on('change', function() {
-                $('#photos-table').DataTable().draw();
+            // 异步加载下拉框（不阻塞主表格）
+            $.getJSON('/api/photos/meta', function(meta) {
+                let psel = $('#path-selector');
+                psel.empty().append(new Option("", ""));
+                (meta.dirs || []).forEach(function(d) {
+                    let parts = d.split('/');
+                    let label = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : d;
+                    psel.append(new Option(label, d));
+                });
+                psel.trigger('change');
+
+                let csel = $('.city-sel');
+                csel.empty();
+                (meta.cities || []).forEach(function(d) { csel.append(new Option(d, d)); });
+                csel.trigger('change');
+
+                let tsel = $('.type-sel');
+                tsel.empty();
+                (meta.types || []).forEach(function(t) { tsel.append(new Option(t, t)); });
+                tsel.trigger('change');
             });
 
-            // 自定义搜索过滤器逻辑
-            $.fn.dataTable.ext.search.push(
-                function( settings, data, dataIndex, rowData ) {
-                    // 1. Date
-                    let dateOp = $('.date-op').val();
-                    let dateVal = $('.date-val').val();
-                    let dtDate = rowData.date;
-                    if (dateVal && dtDate) {
-                        if (dateOp === '=' && dtDate !== dateVal) return false;
-                        if (dateOp === '<' && dtDate >= dateVal) return false;
-                        if (dateOp === '>' && dtDate <= dateVal) return false;
-                    }
+            // 联动重绘
+            $('.type-sel, .city-sel, .path-sel-select2').on('change', function() {
+                if(window._table) window._table.draw();
+            });
 
-                    // 2. Path (Sub-level + Exclude)
-                    let pathSel = $('#path-selector').val();
-                    let pathExclude = $('.path-exclude').is(':checked');
-                    let dtPath = (rowData.path || "").replace(/\\/g, '/');
-                    if (pathSel) {
-                        let contains = dtPath.indexOf(pathSel) !== -1;
-                        if (pathExclude && contains) return false;
-                        if (!pathExclude && !contains) return false;
-                    }
-
-                    // 3. Types (Multi-Select)
-                    let selectedTypes = $('.type-sel').val() || [];
-                    if (selectedTypes.length > 0) {
-                        let rowType = rowData.type || "";
-                        let match = false;
-                        selectedTypes.forEach(t => { if (rowType.includes(t)) match = true; });
-                        if (!match) return false;
-                    }
-
-                    // 4. City (Multi-Select)
-                    let selectedCities = $('.city-sel').val() || [];
-                    if (selectedCities.length > 0) {
-                        let dtCity = rowData.city || "";
-                        if (!selectedCities.includes(dtCity)) return false;
-                    }
-
-                    // 5. Memory Score
-                    let memOp = $('.mem-op').val();
-                    let memVal = parseFloat($('.mem-val').val());
-                    let dtMem = parseFloat(rowData.memory);
-                    if (!isNaN(memVal) && !isNaN(dtMem)) {
-                        if (memOp === '>' && dtMem <= memVal) return false;
-                        if (memOp === '<' && dtMem >= memVal) return false;
-                        if (memOp === '=' && Math.abs(dtMem - memVal) > 0.01) return false;
-                    }
-
-                    // 6. Beauty Score
-                    let bfOp = $('.bf-op').val();
-                    let bfVal = parseFloat($('.bf-val').val());
-                    let dtBf = parseFloat(rowData.beauty);
-                    if (!isNaN(bfVal) && !isNaN(dtBf)) {
-                        if (bfOp === '>' && dtBf <= bfVal) return false;
-                        if (bfOp === '<' && dtBf >= bfVal) return false;
-                        if (bfOp === '=' && Math.abs(dtBf - bfVal) > 0.01) return false;
-                    }
-
-                    // 7. Status
-                    let usedSel = $('.used-sel').val();
-                    if (usedSel && rowData.used !== usedSel) return false;
-
-                    return true;
-                }
-            );
+            // 收集所有过滤条件，生成请求参数
+            function buildFilterParams(d) {
+                d.f_date_op = $('.date-op').val() || '';
+                d.f_date_val = $('.date-val').val() || '';
+                d.f_path = $('#path-selector').val() || '';
+                d.f_path_exclude = $('.path-exclude').is(':checked') ? '1' : '0';
+                d['f_types[]'] = $('.type-sel').val() || [];
+                d['f_cities[]'] = $('.city-sel').val() || [];
+                d.f_mem_op = $('.mem-op').val() || '>';
+                d.f_mem_val = $('.mem-val').val() || '';
+                d.f_bf_op = $('.bf-op').val() || '>';
+                d.f_bf_val = $('.bf-val').val() || '';
+                d.f_used = $('.used-sel').val() || '';
+            }
 
             var table = $('#photos-table').DataTable({
-                ajax: '/api/photos',
+                serverSide: true,
+                processing: true,
+                ajax: {
+                    url: '/api/photos',
+                    type: 'GET',
+                    data: function(d) { buildFilterParams(d); }
+                },
                 autoWidth: false,
                 deferRender: true,
                 pageLength: 50,
-                lengthMenu: [25, 50, 100, 200, 500, 1000],
+                lengthMenu: [25, 50, 100, 200],
                 order: [[ 4, 'desc' ]],
                 columns: [
-                    { data: 'date' },
-                    { data: 'path', render: function(data) {
+                    { data: 'date', orderable: true },
+                    { data: 'path', orderable: true, render: function(data) {
                         let parts = data.split(/[\\\/]/);
                         let name = parts.pop();
                         return '<div style="font-size:10px;color:#94a3b8;word-break:break-all;" title="' + data + '">' + name + '</div>';
                     }},
-                    { data: 'type', render: function(data) {
+                    { data: 'type', orderable: false, render: function(data) {
                         if (!data) return '';
                         let arr = [];
                         try { arr = JSON.parse(data.replace(/'/g, '"')); } catch(e) { arr = [data]; }
@@ -301,72 +284,45 @@
                         html += '</div>';
                         return html;
                     }},
-                    { data: 'city' },
-                    { data: 'memory', render: function(data) {
+                    { data: 'city', orderable: true },
+                    { data: 'memory', orderable: true, render: function(data) {
                         if(data < 0) return '-';
                         let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
                         return `<span class="${cls}">${data}</span>`;
                     }},
-                    { data: 'beauty', render: function(data) {
+                    { data: 'beauty', orderable: true, render: function(data) {
                         if(data < 0) return '-';
                         let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
                         return `<span class="${cls}">${data}</span>`;
                     }},
-                    { data: 'used' }
+                    { data: 'used', orderable: true }
                 ],
-                language: { url: "https://cdn.datatables.net/plug-ins/1.13.6/i18n/zh-HANS.json" }
+                language: {
+                    "emptyTable": "表格中无可用数据",
+                    "info": "显示第 _START_ 至 _END_ 条，共 _TOTAL_ 条记录",
+                    "infoEmpty": "显示第 0 至 0 条，共 0 条记录",
+                    "infoFiltered": "（从 _MAX_ 条记录过滤）",
+                    "infoPostFix": "",
+                    "thousands": ",",
+                    "lengthMenu": "每页显示 _MENU_ 条记录",
+                    "loadingRecords": "载入中...",
+                    "processing": "处理中...",
+                    "search": "搜索:",
+                    "zeroRecords": "没有找到匹配的记录",
+                    "paginate": {
+                        "first": "首页",
+                        "last": "末页",
+                        "next": "下一页",
+                        "previous": "上一页"
+                    },
+                    "aria": {
+                        "sortAscending": ": 以升序排列此列",
+                        "sortDescending": ": 以降序排列此列"
+                    }
+                }
             });
-            
-            // Populate Dropdowns array handling fix
-            table.on('xhr', function() {
-                let json = table.ajax.json();
-                if(!json) return;
-                let _data = json.data || [];
-                if(!_data || _data.length === 0) return;
-                
-                let dirs = new Set();
-                let cities = new Set();
-                let types = new Set();
-                
-                _data.forEach(item => {
-                    // Windows \ or Linux / to /
-                    let cleanPath = (item.path || "").replace(/\\/g, '/');
-                    let idx = cleanPath.lastIndexOf("/");
-                    if (idx > 0) {
-                        let dir = cleanPath.substring(0, idx);
-                        dirs.add(dir);
-                    }
-                    if (item.city) cities.add(item.city);
-                    if (item.type) {
-                        try {
-                            let parsed = JSON.parse(item.type.replace(/'/g, '"'));
-                            if (Array.isArray(parsed)) parsed.forEach(t => types.add(t));
-                            else types.add(parsed);
-                        } catch(e) { types.add(item.type); }
-                    }
-                });
-                
-                let psel = $('#path-selector');
-                psel.empty().append(new Option("", ""));
-                Array.from(dirs).sort().forEach(d => {
-                    let parts = d.split('/');
-                    let label = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : d;
-                    psel.append(new Option(label, d));
-                });
-                psel.trigger('change');
 
-                let csel = $('.city-sel');
-                csel.empty();
-                Array.from(cities).sort().forEach(d => csel.append(new Option(d, d)));
-                csel.trigger('change');
-                
-                let tsel = $('.type-sel');
-                tsel.empty();
-                Array.from(types).sort().forEach(t => {
-                    if (t && t.length < 20 && !t.includes('{') && !t.includes('[')) tsel.append(new Option(t, t));
-                });
-                tsel.trigger('change');
-            });
+            window._table = table;
 
             // Handle Column Resizing
             let isResizing = false, currentTh, startColWidth, startX;
@@ -398,9 +354,9 @@
                 }
             });
 
-            // Bind filters
+            // Bind filters with debounce
             $('#header-filters input, .date-op, .mem-op, .bf-op, .used-sel, .path-exclude').on('keyup change', function() { 
-                table.draw(); 
+                debounceDraw(table, 400);
             });
 
             // Handle row click preview
@@ -409,10 +365,20 @@
                 if (!rowData) return;
                 $(this).siblings().css('background-color', 'transparent');
                 $(this).css('background-color', 'rgba(59, 130, 246, 0.2)');
+                
+                // 显示图片
                 let imgSrc = rowData.image_url || "";
                 if (imgSrc) {
-                    $('#preview-img-container').html(`<img src="${imgSrc}" style="opacity: 0; transition: opacity 0.3s" onload="this.style.opacity=1" onerror="$(this).replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">`);
+                    $('#preview-img-container').html(
+                        `<img src="${imgSrc}" style="opacity: 0; transition: opacity 0.3s"
+                            onload="this.style.opacity=1"
+                            onerror="$(this).replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">`
+                    );
+                } else {
+                    $('#preview-img-container').html('<span class="empty-state">⚠️ 无可用图片路径</span>');
                 }
+
+                // 显示 meta
                 let exif = {};
                 try { exif = JSON.parse(rowData.exif_json) || {}; } catch (e) {}
                 let cam = ((exif.make || '') + ' ' + (exif.model || '')).trim() || '未知设备';

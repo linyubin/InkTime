@@ -64,17 +64,78 @@ EPD_DEVICE_MAC = str(getattr(cfg, "EPD_DEVICE_MAC", "") or "").strip()
 CHUNK_SIZE = int(getattr(cfg, "EPD_BLE_CHUNK_SIZE", 238) or 238)
 
 # ── 格式转换 ──────────────────────────────────────────
-# InkTime .bin：1字节/像素，0=黑 1=白 2=红 3=黄
-# EPD-nRF5 fourColor packed：2bit/像素，4像素→1字节，MSB优先
+# InkTime .bin：1字节/像素，0=黑 1=白 2=红 3=黄，画布尺寸 480×800（竖屏行序）
+# EPD-nRF5 fourColor packed：2bit/像素，4像素→1字节，MSB优先，硬件行宽=800
 # 颜色值映射：黑0→0x00, 白1→0x01, 红2→0x03, 黄3→0x02（注意红黄互换！）
 _COLOR_MAP = {0: 0x00, 1: 0x01, 2: 0x03, 3: 0x02}
 
+# 原始画布尺寸（与 render_daily_photo.py 的 CANVAS_WIDTH/HEIGHT 对应）
+_SRC_W = 480  # 竖屏宽
+_SRC_H = 800  # 竖屏高
+
+# 旋转方向配置（从 config.py 读取）
+# 硬件原生横屏 800×480；竖屏放置时需旋转图像使行序匹配
+_ROTATE = str(getattr(cfg, "EPD_ROTATE", "CW90") or "CW90").upper().strip()
+
+
+def rotate_raw(raw: bytes, rotate: str) -> tuple:
+    """
+    将 _SRC_W × _SRC_H 的原始像素数组旋转后，返回 (rotated_bytes, out_w, out_h)。
+
+    旋转方向说明（以屏幕正面朝向用户为准）：
+      CW90   - 顺时针旋转 90°，结果尺寸 800×480
+      CCW90  - 逆时针旋转 90°，结果尺寸 800×480
+      ROT180 - 旋转 180°，      结果尺寸 480×800（行列互换后字节数不变）
+      NONE   - 不旋转，         结果尺寸 480×800（直接透传，调试用）
+    """
+    sw, sh = _SRC_W, _SRC_H
+
+    if rotate == "NONE":
+        return raw, sw, sh
+
+    if rotate == "ROT180":
+        # 逐像素翻转：最后一个像素变第一个
+        rotated = bytearray(len(raw))
+        total = sw * sh
+        for i in range(total):
+            rotated[i] = raw[total - 1 - i]
+        return bytes(rotated), sw, sh
+
+    # CW90 / CCW90：输出尺寸互换为 sh×sw（即 800×480）
+    dw, dh = sh, sw  # 旋转后：宽=800, 高=480
+    rotated = bytearray(dw * dh)
+
+    if rotate == "CW90":
+        # 顺时针 90°：原 (ox, oy) → 新 (sh-1-oy, ox)
+        for oy in range(sh):
+            row_base = oy * sw
+            for ox in range(sw):
+                nx = sh - 1 - oy
+                ny = ox
+                rotated[ny * dw + nx] = raw[row_base + ox]
+    elif rotate == "CCW90":
+        # 逆时针 90°：原 (ox, oy) → 新 (oy, sw-1-ox)
+        for oy in range(sh):
+            row_base = oy * sw
+            for ox in range(sw):
+                nx = oy
+                ny = sw - 1 - ox
+                rotated[ny * dw + nx] = raw[row_base + ox]
+    else:
+        log.warning(f"未知旋转方向 '{rotate}'，将使用 CW90。")
+        return rotate_raw(raw, "CW90")
+
+    return bytes(rotated), dw, dh
+
 
 def inktime_to_fourcolor_packed(raw: bytes) -> bytes:
-    """将 InkTime .bin 转为 EPD-nRF5 fourColor packed 格式。"""
-    n   = len(raw)
+    """将 InkTime .bin 旋转并转为 EPD-nRF5 fourColor packed 格式（2bit/像素）。"""
+    rotated, out_w, out_h = rotate_raw(raw, _ROTATE)
+    log.info(f"图像旋转模式：{_ROTATE}，输出尺寸 {out_w}×{out_h}")
+
+    n   = len(rotated)
     out = bytearray((n + 3) // 4)
-    for i, v in enumerate(raw):
+    for i, v in enumerate(rotated):
         epd_val  = _COLOR_MAP.get(v, 0x01)          # 未知值默认白
         out[i // 4] |= (epd_val << (6 - (i % 4) * 2))
     return bytes(out)
@@ -171,9 +232,9 @@ async def main(photo_idx: int, device_mac: str) -> None:
     log.info(f"加载照片 #{photo_idx}：{bin_path}（{len(raw):,} 字节）")
 
     # 尺寸验证
-    expected = 480 * 800
+    expected = _SRC_W * _SRC_H
     if len(raw) != expected:
-        log.error(f"文件尺寸异常：期望 {expected:,} 字节，实际 {len(raw):,} 字节")
+        log.error(f"文件尺寸异常：期望 {expected:,} 字节（{_SRC_W}×{_SRC_H}），实际 {len(raw):,} 字节")
         sys.exit(1)
 
     # 2. 格式转换

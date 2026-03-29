@@ -68,4 +68,10 @@ EPD_DEVICE_MAC = ""  # 例："AA:BB:CC:DD:EE:FF"
 
 # BLE 传输块大小（字节），单次 GATT write 的 data 部分（不含命令头）
 # 默认 238（MTU 244 - 6 字节开销），连接不稳或数据错乱时可调小至 128 或 64
-EPD_BLE_CHUNK_SIZE = 238
+EPD_BLE_CHUNK_SIZE = 238
+
+# ── 跨平台与路径配置 ─────────────────────────────────────
+# 跨平台路径映射（如在 Windows 上生成数据库后拷贝到 Linux/树莓派运行，在此配置可将 Windows 路径前缀瞬间映射到 Linux 路径）
+# 例: {"\\\\10.168.1.111\\Photos": "/home/pi/Photos"} 
+PATH_MAP = {}
+

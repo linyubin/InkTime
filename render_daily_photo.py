@@ -44,6 +44,15 @@ if str(FONT_PATH) and not FONT_PATH.is_absolute():
 MEMORY_THRESHOLD = float(getattr(cfg, "MEMORY_THRESHOLD", 70.0) or 70.0)
 DAILY_PHOTO_QUANTITY = int(getattr(cfg, "DAILY_PHOTO_QUANTITY", 5) or 5)
 
+# 加权选片配置（均设默认值以向后兼容）
+PATH_WEIGHTS         = getattr(cfg, "PATH_WEIGHTS",         {})
+CATEGORY_WEIGHTS     = getattr(cfg, "CATEGORY_WEIGHTS",     {})
+SCORE_MEMORY_WEIGHT  = float(getattr(cfg, "SCORE_MEMORY_WEIGHT",  0.7))
+HIGH_SCORE_THRESHOLD = float(getattr(cfg, "HIGH_SCORE_THRESHOLD", 87.0))
+RESHOW_AFTER_DAYS    = int(getattr(cfg, "RESHOW_AFTER_DAYS",   180))
+RECENCY_PENALTY      = float(getattr(cfg, "RECENCY_PENALTY",    0.5))
+PATH_MAP             = getattr(cfg, "PATH_MAP",             {})
+
 # 墨水屏尺寸
 CANVAS_WIDTH = 480
 CANVAS_HEIGHT = 800
@@ -116,7 +125,10 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                memory_score,
                exif_gps_lat,
                exif_gps_lon,
-               exif_city
+               exif_city,
+               beauty_score,
+               type,
+               used_at
         FROM photo_scores
         WHERE exif_json IS NOT NULL
         """
@@ -124,7 +136,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     conn.close()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
+    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at in rows:
         date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
@@ -147,10 +159,106 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "lat": gps_lat,
             "lon": gps_lon,
             "city": exif_city or "",
+            "beauty":   float(beauty_score) if beauty_score is not None else None,
+            "type_raw": type_str or "",
+            "used_at":  used_at or None,
         }
         items.append(item)
 
     return items
+
+
+# ========== 加权选片辅助函数 ==========
+
+def normalize_path(path: str) -> str:
+    """将 DB Windows 路径通过 PATH_MAP 转换为本地路径（仅用于权重匹配，不校验文件是否存在）。"""
+    for old_prefix, new_prefix in PATH_MAP.items():
+        if path.startswith(old_prefix):
+            return path.replace(old_prefix, new_prefix).replace("\\", "/")
+    return path
+
+
+def compute_path_weight(path: str) -> float:
+    """
+    在 PATH_WEIGHTS 中查找最长匹配前缀，返回对应权重（默认 1.0）。
+    同时尝试原始 DB 路径（Windows 格式）和 PATH_MAP 规范化后路径（Linux 格式），
+    取最长匹配的权重——支持用户用任意格式配置 key。
+    """
+    if not PATH_WEIGHTS:
+        return 1.0
+    normalized = normalize_path(path)
+    best_weight, best_len = 1.0, -1
+    for prefix, weight in PATH_WEIGHTS.items():
+        norm_prefix = normalize_path(str(prefix))
+        for p in (path, normalized):
+            for pfx in (str(prefix), norm_prefix):
+                if p.startswith(pfx) and len(pfx) > best_len:
+                    best_len, best_weight = len(pfx), float(weight)
+    return best_weight
+
+
+def compute_category_weight(type_raw: str) -> float:
+    """
+    解析 type 字段（JSON 数组字符串），对每个分类查 CATEGORY_WEIGHTS，
+    未命中取 1.0，多分类取算术平均值。
+    """
+    if not type_raw or not CATEGORY_WEIGHTS:
+        return 1.0
+    try:
+        cats = json.loads(type_raw)
+        if not isinstance(cats, list) or not cats:
+            return 1.0
+        weights = [CATEGORY_WEIGHTS.get(c, 1.0) for c in cats]
+        return sum(weights) / len(weights)
+    except Exception:
+        return 1.0
+
+
+def compute_recency_penalty(used_at) -> float:
+    """近期展示过的照片降权，返回乘数（0~1）。超过 RESHOW_AFTER_DAYS 天或未展示则返回 1.0。"""
+    if not used_at:
+        return 1.0
+    try:
+        days_ago = (TODAY - dt.date.fromisoformat(str(used_at))).days
+        if days_ago < RESHOW_AFTER_DAYS:
+            return RECENCY_PENALTY
+    except Exception:
+        pass
+    return 1.0
+
+
+def compute_final_score(item: dict) -> float:
+    """
+    计算照片综合加权得分：
+        final = (memory × path_w × cat_w × recency_w) × α + beauty × (1−α)
+    若 beauty 为 None，退化为 final = weighted_memory。
+    """
+    memory = item.get("memory", -1.0)
+    if memory < 0:
+        return 0.0
+    path_w    = compute_path_weight(item["path"])
+    cat_w     = compute_category_weight(item.get("type_raw", ""))
+    recency_w = compute_recency_penalty(item.get("used_at"))
+    wm = memory * path_w * cat_w * recency_w
+    beauty = item.get("beauty")
+    if beauty is None:
+        return wm
+    return wm * SCORE_MEMORY_WEIGHT + beauty * (1.0 - SCORE_MEMORY_WEIGHT)
+
+
+def mark_photo_used(path: str) -> None:
+    """渲染成功后，将照片的 used_at 更新为今天（防重复展示）。"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE photo_scores SET used_at = ? WHERE path = ?",
+            (TODAY.isoformat(), path),
+        )
+        conn.commit()
+        conn.close()
+        print(f"[INFO] 已记录展示历史: {Path(path).name}")
+    except Exception as e:
+        print(f"[WARN] 写入 used_at 失败: {e}")
 
 
 # ========== “历史上的今天”选片 ==========
@@ -215,27 +323,52 @@ def choose_photo_for_today(items: List[Dict[str, Any]], today: dt.date) -> Tuple
         if not candidates:
             continue
 
-        chosen = random.choice(candidates)
+        # 计算 final_score 并排序
+        for p in candidates:
+            p["_final_score"] = compute_final_score(p)
+        candidates.sort(key=lambda x: x["_final_score"], reverse=True)
+
+        # 精英随机（>= 阈值取 Top-3 随机）or 确定性最优
+        elite = [p for p in candidates if p["_final_score"] >= HIGH_SCORE_THRESHOLD]
+        if elite:
+            chosen = random.choice(elite[:3])
+            selection_mode = "elite_top3_random"
+        else:
+            chosen = candidates[0]
+            selection_mode = "deterministic_top1"
+
         info = {
             "target_md": target_md,
             "used_md": md,
             "day_offset": -offset,
             "candidate_count": len(candidates),
+            "elite_count": len(elite),
             "total_count_md": len(arr),
             "threshold": MEMORY_THRESHOLD,
+            "high_score_threshold": HIGH_SCORE_THRESHOLD,
+            "selection_mode": selection_mode,
+            "final_score": chosen["_final_score"],
             "fallback_global_max": False,
         }
         return chosen, info
 
-    global_best = max(items, key=lambda x: x.get("memory", -1.0))
+    # 兜底：全局 final_score 最高的照片
+    for p in items:
+        p["_final_score"] = compute_final_score(p)
+    global_best = max(items, key=lambda x: x["_final_score"])
     info = {
         "target_md": target_md,
         "used_md": global_best["md"],
         "day_offset": None,
         "candidate_count": 1,
+        "elite_count": 0,
         "total_count_md": len(by_md.get(global_best["md"], [])),
         "threshold": MEMORY_THRESHOLD,
+        "high_score_threshold": HIGH_SCORE_THRESHOLD,
+        "selection_mode": "fallback_global",
+        "final_score": global_best["_final_score"],
         "fallback_global_max": True,
+
     }
     return global_best, info
 
@@ -280,32 +413,60 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
         if not candidates:
             continue
 
-        # 随机选不重复的多张
-        if len(candidates) >= count:
-            chosen_list = random.sample(candidates, count)
+        # 计算 final_score 并排序
+        for p in candidates:
+            p["_final_score"] = compute_final_score(p)
+        candidates.sort(key=lambda x: x["_final_score"], reverse=True)
+
+        # 精英分级选片：
+        # 第一步：从 final_score >= HIGH_SCORE_THRESHOLD 的精英中随机抽取
+        elite = [p for p in candidates if p["_final_score"] >= HIGH_SCORE_THRESHOLD]
+        if len(elite) >= count:
+            # 精英超过上限，随机选 count 张
+            chosen_list = random.sample(elite, count)
+            selection_mode = "elite_random"
+        elif elite:
+            # 有精英但未达上限，只渲染精英，不补齐
+            chosen_list = list(elite)
+            selection_mode = "elite_only"
         else:
-            # 候选不足 count 张，用该日剩余的高分照片补齐
-            chosen_list = list(candidates)
-            for extra in arr:
-                if extra in chosen_list:
-                    continue
-                chosen_list.append(extra)
-                if len(chosen_list) >= count:
-                    break
+            # 无精英，从 Top-(count*2) 的池中随机抽取（保底多样性）
+            pool_size = min(len(candidates), max(count * 2, count + 3))
+            pool = candidates[:pool_size]
+            if len(pool) >= count:
+                chosen_list = random.sample(pool, count)
+            else:
+                chosen_list = list(pool)
+                # 候选不足 count 张，按 final_score 从当日剩余照片补齐
+                chosen_set = {id(p) for p in chosen_list}
+                for extra in sorted(arr, key=lambda x: compute_final_score(x), reverse=True):
+                    if id(extra) in chosen_set:
+                        continue
+                    chosen_list.append(extra)
+                    chosen_set.add(id(extra))
+                    if len(chosen_list) >= count:
+                        break
+            selection_mode = "topn_pool_random"
 
         info = {
             "target_md": target_md,
             "used_md": md,
             "day_offset": -offset,
             "candidate_count": len(candidates),
+            "elite_count": len(elite),
             "total_count_md": len(arr),
             "threshold": MEMORY_THRESHOLD,
+            "high_score_threshold": HIGH_SCORE_THRESHOLD,
+            "selection_mode": selection_mode,
             "fallback_global_max": False,
         }
         return chosen_list, info
 
-    # 兜底：全局回忆度最高的若干张
-    sorted_all = sorted(items, key=lambda x: x.get("memory", -1.0), reverse=True)
+    # 兜底：全局 final_score 最高的若干张
+    for p in items:
+        if "_final_score" not in p:
+            p["_final_score"] = compute_final_score(p)
+    sorted_all = sorted(items, key=lambda x: x["_final_score"], reverse=True)
     chosen_list = sorted_all[:count]
     info = {
         "target_md": target_md,
@@ -419,9 +580,52 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     draw = ImageDraw.Draw(canvas)
 
     # ---------- 加载原图并按 EXIF 方向纠正 ----------
-    img_path = Path(item["path"])
+    raw_path = str(item["path"])
+    img_path = Path(raw_path)
+
+    # 跨平台路径映射支持 (Windows -> Linux 迁移自动修复)
     if not img_path.exists():
-        raise RuntimeError(f"图片不存在: {img_path}")
+        path_map = getattr(cfg, "PATH_MAP", {})
+        for old_prefix, new_prefix in path_map.items():
+            if raw_path.startswith(old_prefix):
+                test_path = Path(raw_path.replace(old_prefix, new_prefix).replace("\\", "/"))
+                if test_path.exists():
+                    img_path = test_path
+                    break
+
+    # 自动推断相对路径兜底 (通过提取 IMAGE_DIR 共同目录名称作后缀重连)
+    if not img_path.exists() and hasattr(cfg, "IMAGE_DIR"):
+        base_name = Path(cfg.IMAGE_DIR).name
+        norm_raw = raw_path.replace("\\", "/")
+        pattern = f"/{base_name}/"
+        if pattern in norm_raw:
+            suffix = norm_raw.split(pattern, 1)[1]
+            guessed_path = Path(cfg.IMAGE_DIR) / ".." / base_name / suffix
+            guessed_path = guessed_path.resolve()
+            if guessed_path.exists():
+                img_path = guessed_path
+
+    if not img_path.exists():
+        # 添加详细的 Debug 日志帮助排查
+        debug_msg = f"图片不存在: {raw_path}\n"
+        debug_msg += f"[DEBUG] 你的 cfg.IMAGE_DIR 是: {getattr(cfg, 'IMAGE_DIR', '未定义')}\n"
+        if hasattr(cfg, 'IMAGE_DIR'):
+            base_name = Path(cfg.IMAGE_DIR).name
+            norm_raw = raw_path.replace("\\", "/")
+            pattern = f"/{base_name}/"
+            debug_msg += f"[DEBUG] base_name={base_name}, 正在尝试寻找匹配格式: {pattern}\n"
+            if pattern in norm_raw:
+                suffix = norm_raw.split(pattern, 1)[1]
+                guessed_path = Path(cfg.IMAGE_DIR) / ".." / base_name / suffix
+                guessed_path_abs = guessed_path.resolve()
+                debug_msg += f"[DEBUG] 分割后半部 suffix: {suffix}\n"
+                debug_msg += f"[DEBUG] 尝试拼凑绝对路径: {guessed_path_abs}\n"
+                debug_msg += f"[DEBUG] 该拼凑的路径存在吗？{guessed_path_abs.exists()}\n"
+            else:
+                debug_msg += f"[DEBUG] {pattern} 不存在于 {norm_raw} 中。推断失效。\n"
+        
+        debug_msg += f"[DEBUG] 或者，你可以尝试在树莓派的 config.py 里加上 PATH_MAP = {{r'\\\\10.168.1.111\\Photos': '你实际的Linux目录'}}\n"
+        raise RuntimeError(debug_msg)
     img = Image.open(img_path)
     img = ImageOps.exif_transpose(img).convert("RGB")
 
@@ -626,6 +830,8 @@ def main():
     print("[INFO] 候选数(>阈值):", info["candidate_count"])
     print("[INFO] 当日总数:", info["total_count_md"])
     print("[INFO] 使用兜底全局最大:", info["fallback_global_max"])
+    print("[INFO] 选片模式:", info.get("selection_mode", "N/A"))
+    print("[INFO] 精英候选数(>=高分阈值):", info.get("elite_count", "N/A"))
 
     if not photos:
         raise SystemExit("选片结果为空。")
@@ -637,6 +843,14 @@ def main():
         print(f"[INFO] 第 {idx} 张选中照片:", chosen["path"])
         print("[INFO] 拍摄日期:", chosen["date"])
         print("[INFO] 回忆度:", chosen["memory"])
+        # 加权得分调试输出
+        _fs = chosen.get("_final_score") or compute_final_score(chosen)
+        _pw = compute_path_weight(chosen["path"])
+        _cw = compute_category_weight(chosen.get("type_raw", ""))
+        _rw = compute_recency_penalty(chosen.get("used_at"))
+        print(f"[SELECT] final={_fs:.2f} | path_w={_pw:.2f} cat_w={_cw:.2f} recency_w={_rw:.2f}"
+              f" | mem={chosen['memory']:.1f} beauty={chosen.get('beauty', 'N/A')}"
+              f" | type={chosen.get('type_raw', '')}")
         # 额外调试信息：城市 / 经纬度 / 文案
         print("[DEBUG] 城市:", chosen.get("city", ""))
         print("[DEBUG] 经纬度:", chosen.get("lat"), chosen.get("lon"))
@@ -665,6 +879,9 @@ def main():
         array_name = f"daily_bin_{idx}"
         write_h_array(bin_path, h_path, array_name=array_name)
         print(f"[OK] 已生成头文件数组: {h_path}")
+
+        # 记录展示历史（防重复展示）
+        mark_photo_used(chosen["path"])
 
     # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
     first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
