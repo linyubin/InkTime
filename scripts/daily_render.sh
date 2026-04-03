@@ -13,12 +13,13 @@ set -euo pipefail
 # =========================================================
 
 # ── 配置 ──────────────────────────────────────────────
-# 修改为你在 NAS 上的实际项目目录
-PROJECT_DIR="/path/to/inktime"
+# 优先使用环境变量以便适应 Docker 容器，若未提供则使用默认路径
+PROJECT_DIR="${PROJECT_DIR:-/path/to/inktime}"
 
 VENV_DIR="${PROJECT_DIR}/venv"
-PYTHON_BIN="${VENV_DIR}/bin/python"
-LOG_DIR="${PROJECT_DIR}/logs"
+# 如果设置了专属 PYTHON_BIN（例如 docker 镜像全局环境），优先使用
+PYTHON_BIN="${PYTHON_BIN:-${VENV_DIR}/bin/python}"
+LOG_DIR="${LOG_DIR:-${PROJECT_DIR}/logs}"
 LOCK_DIR="${PROJECT_DIR}/tmp/inktime_render.lockdir"
 
 # BLE 推送超时（秒）：扫描最多10s + 传输最多约120s，留余量共3分钟
@@ -40,9 +41,9 @@ cleanup() { rmdir "${LOCK_DIR}" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 # ── 环境检查 ─────────────────────────────────────────
-if [[ ! -x "${PYTHON_BIN}" ]]; then
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
     log "ERROR: 未找到 Python：${PYTHON_BIN}"
-    log "       请先创建虚拟环境：python3 -m venv venv && venv/bin/pip install -r requirements.txt"
+    log "       若是本地物理机运行，请先创建虚拟环境：python3 -m venv venv && venv/bin/pip install -r requirements.txt"
     exit 1
 fi
 

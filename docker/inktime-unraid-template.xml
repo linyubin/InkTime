@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>InkTime</Name>
+  <Repository>inktime:latest</Repository>
+  <Registry></Registry>
+  <Network>host</Network>
+  <MyIP></MyIP>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support></Support>
+  <Project></Project>
+  <Overview>InkTime: 这个容器囊括了完整的服务器、照片分析和蓝牙推送能力。每日通过 Cron 自动运算你当天的精彩回忆黑白影像并通过蓝牙更新至 ESP32。</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8766]</WebUI>
+  <TemplateURL></TemplateURL>
+  <Icon>https://raw.githubusercontent.com/docker-library/docs/master/python/logo.png</Icon>
+  <ExtraParams>--device /dev/tty:-v /var/run/dbus:/var/run/dbus</ExtraParams>
+  <PostArgs></PostArgs>
+  <CPUset></CPUset>
+  <DateInstalled></DateInstalled>
+  <DonateText></DonateText>
+  <DonateLink></DonateLink>
+  <Requires></Requires>
+  <Config Name="Appdata Config" Target="/config" Default="/mnt/user/appdata/inktime" Mode="rw" Description="存放配置文件(config.py)与sqlite数据和输出结果(db, bin)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/inktime</Config>
+  <Config Name="Photos Directory" Target="/photos" Default="/mnt/user/Photos" Mode="ro" Description="被监控的照片库原始所在路径，必须只能挂只读。在实际配置config.py时，IMAGE_DIR应该填 /photos" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Photos</Config>
+  <Config Name="Cron Schedule" Target="CRON_SCHEDULE" Default="30 7 * * *" Mode="" Description="定时生成照片并使用蓝牙推送的触发时间，格式为标准 crontab" Type="Variable" Display="always" Required="false" Mask="false">30 7 * * *</Config>
+  <Config Name="WebUI DBUS Access" Target="/var/run/dbus" Default="/var/run/dbus" Mode="rw" Description="将宿主机底层 DBUS 穿透，使 bleak 可以操纵蓝牙硬件。若出现问题可尝试开启 Privileged。" Type="Path" Display="advanced-hide" Required="false" Mask="false">/var/run/dbus</Config>
+</Container>

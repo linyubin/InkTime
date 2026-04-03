@@ -47,6 +47,7 @@ DAILY_PHOTO_QUANTITY = int(getattr(cfg, "DAILY_PHOTO_QUANTITY", 5) or 5)
 # 加权选片配置（均设默认值以向后兼容）
 PATH_WEIGHTS         = getattr(cfg, "PATH_WEIGHTS",         {})
 CATEGORY_WEIGHTS     = getattr(cfg, "CATEGORY_WEIGHTS",     {})
+PORTRAIT_BOOST       = getattr(cfg, "PORTRAIT_BOOST",       {})
 SCORE_MEMORY_WEIGHT  = float(getattr(cfg, "SCORE_MEMORY_WEIGHT",  0.7))
 HIGH_SCORE_THRESHOLD = float(getattr(cfg, "HIGH_SCORE_THRESHOLD", 87.0))
 RESHOW_AFTER_DAYS    = int(getattr(cfg, "RESHOW_AFTER_DAYS",   180))
@@ -58,7 +59,7 @@ CANVAS_WIDTH = 480
 CANVAS_HEIGHT = 800
 
 # 底部文字区域高度
-TEXT_AREA_HEIGHT = 100
+TEXT_AREA_HEIGHT = 150
 
 
 # ========== DB 与 EXIF 处理 ==========
@@ -183,15 +184,29 @@ def compute_path_weight(path: str) -> float:
     在 PATH_WEIGHTS 中查找最长匹配前缀，返回对应权重（默认 1.0）。
     同时尝试原始 DB 路径（Windows 格式）和 PATH_MAP 规范化后路径（Linux 格式），
     取最长匹配的权重——支持用户用任意格式配置 key。
+
+    相对路径支持：只有 \\\\ 开头的 UNC 网络路径视为绝对路径，其余 key
+    （包括 Unix 风格的 /subpath/... 写法）均视为相对 IMAGE_DIR 的子路径，
+    会自动拼上 IMAGE_DIR 并统一斜杠后参与匹配。例如：
+        PATH_WEIGHTS = {"/Timeline/Timeline@布丁": 1.3}
+    在 Windows 上等价于 IMAGE_DIR + "\\Timeline\\Timeline@布丁"，
+    在树莓派上经 PATH_MAP 规范化后同样可以命中。
     """
     if not PATH_WEIGHTS:
         return 1.0
     normalized = normalize_path(path)
+    image_dir = str(getattr(cfg, "IMAGE_DIR", "")).rstrip("\\/")
     best_weight, best_len = 1.0, -1
     for prefix, weight in PATH_WEIGHTS.items():
-        norm_prefix = normalize_path(str(prefix))
+        prefix_str = str(prefix)
+        # 只有 \\\\ 开头的 UNC 路径视为绝对路径，其余均视为相对 IMAGE_DIR
+        if image_dir and not prefix_str.startswith("\\\\"):
+            # 统一斜杠风格，与 image_dir（通常为 Windows UNC）对齐
+            rel = prefix_str.lstrip("\\/").replace("/", "\\")
+            prefix_str = image_dir + "\\" + rel
+        norm_prefix = normalize_path(prefix_str)
         for p in (path, normalized):
-            for pfx in (str(prefix), norm_prefix):
+            for pfx in (prefix_str, norm_prefix):
                 if p.startswith(pfx) and len(pfx) > best_len:
                     best_len, best_weight = len(pfx), float(weight)
     return best_weight
@@ -212,6 +227,39 @@ def compute_category_weight(type_raw: str) -> float:
         return sum(weights) / len(weights)
     except Exception:
         return 1.0
+
+
+def compute_portrait_boost(type_raw: str) -> float:
+    """
+    从 PORTRAIT_BOOST 中查找照片分类的最大加成系数（取最大值策略）。
+    多分类命中时取最大值，避免多标签稀释加成；无命中则返回 1.0。
+    """
+    if not type_raw or not PORTRAIT_BOOST:
+        return 1.0
+    try:
+        cats = json.loads(type_raw)
+        if not isinstance(cats, list) or not cats:
+            return 1.0
+        return max((PORTRAIT_BOOST.get(c, 1.0) for c in cats), default=1.0)
+    except Exception:
+        return 1.0
+
+
+def apply_portrait_rerank(photos: list) -> list:
+    """
+    对已选定的照片列表按肖像加成进行二次重排序。
+    _display_score = _final_score × portrait_boost
+    不修改 _final_score（保持选片逻辑独立），仅影响最终展示顺序。
+    """
+    if not PORTRAIT_BOOST:
+        return photos
+    for p in photos:
+        fs = p.get("_final_score") or compute_final_score(p)
+        pb = compute_portrait_boost(p.get("type_raw", ""))
+        p["_display_score"] = fs * pb
+        p["_portrait_boost"] = pb
+    photos.sort(key=lambda x: x["_display_score"], reverse=True)
+    return photos
 
 
 def compute_recency_penalty(used_at) -> float:
@@ -823,6 +871,7 @@ def main():
         raise SystemExit("没有可用照片（exif_json 为空或解析失败）。")
 
     photos, info = choose_photos_for_today(items, TODAY, count=DAILY_PHOTO_QUANTITY)
+    photos = apply_portrait_rerank(photos)
 
     print("[INFO] 目标月日:", info["target_md"])
     print("[INFO] 实际使用月日:", info["used_md"])
@@ -848,7 +897,10 @@ def main():
         _pw = compute_path_weight(chosen["path"])
         _cw = compute_category_weight(chosen.get("type_raw", ""))
         _rw = compute_recency_penalty(chosen.get("used_at"))
-        print(f"[SELECT] final={_fs:.2f} | path_w={_pw:.2f} cat_w={_cw:.2f} recency_w={_rw:.2f}"
+        _pb = chosen.get("_portrait_boost") or compute_portrait_boost(chosen.get("type_raw", ""))
+        _ds = chosen.get("_display_score") or _fs * _pb
+        print(f"[SELECT] final={_fs:.2f} | portrait_boost={_pb:.2f} | display={_ds:.2f}"
+              f" | path_w={_pw:.2f} cat_w={_cw:.2f} recency_w={_rw:.2f}"
               f" | mem={chosen['memory']:.1f} beauty={chosen.get('beauty', 'N/A')}"
               f" | type={chosen.get('type_raw', '')}")
         # 额外调试信息：城市 / 经纬度 / 文案
