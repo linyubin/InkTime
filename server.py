@@ -2088,6 +2088,17 @@ def esp_photo(key: str, idx: int):
         abort(404)
     if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
         abort(404)
+    
+    # 被实际拉取/推送时，标记为已展示
+    path_txt = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
+    if path_txt.exists():
+        try:
+            target_path = path_txt.read_text(encoding="utf-8").strip()
+            if target_path:
+                rdp.mark_photo_used(target_path)
+        except Exception as e:
+            print(f"Failed to mark photo used: {e}")
+
     p = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
     return _send_static_file(p)
 
@@ -2096,6 +2107,17 @@ def esp_photo(key: str, idx: int):
 def esp_latest(key: str):
     if key != DOWNLOAD_KEY:
         abort(404)
+    
+    # 被实际拉取/推送时，标记为已展示
+    path_txt = BIN_OUTPUT_DIR / "latest.path.txt"
+    if path_txt.exists():
+        try:
+            target_path = path_txt.read_text(encoding="utf-8").strip()
+            if target_path:
+                rdp.mark_photo_used(target_path)
+        except Exception as e:
+            print(f"Failed to mark photo used: {e}")
+
     p = BIN_OUTPUT_DIR / "latest.bin"
     return _send_static_file(p)
 

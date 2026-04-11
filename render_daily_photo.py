@@ -703,7 +703,7 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     # ---------- 底部文字区域 ----------
     padding_x = 24
-    text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 10
+    text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 15
     text_width = CANVAS_WIDTH - 2 * padding_x
 
     def _get_font(path: str, size: int):
@@ -932,16 +932,20 @@ def main():
         write_h_array(bin_path, h_path, array_name=array_name)
         print(f"[OK] 已生成头文件数组: {h_path}")
 
-        # 记录展示历史（防重复展示）
-        mark_photo_used(chosen["path"])
+        # 记录展示历史改为由推送展示端执行，此处仅保存此图片的路径
+        path_file = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
+        with open(path_file, "w", encoding="utf-8") as f:
+            f.write(chosen["path"])
 
     # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
     first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
     first_h = BIN_OUTPUT_DIR / "photo_0.h"
     first_preview = BIN_OUTPUT_DIR / "preview_0.png"
+    first_path = BIN_OUTPUT_DIR / "photo_0.path.txt"
     latest_bin = BIN_OUTPUT_DIR / "latest.bin"
     latest_h = BIN_OUTPUT_DIR / "latest.h"
     latest_preview = BIN_OUTPUT_DIR / "preview.png"
+    latest_path = BIN_OUTPUT_DIR / "latest.path.txt"
 
     if first_bin.exists():
         shutil.copyfile(first_bin, latest_bin)
@@ -952,6 +956,8 @@ def main():
     if first_preview.exists():
         shutil.copyfile(first_preview, latest_preview)
         print(f"[OK] 已更新 preview.png -> {first_preview.name}")
+    if first_path.exists():
+        shutil.copyfile(first_path, latest_path)
 
 
 if __name__ == "__main__":

@@ -254,6 +254,17 @@ async def main(photo_idx: int, device_mac: str) -> None:
     # 4. 推送
     await push_image(mac, packed)
 
+    # 5. 标记为已展示（防重复）
+    path_file = BIN_OUTPUT_DIR / f"photo_{photo_idx}.path.txt"
+    if path_file.exists():
+        try:
+            target_path = path_file.read_text(encoding="utf-8").strip()
+            if target_path:
+                import render_daily_photo as rdp
+                rdp.mark_photo_used(target_path)
+        except Exception as e:
+            log.warning(f"无法标记照片已展示: {e}")
+
 
 def cli() -> None:
     parser = argparse.ArgumentParser(
