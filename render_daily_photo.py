@@ -59,7 +59,7 @@ CANVAS_WIDTH = 480
 CANVAS_HEIGHT = 800
 
 # 底部文字区域高度
-TEXT_AREA_HEIGHT = 150
+TEXT_AREA_HEIGHT = 125
 
 
 # ========== DB 与 EXIF 处理 ==========
@@ -205,8 +205,8 @@ def compute_path_weight(path: str) -> float:
             rel = prefix_str.lstrip("\\/").replace("/", "\\")
             prefix_str = image_dir + "\\" + rel
         norm_prefix = normalize_path(prefix_str)
-        for p in (path, normalized):
-            for pfx in (prefix_str, norm_prefix):
+        for p in (path.replace("\\", "/"), normalized.replace("\\", "/")):
+            for pfx in (prefix_str.replace("\\", "/"), norm_prefix.replace("\\", "/")):
                 if p.startswith(pfx) and len(pfx) > best_len:
                     best_len, best_weight = len(pfx), float(weight)
     return best_weight
