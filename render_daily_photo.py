@@ -59,7 +59,7 @@ CANVAS_WIDTH = 480
 CANVAS_HEIGHT = 800
 
 # 底部文字区域高度
-TEXT_AREA_HEIGHT = 125
+TEXT_AREA_HEIGHT = 120
 
 
 # ========== DB 与 EXIF 处理 ==========
