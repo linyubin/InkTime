@@ -561,26 +561,36 @@ def wrap_text_chinese(draw: ImageDraw.ImageDraw,
                       max_width: int,
                       max_lines: int) -> List[str]:
     """
-    简单中文按字符宽度折行。
+    简单中文按字符宽度折行。支持处理自带换行符的文本。
     """
     if not text:
         return []
     lines: List[str] = []
-    line = ""
-    for ch in text:
-        test = line + ch
-        w = draw.textlength(test, font=font)
-        if w <= max_width:
-            line = test
-        else:
-            if line:
-                lines.append(line)
-            line = ch
-            if len(lines) >= max_lines:
-                break
-    if line and len(lines) < max_lines:
-        lines.append(line)
+    
+    # 先按自带的换行符分割段落
+    for paragraph in text.replace("\r\n", "\n").split("\n"):
+        if len(lines) >= max_lines:
+            break
+            
+        if not paragraph:
+            continue
+            
+        line = ""
+        for ch in paragraph:
+            test = line + ch
+            w = draw.textlength(test, font=font)
+            if w <= max_width:
+                line = test
+            else:
+                if line:
+                    lines.append(line)
+                line = ch
+                if len(lines) >= max_lines:
+                    break
+        if line and len(lines) < max_lines:
+            lines.append(line)
     return lines
+
 
 
 def format_date_display(date_str: str) -> str:
