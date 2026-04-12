@@ -195,6 +195,7 @@ async def push_image(device_addr: str, packed: bytes) -> None:
         # 每隔 3 包等待一次 ACK（模拟 main.js interleavedCount=3 逻辑，
         # 避免连续无 ACK 写入导致固件缓冲区溢出）
         ACK_INTERVAL = 3
+        last_printed_pct = -1
 
         while sent < total:
             chunk   = packed[sent: sent + CHUNK_SIZE]
@@ -209,7 +210,10 @@ async def push_image(device_addr: str, packed: bytes) -> None:
             sent    += len(chunk)
             chunk_n += 1
             pct      = int(sent / total * 100)
-            print(f"\r  [传输] {pct:3d}% ({sent:>6}/{total} 字节)", end="", flush=True)
+            
+            if pct // 20 > last_printed_pct // 20 or is_last:
+                print(f"\r  [传输] {pct:3d}% ({sent:>6}/{total} 字节)", end="", flush=True)
+                last_printed_pct = pct
 
         print()  # 换行
 
