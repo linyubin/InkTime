@@ -129,7 +129,8 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                exif_city,
                beauty_score,
                type,
-               used_at
+               used_at,
+               subjects_json
         FROM photo_scores
         WHERE exif_json IS NOT NULL
         """
@@ -137,7 +138,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     conn.close()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at in rows:
+    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json in rows:
         date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
@@ -163,6 +164,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "beauty":   float(beauty_score) if beauty_score is not None else None,
             "type_raw": type_str or "",
             "used_at":  used_at or None,
+            "subjects_json": subjects_json or "",
         }
         items.append(item)
 
@@ -628,6 +630,50 @@ def format_location(lat, lon, city: str) -> str:
         return ""
 
 
+def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: int, subjects_json: str) -> tuple[int, int]:
+    default_left = max(0, (draw_w - img_area_w) // 2)
+    default_top  = max(0, (draw_h - img_area_h) // 2)
+
+    if not subjects_json:
+        return default_left, default_top
+
+    try:
+        import json
+        subjects = json.loads(subjects_json)
+        if not subjects:
+            return default_left, default_top
+            
+        weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
+        
+        best_subject = None
+        best_score = -1
+        for s in subjects:
+            score = s["conf"] * weights_map.get(s["label"], 1.0)
+            if score > best_score:
+                best_score = score
+                best_subject = s
+                
+        if not best_subject:
+            return default_left, default_top
+
+        cx_rel, cy_rel, _, _ = best_subject["bbox"]
+        cx_pixel = cx_rel * draw_w
+        cy_pixel = cy_rel * draw_h
+        
+        target_rel_x = max(0.382, min(0.618, cx_rel))
+        target_rel_y = max(0.382, min(0.618, cy_rel))
+        
+        left = int(cx_pixel - target_rel_x * img_area_w)
+        top = int(cy_pixel - target_rel_y * img_area_h)
+        
+        left = max(0, min(left, draw_w - img_area_w))
+        top = max(0, min(top, draw_h - img_area_h))
+        
+        return left, top
+    except Exception as e:
+        print(f"[WARN] compute_crop_window error: {e}")
+        return default_left, default_top
+
 def render_image(item: Dict[str, Any]) -> Image.Image:
     """
     根据选中的 item 渲染一张 480x800 的 RGB 图像（竖屏）：
@@ -702,8 +748,7 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
 
-    left = max(0, (draw_w - img_area_w) // 2)
-    top = max(0, (draw_h - img_area_h) // 2)
+    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, item.get("subjects_json", ""))
     right = left + img_area_w
     bottom = top + img_area_h
     img_cropped = img_resized.crop((left, top, right, bottom))
