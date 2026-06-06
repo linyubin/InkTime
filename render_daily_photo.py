@@ -802,7 +802,7 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     # ---------- 照片区域 ----------
     img_area_w = CANVAS_WIDTH
-    img_area_h = CANVAS_HEIGHT - TEXT_AREA_HEIGHT  # 底部留给文字
+    img_area_h = CANVAS_HEIGHT  # 取消专属文字留白，让照片和背景彻底铺满全屏
 
     # “铺满裁剪”：缩放到至少覆盖区域，再从中间裁一块
     ratio_w = img_area_w / img_w
@@ -932,12 +932,17 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     side_text = item.get("side") or ""
 
+    # 采用白字黑边的“描边”方式，保证在任何复杂的原图背景下都有极高的反差和可读性
+    text_fill = (255, 255, 255)
+    text_stroke = (0, 0, 0)
+    stroke_w = 2
+
     # 文案：最多两行，从 text_area_top 开始
     y = text_area_top
     if side_text:
         lines = wrap_text_chinese(draw, side_text, font_big, text_width, max_lines=2)
         for line in lines:
-            draw.text((padding_x, y), line, font=font_big, fill=(0, 0, 0))
+            draw.text((padding_x, y), line, font=font_big, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
             y += 24  # 行高略大于字号
 
     # 日期 + 地点：固定在底部区域内的第二行
@@ -945,13 +950,13 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     loc_display = format_location(item.get("lat"), item.get("lon"), item.get("city") or "")
 
     second_line_y = text_area_top + 54
-    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=(0, 0, 0))
+    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
 
     loc_w = draw.textlength(loc_display, font=font_small)
     loc_x = padding_x + text_width - loc_w
     if loc_x < padding_x:
         loc_x = padding_x
-    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=(0, 0, 0))
+    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
 
     return canvas
 
