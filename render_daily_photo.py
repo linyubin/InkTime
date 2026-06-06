@@ -909,11 +909,11 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 15
     text_width = CANVAS_WIDTH - 2 * padding_x
 
-    # 1. 定义毛玻璃区域的坐标
-    box_x0 = 12
-    box_y0 = text_area_top - 10
-    box_x1 = CANVAS_WIDTH - 12
-    box_y1 = CANVAS_HEIGHT - 12
+    # 1. 定义毛玻璃区域的坐标 (缩小边缘距离，让圆角矩形更大)
+    box_x0 = 6
+    box_y0 = text_area_top - 5
+    box_x1 = CANVAS_WIDTH - 6
+    box_y1 = CANVAS_HEIGHT - 6
     box_w = box_x1 - box_x0
     box_h = box_y1 - box_y0
 
@@ -922,8 +922,8 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     bg_crop = canvas.crop((box_x0, box_y0, box_x1, box_y1))
     bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=15))
 
-    # 3. 创建半透明白色覆盖层 (比如透明度为 180)
-    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 180))
+    # 3. 创建半透明白色覆盖层 (增加透明度，140/255)
+    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 140))
     glass_bg = Image.alpha_composite(bg_crop_blurred.convert("RGBA"), overlay)
 
     # 4. 创建圆角遮罩
@@ -957,15 +957,17 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     side_text = item.get("side") or ""
 
-    # 因为有了半透明纯白背景，文字可以直接使用纯黑色，显得干净现代
+    # 因为有了半透明背景，文字可以使用纯黑色。
+    # 为了实现“加粗(bold)”效果，我们使用与填充色相同的描边 (stroke_width=1)
     text_fill = (0, 0, 0)
+    stroke_w = 1
 
     # 文案：最多两行，从 text_area_top 开始
     y = text_area_top
     if side_text:
         lines = wrap_text_chinese(draw, side_text, font_big, text_width, max_lines=2)
         for line in lines:
-            draw.text((padding_x, y), line, font=font_big, fill=text_fill)
+            draw.text((padding_x, y), line, font=font_big, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
             y += 24  # 行高略大于字号
 
     # 日期 + 地点：固定在底部区域内的第二行
@@ -973,13 +975,13 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     loc_display = format_location(item.get("lat"), item.get("lon"), item.get("city") or "")
 
     second_line_y = text_area_top + 54
-    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill)
+    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
 
     loc_w = draw.textlength(loc_display, font=font_small)
     loc_x = padding_x + text_width - loc_w
     if loc_x < padding_x:
         loc_x = padding_x
-    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill)
+    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
 
     return canvas
 
