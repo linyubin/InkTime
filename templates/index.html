@@ -73,8 +73,9 @@
         .select2-container--default .select2-selection--single .select2-selection__arrow { height: 26px !important; }
         
         /* Preview styles */
-        #preview-img-container { width: 100%; height: 40vh; background: #000; display: flex; align-items: center; justify-content: center; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-c); }
-        #preview-img-container img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        #preview-img-container { width: 100%; height: 40vh; background: #000; display: flex; align-items: center; justify-content: center; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-c); overflow: hidden; }
+        .bbox-overlay { position: absolute; border: 2px solid #ef4444; box-sizing: border-box; pointer-events: none; z-index: 10; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+        .bbox-label { position: absolute; top: -18px; left: -2px; background: #ef4444; color: white; font-size: 10px; padding: 1px 4px; border-radius: 3px 3px 0 0; white-space: nowrap; font-weight: bold; }
         #preview-meta { font-size: 13px; line-height: 1.6; }
         #preview-meta h3 { margin-top: 0; color: #fff; border-bottom: 1px solid var(--border-c); padding-bottom: 8px; }
         .meta-group { margin-bottom: 12px; }
@@ -366,14 +367,58 @@
                 $(this).siblings().css('background-color', 'transparent');
                 $(this).css('background-color', 'rgba(59, 130, 246, 0.2)');
                 
+                // Parse subjects for bbox
+                let subjects = [];
+                try { subjects = JSON.parse(rowData.subjects_json || "[]"); } catch(e) {}
+
                 // 显示图片
                 let imgSrc = rowData.image_url || "";
                 if (imgSrc) {
                     $('#preview-img-container').html(
-                        `<img src="${imgSrc}" style="opacity: 0; transition: opacity 0.3s"
-                            onload="this.style.opacity=1"
-                            onerror="$(this).replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">`
+                        `<div id="img-wrapper" style="position: relative; width: 100%; height: 100%;">
+                            <img id="preview-img" src="${imgSrc}" style="width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity 0.3s"
+                                onerror="$(this).parent().replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">
+                            <div id="bbox-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></div>
+                        </div>`
                     );
+                    
+                    $('#preview-img').on('load', function() {
+                        this.style.opacity = 1;
+                        let img = this;
+                        let nw = img.naturalWidth;
+                        let nh = img.naturalHeight;
+                        if (!nw || !nh) return;
+                        
+                        let cw = img.clientWidth;
+                        let ch = img.clientHeight;
+                        
+                        let scale = Math.min(cw / nw, ch / nh);
+                        let renderW = nw * scale;
+                        let renderH = nh * scale;
+                        
+                        let offsetX = (cw - renderW) / 2;
+                        let offsetY = (ch - renderH) / 2;
+                        
+                        let bboxesHtml = "";
+                        subjects.forEach((sub, i) => {
+                            if(sub.bbox && sub.bbox.length === 4) {
+                                let cx = sub.bbox[0];
+                                let cy = sub.bbox[1];
+                                let w = sub.bbox[2];
+                                let h = sub.bbox[3];
+                                
+                                let boxLeft = offsetX + (cx - w/2) * renderW;
+                                let boxTop = offsetY + (cy - h/2) * renderH;
+                                let boxW = w * renderW;
+                                let boxH = h * renderH;
+                                
+                                bboxesHtml += `<div class="bbox-overlay" style="left: ${boxLeft}px; top: ${boxTop}px; width: ${boxW}px; height: ${boxH}px;">
+                                    <span class="bbox-label">${sub.label} ${(sub.conf*100).toFixed(0)}%</span>
+                                </div>`;
+                            }
+                        });
+                        $('#bbox-container').html(bboxesHtml);
+                    });
                 } else {
                     $('#preview-img-container').html('<span class="empty-state">⚠️ 无可用图片路径</span>');
                 }
@@ -385,10 +430,16 @@
                 let reasonText = (rowData.reason || '').replace(/\\n/g, '<br>');
                 let sideText = (rowData.side_caption || '').replace(/\\n/g, '<br>');
                 let captionText = (rowData.caption || '').replace(/\\n/g, '<br>');
+                
+                let subjectsText = subjects.length > 0 
+                    ? subjects.map(s => `${s.label} (${(s.conf*100).toFixed(1)}%)`).join(', ') 
+                    : '未检测到主体或未分析';
+
                 let metaHtml = `
                     <h3>${rowData.city || '未知地点'} - ${rowData.date || '未知日期'}</h3>
                     <div class="meta-group"><div class="meta-label">原始路径</div><div class="meta-value" style="font-family: monospace; font-size:11px; word-break:break-all;">${rowData.path}</div></div>
                     <div class="meta-group"><div class="meta-label">画面描述 (Caption)</div><div class="meta-value" style="font-size:12px; color:#e2e8f0; margin-bottom: 8px;">${captionText || '无可见描述'}</div></div>
+                    <div class="meta-group"><div class="meta-label">智能识别主体 (YOLO)</div><div class="meta-value" style="font-size:12px; color:#fca5a5; margin-bottom: 8px;">${subjectsText}</div></div>
                     <div class="meta-group"><div class="meta-label">AI 长文旁白记录</div><div class="meta-value" style="font-style: italic; color:#bae6fd; margin-bottom: 8px; font-size: 13px;">${sideText || '暂无，需生成'}</div></div>
                     <div class="meta-group"><div class="meta-label">判定原因与得分</div><div class="meta-value" style="margin-bottom:6px;">回忆度 <strong>${rowData.memory >= 0 ? rowData.memory : '-'}</strong> | 美观度 <strong>${rowData.beauty >= 0 ? rowData.beauty : '-'}</strong></div><div class="meta-value" style="font-size:12px; border-left: 2px solid var(--accent); padding-left: 8px; margin-bottom: 8px;">${reasonText || '-'}</div></div>
                     <div class="meta-group">

@@ -33,3 +33,4 @@ logs/
 # Others
 test/
 old/
+*.pt

@@ -247,6 +247,7 @@ def api_photos():
             side_caption,
             used_at,
             exif_json,
+            subjects_json,
             COALESCE(
                 CASE
                     WHEN json_extract(exif_json, '$.datetime') IS NOT NULL
@@ -349,7 +350,7 @@ def api_photos():
 
     data = []
     for r in rows:
-        path, caption, p_type, memory_score, beauty_score, city, reason, side_caption, used_at, exif_json, date_str = r
+        path, caption, p_type, memory_score, beauty_score, city, reason, side_caption, used_at, exif_json, subjects_json, date_str = r
 
         # 路径日期兜底：如果 SQL 层没提取到，再用正则
         if not date_str:
@@ -367,7 +368,8 @@ def api_photos():
             "reason": reason or "",
             "side_caption": side_caption or "",
             "used": "已上屏" if used_at else "未上屏",
-            "exif_json": exif_json or "{}"
+            "exif_json": exif_json or "{}",
+            "subjects_json": subjects_json or "[]"
         })
 
     return jsonify({
