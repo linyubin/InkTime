@@ -910,10 +910,10 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     text_width = CANVAS_WIDTH - 2 * padding_x
 
     # 1. 定义毛玻璃区域的坐标 (缩小边缘距离，让圆角矩形更大)
-    box_x0 = 6
-    box_y0 = text_area_top - 5
-    box_x1 = CANVAS_WIDTH - 6
-    box_y1 = CANVAS_HEIGHT - 6
+    box_x0 = 10
+    box_y0 = text_area_top - 10
+    box_x1 = CANVAS_WIDTH - 10
+    box_y1 = CANVAS_HEIGHT - 10
     box_w = box_x1 - box_x0
     box_h = box_y1 - box_y0
 
@@ -923,7 +923,7 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=15))
 
     # 3. 创建半透明白色覆盖层 (增加透明度，140/255)
-    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 140))
+    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 110))
     glass_bg = Image.alpha_composite(bg_crop_blurred.convert("RGBA"), overlay)
 
     # 4. 创建圆角遮罩
@@ -960,7 +960,7 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     # 因为有了半透明背景，文字可以使用纯黑色。
     # 为了实现“加粗(bold)”效果，我们使用与填充色相同的描边 (stroke_width=1)
     text_fill = (0, 0, 0)
-    stroke_w = 1
+    stroke_w = 0.3
 
     # 文案：最多两行，从 text_area_top 开始
     y = text_area_top
