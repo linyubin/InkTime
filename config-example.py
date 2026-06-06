@@ -96,4 +96,24 @@ EPD_BLE_CHUNK_SIZE = 238
 # 跨平台路径映射（如在 Windows 上生成数据库后拷贝到 Linux/树莓派运行，在此配置可将 Windows 路径前缀瞬间映射到 Linux 路径）
 # 例: {"\\\\10.168.1.111\\Photos": "/home/pi/Photos"} 
 PATH_MAP = {}
+
+# 墨水屏图像旋转方向
+# 硬件原生为横屏 (800×480)，竖屏放置时需要旋转图像数据。
+# 可选值：
+#   "CW90"   - 顺时针旋转 90°（屏幕逆时针 90° 竖放时使用）
+#   "CCW90"  - 逆时针旋转 90°（屏幕顺时针 90° 竖放时使用）
+#   "ROT180" - 旋转 180°（上下颠倒时使用）
+#   "NONE"   - 不旋转（横屏使用，或调试用）
+# 如果显示内容整体是镜像或颠倒的，请切换 CW90 / CCW90 再试。
+EPD_ROTATE = "CW90"
+
+# ── 智能裁切 YOLO 配置 ─────────────────────────────────────────
+YOLO_CONF_THRESHOLD = 0.3
+YOLO_CLASSES = ["person", "cat", "dog", "bird", "horse"]
+YOLO_SUBJECT_WEIGHTS = {
+    "person": 5.0,
+    "child": 5.0,
+    "cat": 4.0,
+    "dog": 4.0,
+}
 
