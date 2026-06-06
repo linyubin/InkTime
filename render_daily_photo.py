@@ -892,10 +892,11 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
         # 2. 高斯模糊参数 (你可以调整这个 radius，数值越大越模糊)
         bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(radius=45))
         
-        # 3. 调整背景明暗度 (你可以调整这里的 enhance 数值)
-        # 数值为 1.0 表示原亮度，小于 1.0 表示变暗。
-        # 这里设置为 0.4，让背景变成低调的暗色系，这样能在墨水屏的抖动算法下保留质感，同时让主体照片更突出
-        pic_area = ImageEnhance.Brightness(bg_blurred).enhance(0.4)
+        # 3. 调整背景风格 (弃用变暗，改为覆盖半透明纯白蒙版)
+        # 之前使用的变暗 (enhance 0.4) 在彩色墨水屏上会因为 4 色抖动算法生成大量密集黑点，显得非常脏和生硬。
+        # 这里改为覆盖一层约 70% 透明度 (alpha=180) 的白色，形成干净明亮的“浅色毛玻璃”效果。
+        white_overlay = Image.new("RGBA", bg_blurred.size, (255, 255, 255, 180))
+        pic_area = Image.alpha_composite(bg_blurred.convert("RGBA"), white_overlay).convert("RGB")
     else:
         pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
 
