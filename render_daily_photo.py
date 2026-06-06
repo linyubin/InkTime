@@ -847,8 +847,9 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
                 max_scale_h = img_area_h / sub_h if sub_h > 0 else scale
                 max_safe_scale = min(max_scale_w, max_scale_h)
                 
-                # 不能无下限地缩小，极限是 contain 模式（完全展现整张原图，出现大面积留白）
-                min_scale = min(ratio_w, ratio_h)
+                # 用户要求：宽度必须填满屏幕（绝不出现左右黑边/毛玻璃边）。高度方向允许裁剪或上下留白。
+                # 所以缩放比例的底线就是 ratio_w（即保证 draw_w 至少等于 img_area_w）
+                min_scale = ratio_w
                 
                 # 如果默认的 fill scale 会导致主体群越界被硬切，我们就妥协退让，缩小 scale
                 if scale > max_safe_scale:
