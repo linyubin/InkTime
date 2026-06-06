@@ -34,3 +34,5 @@ logs/
 test/
 old/
 *.pt
+/.temp
+scripts/sync_db_to_pi.py
