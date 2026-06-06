@@ -183,6 +183,18 @@ async def push_image(device_addr: str, packed: bytes) -> None:
 
         log.info("已连接！开始初始化屏幕...")
 
+        # 获取协商的 MTU：BlueZ 后端需调用 _acquire_mtu() 才能读到真实值
+        try:
+            if hasattr(client, '_backend') and hasattr(client._backend, '_acquire_mtu'):
+                await client._backend._acquire_mtu()
+        except Exception:
+            pass
+        negotiated_mtu = client.mtu_size if client.mtu_size else 23
+        safe_chunk = min(CHUNK_SIZE, negotiated_mtu - 3)  # MTU - ATT头(3)
+        if safe_chunk < 1:
+            safe_chunk = 1
+        log.info(f"BLE MTU：{negotiated_mtu}，安全分块大小：{safe_chunk}（配置值 {CHUNK_SIZE}）")
+
         # Step 1：INIT
         await client.write_gatt_char(EPD_CHAR_UUID, bytes([CMD_INIT]), response=True)
         await asyncio.sleep(0.2)
@@ -198,7 +210,7 @@ async def push_image(device_addr: str, packed: bytes) -> None:
         last_printed_pct = -1
 
         while sent < total:
-            chunk   = packed[sent: sent + CHUNK_SIZE]
+            chunk   = packed[sent: sent + safe_chunk]
             is_last = (sent + len(chunk) >= total)
             # 首包：flag=0x0F（fourColor + first），续包：flag=0xF0
             flag    = 0x0F if sent == 0 else 0xF0
