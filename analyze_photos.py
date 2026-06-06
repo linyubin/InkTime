@@ -10,7 +10,15 @@ import subprocess
 import time
 import requests
 import io
-from PIL import Image, ExifTags, ImageOps
+import re
+import datetime
+from PIL import Image, ExifTags, ImageOps, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 import config as cfg
 import shutil
 
@@ -229,9 +237,9 @@ def encode_image_to_b64(path: Path) -> str:
         clean_bytes = out.getvalue()
         return base64.b64encode(clean_bytes).decode("utf-8")
 
-    except Exception:
-        # 兜底：如果 PIL 也打不开，就退回原始 bytes（让上游报错更直观）
-        return base64.b64encode(data).decode("utf-8")
+    except Exception as e:
+        # 不再盲目返回原始损坏字节，而是抛出异常，让主循环捕获并跳过该损坏或不支持的图片
+        raise RuntimeError(f"图片损坏或格式不支持（Pillow 无法解码）：{e}")
 
 
 def ensure_table(conn: sqlite3.Connection) -> None:
@@ -435,20 +443,61 @@ def list_images(limit: int | None = None) -> list[Path]:
     files = []
     print("[INFO] 正在递归扫描图片目录，请稍候……")
     scanned = 0
-    for p in IMAGE_DIR.rglob("*"):
-        scanned += 1
-        if scanned % 500 == 0:
-            print(f"[SCAN] 已扫描文件数：{scanned} …")
+
+    # 路径过滤：检查全路径是否包含排除关键字
+    def is_excluded(path_str: str) -> bool:
+        return any(kw.lower() in path_str.lower() for kw in EXCLUDE_KEYWORDS)
+
+    dirs_to_scan = [IMAGE_DIR]
+
+    while dirs_to_scan:
+        curr_dir = dirs_to_scan.pop()
         
-        # 路径过滤：检查全路径是否包含排除关键字
-        path_str = str(p).lower()
-        if any(kw.lower() in path_str for kw in EXCLUDE_KEYWORDS):
+        # 尝试读取当前目录下的文件和子目录，支持网络重试
+        entries = None
+        for attempt in range(1, NAS_RETRY_TIMES + 1):
+            try:
+                # 检查网络挂载状态并尝试重挂载
+                if not _is_mount_ok() and NAS_MOUNT_URL:
+                    _try_remount_nas()
+                
+                with os.scandir(curr_dir) as it:
+                    entries = list(it)
+                break
+            except OSError as e:
+                print(f"[WARN] 扫描目录失败（第 {attempt}/{NAS_RETRY_TIMES} 次重试）：{curr_dir}，错误：{e}")
+                if attempt < NAS_RETRY_TIMES:
+                    time.sleep(NAS_RETRY_SLEEP_SEC)
+                else:
+                    print(f"[ERROR] 无法访问目录（已跳过此文件夹）：{curr_dir}")
+                    entries = []
+
+        if not entries:
             continue
 
-        if p.is_file() and p.suffix.lower() in exts:
-            if is_screenshot(p):
+        for entry in entries:
+            scanned += 1
+            if scanned % 500 == 0:
+                print(f"[SCAN] 已扫描文件数：{scanned} …")
+
+            try:
+                entry_path = Path(entry.path)
+                path_str = str(entry_path)
+                
+                if is_excluded(path_str):
+                    continue
+
+                if entry.is_dir(follow_symlinks=False):
+                    dirs_to_scan.append(entry_path)
+                elif entry.is_file(follow_symlinks=False):
+                    if entry_path.suffix.lower() in exts:
+                        if is_screenshot(entry_path):
+                            continue
+                        files.append(entry_path)
+            except OSError as e:
+                print(f"[WARN] 获取状态失败（已跳过）：{entry.path}，错误：{e}")
                 continue
-            files.append(p)
+
     print(f"[INFO] 扫描完成，共发现 {len(files)} 张图片（文件总数 {scanned}）。")
     if limit is not None:
         files = files[:limit]
@@ -527,6 +576,52 @@ def read_gps_with_exiftool(path: Path):
         return None
 
 
+def parse_datetime_from_filename(filename: str) -> str | None:
+    """从文件名解析可能的拍摄时间（支持 13位毫秒时间戳、10位秒级时间戳、14位 YYYYMMDDHHMMSS 格式及 8位 YYYYMMDD 格式）"""
+    # 1. 尝试匹配 13 位毫秒级 Unix 时间戳 (例如 mmexport1723116376342.jpg 或 wx_camera_1759214528755)
+    ms_match = re.search(r'(?:^|[^0-9])(1\d{12})(?:[^0-9]|$)', filename)
+    if ms_match:
+        try:
+            ts = int(ms_match.group(1)) / 1000.0
+            dt = datetime.datetime.fromtimestamp(ts)
+            return dt.strftime("%Y:%m:%d %H:%M:%S")
+        except Exception:
+            pass
+
+    # 2. 尝试匹配 14 位 YYYYMMDDHHMMSS 格式 (例如 QQ图片20230702183242.jpg)
+    dt14_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{12})(?:[^0-9]|$)', filename)
+    if dt14_match:
+        try:
+            s = dt14_match.group(1)
+            dt = datetime.datetime.strptime(s, "%Y%m%d%H%M%S")
+            return dt.strftime("%Y:%m:%d %H:%M:%S")
+        except Exception:
+            pass
+
+    # 3. 尝试匹配 10 位秒级 Unix 时间戳 (例如 1723116376)
+    s_match = re.search(r'(?:^|[^0-9])(1\d{9})(?:[^0-9]|$)', filename)
+    if s_match:
+        try:
+            ts = int(s_match.group(1))
+            if 946684800 <= ts <= 2147483647:
+                dt = datetime.datetime.fromtimestamp(ts)
+                return dt.strftime("%Y:%m:%d %H:%M:%S")
+        except Exception:
+            pass
+
+    # 4. 尝试匹配 8 位 YYYYMMDD 格式 (例如 20230702)
+    dt8_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{6})(?:[^0-9]|$)', filename)
+    if dt8_match:
+        try:
+            s = dt8_match.group(1)
+            dt = datetime.datetime.strptime(s, "%Y%m%d")
+            return dt.strftime("%Y:%m:%d 00:00:00")
+        except Exception:
+            pass
+
+    return None
+
+
 def read_exif(path: Path) -> dict:
     info: dict = {}
     try:
@@ -545,6 +640,10 @@ def read_exif(path: Path) -> dict:
             pass
         exif_raw = img._getexif() or {}
     except Exception:
+        # 如果打不开图片，尝试在 path.name 中至少提取一下时间
+        parsed_dt = parse_datetime_from_filename(path.name)
+        if parsed_dt:
+            info["datetime"] = parsed_dt
         return info
 
     exif = {}
@@ -554,6 +653,11 @@ def read_exif(path: Path) -> dict:
 
     # 基本字段
     info["datetime"] = exif.get("DateTimeOriginal") or exif.get("DateTime")
+    if not info.get("datetime"):
+        parsed_dt = parse_datetime_from_filename(path.name)
+        if parsed_dt:
+            info["datetime"] = parsed_dt
+
     info["make"] = exif.get("Make")
     info["model"] = exif.get("Model")
     info["iso"] = exif.get("ISOSpeedRatings") or exif.get("PhotographicSensitivity")
@@ -1173,7 +1277,7 @@ def main():
 
         bar_width = 30
         filled = int(bar_width * progress)
-        bar = "█" * filled + "░" * (bar_width - filled)
+        bar = "#" * filled + "-" * (bar_width - filled)
 
         elapsed = time.time() - start_time
         avg_per = elapsed / idx if idx > 0 else 0
