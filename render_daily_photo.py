@@ -645,31 +645,94 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
             
         weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
         
-        best_subject = None
-        best_score = -1
+        # 使用“滑动窗口（Sliding Window）”覆盖率最大化算法
+        # 彻底解决“强行居中导致左右主体被从中间切成两半”或“主体在边缘被切掉”的问题。
+        valid_subs = []
         for s in subjects:
-            score = s["conf"] * weights_map.get(s["label"], 1.0)
-            if score > best_score:
-                best_score = score
-                best_subject = s
+            label = s.get("label", "")
+            conf = s.get("conf", 0.0)
+            if label not in weights_map or conf < 0.2:
+                continue
                 
-        if not best_subject:
+            bbox = s.get("bbox")
+            if not bbox or len(bbox) != 4:
+                continue
+                
+            cx, cy, bw, bh = bbox
+            # 计算主体在放大后的像素坐标系中的边界框
+            sx1 = (cx - bw/2) * draw_w
+            sx2 = (cx + bw/2) * draw_w
+            sy1 = (cy - bh/2) * draw_h
+            sy2 = (cy + bh/2) * draw_h
+            area = (sx2 - sx1) * (sy2 - sy1)
+            
+            base_w = weights_map[label]
+            weight = conf * base_w * (area ** 0.5)
+            
+            valid_subs.append({
+                "x1": sx1, "x2": sx2, "y1": sy1, "y2": sy2,
+                "area": area,
+                "weight": weight
+            })
+            
+        if not valid_subs:
             return default_left, default_top
 
-        cx_rel, cy_rel, _, _ = best_subject["bbox"]
-        cx_pixel = cx_rel * draw_w
-        cy_pixel = cy_rel * draw_h
+        x_steps = []
+        if draw_w > img_area_w:
+            step_x = max(5, (draw_w - img_area_w) // 50)
+            x_steps = list(range(0, draw_w - img_area_w, step_x))
+            x_steps.append(draw_w - img_area_w)
+        else:
+            x_steps = [0]
+            
+        y_steps = []
+        if draw_h > img_area_h:
+            step_y = max(5, (draw_h - img_area_h) // 50)
+            y_steps = list(range(0, draw_h - img_area_h, step_y))
+            y_steps.append(draw_h - img_area_h)
+        else:
+            y_steps = [0]
+            
+        center_x = max(0, draw_w - img_area_w) / 2.0
+        center_y = max(0, draw_h - img_area_h) / 2.0
         
-        target_rel_x = max(0.382, min(0.618, cx_rel))
-        target_rel_y = max(0.382, min(0.618, cy_rel))
+        best_score = -1.0
+        best_left = default_left
+        best_top = default_top
         
-        left = int(cx_pixel - target_rel_x * img_area_w)
-        top = int(cy_pixel - target_rel_y * img_area_h)
-        
-        left = max(0, min(left, draw_w - img_area_w))
-        top = max(0, min(top, draw_h - img_area_h))
-        
-        return left, top
+        for x in x_steps:
+            for y in y_steps:
+                wx1, wx2 = x, x + img_area_w
+                wy1, wy2 = y, y + img_area_h
+                
+                score = 0.0
+                for s in valid_subs:
+                    ix1 = max(wx1, s["x1"])
+                    ix2 = min(wx2, s["x2"])
+                    iy1 = max(wy1, s["y1"])
+                    iy2 = min(wy2, s["y2"])
+                    
+                    if ix1 < ix2 and iy1 < iy2:
+                        iarea = (ix2 - ix1) * (iy2 - iy1)
+                        cov = iarea / s["area"] if s["area"] > 0 else 0
+                        # 核心逻辑：平方惩罚 (cov ** 2)
+                        # 如果切掉了一半(cov=0.5)，得分会变成 0.25 倍，从而遭到极大的排斥！
+                        # 算法会宁可放弃一个小目标，也优先保证将大目标100%完整框入，绝不切头。
+                        score += s["weight"] * (cov ** 2)
+                
+                # 中心偏置：得分相同时，优先选择最靠近中心的构图
+                dist_x = abs(x - center_x) / (center_x + 1)
+                dist_y = abs(y - center_y) / (center_y + 1)
+                bias = 0.001 * (2 - dist_x - dist_y)
+                score += bias
+                
+                if score > best_score:
+                    best_score = score
+                    best_left = x
+                    best_top = y
+                    
+        return int(best_left), int(best_top)
     except Exception as e:
         print(f"[WARN] compute_crop_window error: {e}")
         return default_left, default_top
@@ -742,19 +805,104 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     img_area_h = CANVAS_HEIGHT - TEXT_AREA_HEIGHT  # 底部留给文字
 
     # “铺满裁剪”：缩放到至少覆盖区域，再从中间裁一块
-    scale = max(img_area_w / img_w, img_area_h / img_h)
+    ratio_w = img_area_w / img_w
+    ratio_h = img_area_h / img_h
+    scale = max(ratio_w, ratio_h)
+    
+    # ====== 内容感知缩放（防止多个主体相隔太远导致必然有一人被裁掉） ======
+    subjects_json_str = item.get("subjects_json", "")
+    if subjects_json_str:
+        try:
+            import json
+            subs = json.loads(subjects_json_str)
+            weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
+            valid_subs = [s for s in subs if s.get("label") in weights_map and s.get("conf", 0) >= 0.2]
+            
+            # 如果存在有效主体，计算它们在画面中占据的极值边界
+            if len(valid_subs) >= 1:
+                xs = []
+                ys = []
+                for s in valid_subs:
+                    cx, cy, bw, bh = s["bbox"]
+                    xs.append(cx - bw/2)
+                    xs.append(cx + bw/2)
+                    ys.append(cy - bh/2)
+                    ys.append(cy + bh/2)
+                
+                group_min_x, group_max_x = min(xs), max(xs)
+                group_min_y, group_max_y = min(ys), max(ys)
+                
+                # 增加 5% 的边缘呼吸空间，防止人脸紧贴边框
+                group_min_x = max(0.0, group_min_x - 0.05)
+                group_max_x = min(1.0, group_max_x + 0.05)
+                group_min_y = max(0.0, group_min_y - 0.05)
+                group_max_y = min(1.0, group_max_y + 0.05)
+                
+                # 主体群在原图的真实物理像素跨度
+                sub_w = (group_max_x - group_min_x) * img_w
+                sub_h = (group_max_y - group_min_y) * img_h
+                
+                # 计算为了将群体塞进目标框内，所允许的最大 scale
+                max_scale_w = img_area_w / sub_w if sub_w > 0 else scale
+                max_scale_h = img_area_h / sub_h if sub_h > 0 else scale
+                max_safe_scale = min(max_scale_w, max_scale_h)
+                
+                # 不能无下限地缩小，极限是 contain 模式（完全展现整张原图，出现大面积留白）
+                min_scale = min(ratio_w, ratio_h)
+                
+                # 如果默认的 fill scale 会导致主体群越界被硬切，我们就妥协退让，缩小 scale
+                if scale > max_safe_scale:
+                    scale = max(max_safe_scale, min_scale)
+        except Exception as e:
+            print(f"[WARN] Content-aware scaling failed: {e}")
+    # =================================================================
+
     draw_w = int(img_w * scale)
     draw_h = int(img_h * scale)
 
     img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
 
-    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, item.get("subjects_json", ""))
-    right = left + img_area_w
-    bottom = top + img_area_h
-    img_cropped = img_resized.crop((left, top, right, bottom))
+    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str)
+    
+    # 防止因为 scale 缩小导致 draw_w 小于 img_area_w，PIL crop 越界产生黑边
+    crop_left = left if draw_w >= img_area_w else 0
+    crop_right = left + img_area_w if draw_w >= img_area_w else draw_w
+    crop_top = top if draw_h >= img_area_h else 0
+    crop_bottom = top + img_area_h if draw_h >= img_area_h else draw_h
+    
+    img_cropped = img_resized.crop((crop_left, crop_top, crop_right, crop_bottom))
+    
+    # 居中 Letterboxing (如果由于缩小导致图像没填满目标区域，生成高斯模糊的扩大版背景)
+    paste_x = (img_area_w - draw_w) // 2 if draw_w < img_area_w else 0
+    paste_y = (img_area_h - draw_h) // 2 if draw_h < img_area_h else 0
 
+    if draw_w < img_area_w or draw_h < img_area_h:
+        from PIL import ImageFilter, ImageEnhance
+        # 1. 采用 Fill 模式(即默认比例)将原图填充整个区域作为背景
+        bg_scale = max(img_area_w / img_w, img_area_h / img_h)
+        bg_w = int(img_w * bg_scale)
+        bg_h = int(img_h * bg_scale)
+        bg_resized = img.resize((bg_w, bg_h), Image.LANCZOS)
+        
+        # 居中裁剪出需要的背景
+        bg_left = max(0, (bg_w - img_area_w) // 2)
+        bg_top = max(0, (bg_h - img_area_h) // 2)
+        bg_cropped = bg_resized.crop((bg_left, bg_top, bg_left + img_area_w, bg_top + img_area_h))
+        
+        # 2. 高斯模糊参数 (你可以调整这个 radius，数值越大越模糊)
+        bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(radius=45))
+        
+        # 3. 调整背景明暗度 (你可以调整这里的 enhance 数值)
+        # 数值为 1.0 表示原亮度，小于 1.0 表示变暗。
+        # 这里设置为 0.4，让背景变成低调的暗色系，这样能在墨水屏的抖动算法下保留质感，同时让主体照片更突出
+        pic_area = ImageEnhance.Brightness(bg_blurred).enhance(0.4)
+    else:
+        pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
+
+    pic_area.paste(img_cropped, (paste_x, paste_y))
+    
     # 贴到上方
-    canvas.paste(img_cropped, (0, 0))
+    canvas.paste(pic_area, (0, 0))
 
     # ---------- 底部文字区域 ----------
     padding_x = 24
