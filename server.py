@@ -244,7 +244,8 @@ def load_sim_rows():
                used_at,
                exif_gps_lat,
                exif_gps_lon,
-               exif_city
+               exif_city,
+               subjects_json
         FROM photo_scores
         """
     ).fetchall()
@@ -293,7 +294,8 @@ def load_sim_rows_for_dates(dates: list[str]):
                used_at,
                exif_gps_lat,
                exif_gps_lon,
-               exif_city
+               exif_city,
+               subjects_json
         FROM photo_scores
         WHERE {dt_expr} IS NOT NULL
           AND {date_expr} IN ({placeholders})
@@ -324,7 +326,8 @@ def get_photo_meta_by_path(abs_path: str):
                memory_score,
                exif_gps_lat,
                exif_gps_lon,
-               exif_city
+               exif_city,
+               subjects_json
         FROM photo_scores
         WHERE path = ? COLLATE NOCASE
         LIMIT 1
@@ -336,7 +339,7 @@ def get_photo_meta_by_path(abs_path: str):
     if not row:
         return None
 
-    path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city = row
+    path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, subjects_json = row
     date_str = extract_date_from_exif(exif_json, str(path)) or ""
 
     return {
@@ -347,6 +350,7 @@ def get_photo_meta_by_path(abs_path: str):
         "lat": gps_lat,
         "lon": gps_lon,
         "city": exif_city or "",
+        "subjects_json": subjects_json or "",
     }
 
 def summarize_exif(exif_json: str | None) -> str:
@@ -1064,6 +1068,7 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
         gps_lat,
         gps_lon,
         exif_city,
+        subjects_json,
     ) in sim_rows:
         date_str = extract_date_from_exif(exif_json, str(path)) or ""
         img_uri = _make_image_url(str(path))
@@ -1091,6 +1096,7 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
             "height": height if height is not None else "",
             "orientation": orientation or "",
             "used_at": used_at or "",
+            "subjects_json": subjects_json or "",
         })
 
     data_json = json.dumps(items, ensure_ascii=False).replace("</", "<\\/") if items else "[]"
@@ -2019,7 +2025,7 @@ def sim():
                 row = c.execute("""
                     SELECT path, caption, type, memory_score, beauty_score,
                            reason, side_caption, exif_json, width, height,
-                           orientation, used_at, exif_gps_lat, exif_gps_lon, exif_city
+                           orientation, used_at, exif_gps_lat, exif_gps_lon, exif_city, subjects_json
                     FROM photo_scores
                     WHERE path = ? COLLATE NOCASE
                     LIMIT 1
@@ -2069,6 +2075,7 @@ def sim_render():
             "lat": None,
             "lon": None,
             "city": "",
+            "subjects_json": "",
         }
 
     try:
