@@ -904,10 +904,35 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     # 贴到上方
     canvas.paste(pic_area, (0, 0))
 
-    # ---------- 底部文字区域 ----------
+    # ---------- 底部文字区域 (毛玻璃圆角矩形) ----------
     padding_x = 24
     text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 15
     text_width = CANVAS_WIDTH - 2 * padding_x
+
+    # 1. 定义毛玻璃区域的坐标
+    box_x0 = 12
+    box_y0 = text_area_top - 10
+    box_x1 = CANVAS_WIDTH - 12
+    box_y1 = CANVAS_HEIGHT - 12
+    box_w = box_x1 - box_x0
+    box_h = box_y1 - box_y0
+
+    # 2. 从画布中裁剪出底层画面并进行高斯模糊
+    from PIL import ImageFilter
+    bg_crop = canvas.crop((box_x0, box_y0, box_x1, box_y1))
+    bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=15))
+
+    # 3. 创建半透明白色覆盖层 (比如透明度为 180)
+    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 180))
+    glass_bg = Image.alpha_composite(bg_crop_blurred.convert("RGBA"), overlay)
+
+    # 4. 创建圆角遮罩
+    mask = Image.new("L", (box_w, box_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, box_w, box_h), radius=16, fill=255)
+
+    # 5. 把处理好的毛玻璃图层贴回画布
+    canvas.paste(glass_bg.convert("RGB"), (box_x0, box_y0), mask)
 
     def _get_font(path: str, size: int):
         if path and Path(path).exists():
@@ -932,17 +957,15 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     side_text = item.get("side") or ""
 
-    # 采用白字黑边的“描边”方式，保证在任何复杂的原图背景下都有极高的反差和可读性
-    text_fill = (255, 255, 255)
-    text_stroke = (0, 0, 0)
-    stroke_w = 2
+    # 因为有了半透明纯白背景，文字可以直接使用纯黑色，显得干净现代
+    text_fill = (0, 0, 0)
 
     # 文案：最多两行，从 text_area_top 开始
     y = text_area_top
     if side_text:
         lines = wrap_text_chinese(draw, side_text, font_big, text_width, max_lines=2)
         for line in lines:
-            draw.text((padding_x, y), line, font=font_big, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
+            draw.text((padding_x, y), line, font=font_big, fill=text_fill)
             y += 24  # 行高略大于字号
 
     # 日期 + 地点：固定在底部区域内的第二行
@@ -950,13 +973,13 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     loc_display = format_location(item.get("lat"), item.get("lon"), item.get("city") or "")
 
     second_line_y = text_area_top + 54
-    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
+    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill)
 
     loc_w = draw.textlength(loc_display, font=font_small)
     loc_x = padding_x + text_width - loc_w
     if loc_x < padding_x:
         loc_x = padding_x
-    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_stroke)
+    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill)
 
     return canvas
 
