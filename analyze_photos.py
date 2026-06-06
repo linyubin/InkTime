@@ -22,6 +22,51 @@ except ImportError:
 import config as cfg
 import shutil
 
+_yolo_model = None
+
+def detect_subjects(image_path: Path) -> list:
+    global _yolo_model
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        return []
+        
+    if _yolo_model is None:
+        _yolo_model = YOLO("yolov8n.pt")
+        
+    try:
+        results = _yolo_model(str(image_path), verbose=False)
+    except Exception as e:
+        print(f"[WARN] YOLO 检测失败: {e}")
+        return []
+        
+    subjects = []
+    classes_to_detect = set(getattr(cfg, "YOLO_CLASSES", ["person", "cat", "dog"]))
+    conf_thresh = getattr(cfg, "YOLO_CONF_THRESHOLD", 0.3)
+    
+    for r in results:
+        for box in r.boxes:
+            cls_name = r.names[int(box.cls)]
+            if cls_name not in classes_to_detect:
+                continue
+            conf = float(box.conf)
+            if conf < conf_thresh:
+                continue
+            
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            img_h, img_w = r.orig_shape
+            
+            subjects.append({
+                "label": cls_name,
+                "bbox": [
+                    round((x1 + x2) / 2 / img_w, 4),
+                    round((y1 + y2) / 2 / img_h, 4),
+                    round((x2 - x1) / img_w, 4),
+                    round((y2 - y1) / img_h, 4),
+                ],
+                "conf": round(conf, 3),
+            })
+    return subjects
 
 # =======================
 # NAS 掉盘守护（macOS /Volumes）
@@ -340,6 +385,10 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         pass
     try:
         cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_city TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE photo_scores ADD COLUMN subjects_json TEXT")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -1216,6 +1265,10 @@ def main():
         print(f"  画面描述：{caption}")
         print(f"  理由    ：{reason}")
 
+        # 调用 YOLO 检测主体
+        subjects = detect_subjects(path)
+        subjects_json_str = json.dumps(subjects, ensure_ascii=False) if subjects else ""
+
         cur.execute(
             """
             INSERT OR REPLACE INTO photo_scores
@@ -1224,13 +1277,13 @@ def main():
              exif_json, raw_json,
              exif_datetime, exif_make, exif_model,
              exif_iso, exif_exposure_time, exif_f_number, exif_focal_length,
-             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city)
+             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city, subjects_json)
             VALUES (?, ?, ?, ?, ?, ?,
                     ?, ?, ?, COALESCE((SELECT used_at FROM photo_scores WHERE path = ?), NULL),
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(path),
@@ -1257,6 +1310,7 @@ def main():
                 exif_gps_alt,
                 side_caption,
                 exif_city,
+                subjects_json_str,
             ),
         )
         conn.commit()
