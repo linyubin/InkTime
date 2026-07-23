@@ -13,10 +13,11 @@ The project consists of three main components:
    - Renders selected photos for e-paper displays
    - Provides web UI for photo review and ESP32 download server
 
-2. **ESP32 Firmware** (`esp32/ink-display-7C-photo/`, `esp32/ink-display-133C-photo/`):
-   - ESP32-S3-based e-paper display devices
-   - WiFi connectivity to pull rendered images from server
-   - Deep sleep for battery efficiency
+2. **ESP32 Firmware** (`esp32/ink-display-wifi-epd/`, `esp32/ink-display-7C-photo/`, `esp32/ink-display-133C-photo/`):
+   - WiFi-connected e-paper display devices that pull rendered images from the server
+   - AP-mode captive portal for WiFi / server / timezone / refresh-time config (stored in NVS)
+   - Deep sleep with daily scheduled wake for battery efficiency
+   - `ink-display-wifi-epd/` is the current/active version; `7C-photo` and `133C-photo` are older variants
 
 3. **EPD-nRF5 Integration** (`EPD-nRF5/`, `push_to_epd_ble.py`):
    - Nordic nRF5-based e-paper displays with BLE connectivity
@@ -55,10 +56,22 @@ python push_to_epd_ble.py
 ### ESP32 Firmware
 
 - **IDE**: Arduino IDE
-- **Board**: ESP32-S3 Dev Module (PSRAM required)
-  - Tools > PSRAM: OPI PSRAM
-- **Required Libraries**: GxEPD2
-- **Firmware Paths**:
+
+Two driver families exist — they target different boards and use different display libraries:
+
+**`ink-display-wifi-epd/`** (current/active; 7.3" 4-color GDEY073D46 / EL073TS3):
+- **Board**: ESP32-L Module (classic ESP32). Uses PSRAM when available, falls back to internal RAM.
+- **Display driver**: bundled low-level driver (`EPD.cpp` / `EPD.h` — ESP32epdx-style Paint/PIC API, 2 bits/pixel packed 4-color). **Not** GxEPD2.
+- **Firmware path**: `esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino`
+- **Extras in folder**: schematic (`ESP32-L_SCH.pdf`, `schematic_text.txt`); `convert_img4.py` converts an image to 4-color 2bpp for the status-screen background (`ap_bg.h`).
+- **Features beyond the older variants**: draws AP/connection status directly on the e-ink screen; on a manual reset (non-timer wake) it shows network info (SSID/IP/MAC) and keeps the web config server open on the device's LAN IP for ~3 min so settings can be tweaked without re-entering AP mode.
+- **Factory reset**: hold GPIO0 (BOOT) at boot → clears NVS and re-enters AP provisioning.
+
+**`ink-display-7C-photo/` & `ink-display-133C-photo/`** (older variants):
+- **Board**: ESP32-S3 Dev Module (PSRAM required; Tools > PSRAM: OPI PSRAM)
+- **Display driver**: GxEPD2 (`GxEPD2_7C` / `GxEPD2_730c_GDEY073D46`)
+- **Factory reset**: hold GPIO38 at boot.
+- **Firmware paths**:
   - 7.3" display: `esp32/ink-display-7C-photo/ink-display-7C-photo.ino`
   - 1.33" display: `esp32/ink-display-133C-photo/ink-display-133C-photo.ino`
 
@@ -99,6 +112,7 @@ cp config-example.py config.py
 - `IMAGE_DIR`: Path to your photo library
 - `API_URL`, `MODEL_NAME`: VLM API endpoint and model name
 - `DOWNLOAD_KEY`: Security prefix for ESP32 downloads (sync with ESP32 firmware)
+- `ENABLE_BLE_PUSH` / `ENABLE_ESP32_SERVE`: 投递能力开关（可并存），由 `scripts/inktime_daily.sh` 读取，决定 render 后跑 BLE 推送（nRF5）还是起临时 server 供 ESP32 主动拉取
 
 **Important paths**:
 - Database: `photos.db` (SQLite)
@@ -125,6 +139,7 @@ cp config-example.py config.py
 2. Applies weighted selection algorithm (considering scores, recency, path/category preferences)
 3. Renders selected photo to e-paper format (black/white/red/yellow dithering)
 4. Outputs `photo_0.bin` (or multiple based on `DAILY_PHOTO_QUANTITY`)
+5. `.bin` format consumed by all ESP32 firmware: portrait 480×800 = 384,000 bytes, 1 byte/pixel, color values `0=black, 1=white, 2=red, 3=yellow`, row-major (y=0..799, x=0..479)
 
 ### BLE Push Flow
 
@@ -157,13 +172,16 @@ cp config-example.py config.py
 - `config.py` - Project configuration (copy from config-example.py)
 - `config-example.py` - Configuration template
 - `photos.db` - SQLite database (auto-created)
-- `output/` - Rendered `.bin` files
+- `output/` - Rendered `.bin` files (由 server.py 在 `/static/inktime/<DOWNLOAD_KEY>/` 下提供下载)
+- `logs/transfer.log` - 详细 HTTP 传输日志（ESP32 每次拉取：时间/IP/idx/字节数/耗时）；另有 `logs/render.log`（cron 脚本日志）
+- `tmp/last_fetch.json` - 拉取成功哨兵，供 `inktime_daily.sh` 轮询得知 ESP32 已取走数据
 - `templates/` - Flask/Jinja2 templates for WebUI
-- `scripts/daily_render.sh` - Cron job script (render + BLE push)
+- `scripts/inktime_daily.sh` - 每日编排：render → 按 `ENABLE_BLE_PUSH`/`ENABLE_ESP32_SERVE` 跑 BLE 推送 / 起临时 server 供 ESP32 拉取（检测到拉取或超时后关闭）
 - `docker/` - Container deployment files
 - `esp32/` - ESP32 firmware projects
-  - `ink-display-7C-photo/` - 7.3" display firmware
-  - `ink-display-133C-photo/` - 1.33" display firmware
+  - `ink-display-wifi-epd/` - Current 7.3" WiFi EPD firmware (ESP32-L, bundled EPD driver, on-screen status + manual-wake LAN config)
+  - `ink-display-7C-photo/` - Older 7.3" display firmware (ESP32-S3, GxEPD2)
+  - `ink-display-133C-photo/` - 1.33" display firmware (ESP32-S3, GxEPD2)
   - `pcb/` - Hardware design files
 - `EPD-nRF5/` - Nordic nRF5-based display with Web Bluetooth control
 
@@ -172,7 +190,7 @@ cp config-example.py config.py
 - All prompt templates for VLM are in `analyze_photos.py` functions
 - Exif/GPS extraction falls back to filename date parsing if EXIF unavailable
 - BLE push requires Linux/Unix with BlueZ stack (or Windows with bleak)
-- ESP32 firmware uses GxEPD2 library for display control
+- ESP32 display drivers differ by firmware: `ink-display-wifi-epd/` uses the bundled `EPD.h` low-level driver (ESP32epdx-style Paint/PIC API, 2 bits/pixel), while the older `7C-photo`/`133C-photo` variants use GxEPD2.
 - EPD-nRF5 includes a Windows emulator (`emulator.c`) for offline testing
 - Path mapping available via `PATH_MAP` for cross-platform deployments
 - NAS mount retry logic in `analyze_photos.py` for network photo storage

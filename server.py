@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from flask import Flask, abort, send_file, Response, request, redirect
+from flask import Flask, abort, send_file, Response, request, redirect, g
 import mimetypes
 import sqlite3
 import json
@@ -12,6 +12,10 @@ import html
 import re
 import urllib.parse
 import unicodedata
+import time
+import os
+import threading
+from datetime import datetime
 import config as cfg
 from io import BytesIO
 import render_daily_photo as rdp
@@ -35,6 +39,14 @@ BIN_OUTPUT_DIR = Path(str(getattr(cfg, "BIN_OUTPUT_DIR", "./output") or "./outpu
 if not BIN_OUTPUT_DIR.is_absolute():
     BIN_OUTPUT_DIR = (ROOT_DIR / BIN_OUTPUT_DIR).resolve()
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# 传输日志 / 拉取检测哨兵目录（由 inktime_daily.sh 读写）
+TMP_DIR = ROOT_DIR / "tmp"
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR = ROOT_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+TRANSFER_LOG = LOG_DIR / "transfer.log"           # 详细 HTTP 传输日志（ESP32 拉取等）
+LAST_FETCH_SENTINEL = TMP_DIR / "last_fetch.json"  # 拉取成功哨兵，供 inktime_daily.sh 轮询
 
 FLASK_HOST = str(getattr(cfg, "FLASK_HOST", "0.0.0.0") or "0.0.0.0")
 FLASK_PORT = int(getattr(cfg, "FLASK_PORT", 8765) or 8765)
@@ -90,6 +102,105 @@ def _load_all_md_list() -> list[str]:
     return md_list
 
 app = Flask(__name__)
+
+
+def ensure_transfer_history() -> None:
+    """创建传输日志表（对齐 analyze_photos.py 的 CREATE TABLE IF NOT EXISTS 模式）。"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transfer_history (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts           TEXT,
+            method       TEXT,
+            path         TEXT,
+            idx          INTEGER,
+            status       INTEGER,
+            bytes        INTEGER,
+            duration_ms  REAL,
+            client_ip    TEXT,
+            user_agent   TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+ensure_transfer_history()
+
+
+@app.before_request
+def _before_request() -> None:
+    g.t0 = time.time()
+
+
+@app.after_request
+def _after_request(resp):
+    # 仅记录 /static/inktime/ 前缀的传输类请求，避免 /review 图片刷屏
+    if request.path.startswith("/static/inktime/"):
+        dur_ms = (time.time() - getattr(g, "t0", time.time())) * 1000.0
+        view_args = request.view_args or {}
+        idx_val = view_args.get("idx")
+        try:
+            size = int(resp.content_length or 0)
+        except Exception:
+            size = 0
+        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = (
+            f"{ts_str} | {request.remote_addr} | {request.method} {request.path} | "
+            f"{resp.status_code} | {size}B | {dur_ms:.0f}ms | {request.headers.get('User-Agent', '')}"
+        )
+        try:
+            with open(TRANSFER_LOG, "a", encoding="utf-8") as f:
+                f.write(log_line + "\n")
+        except Exception as e:
+            print(f"[transfer_log] write file failed: {e}")
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(
+                "INSERT INTO transfer_history(ts,method,path,idx,status,bytes,duration_ms,client_ip,user_agent) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    datetime.now().isoformat(),
+                    request.method,
+                    request.path,
+                    idx_val,
+                    resp.status_code,
+                    size,
+                    dur_ms,
+                    request.remote_addr,
+                    request.headers.get("User-Agent", ""),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[transfer_log] db insert failed: {e}")
+    return resp
+
+
+def _write_fetch_sentinel(idx, p: Path) -> None:
+    """ESP32 成功拉取后写哨兵，供 inktime_daily.sh 轮询得知“已拉走”。"""
+    try:
+        size = p.stat().st_size if p.exists() else 0
+        LAST_FETCH_SENTINEL.write_text(
+            json.dumps(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "ip": request.remote_addr,
+                    "idx": idx,
+                    "bytes": size,
+                    "file": p.name,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[sentinel] write failed: {e}")
+
+
 def _require_webui_enabled() -> None:
     if not ENABLE_REVIEW_WEBUI:
         abort(404)
@@ -2107,6 +2218,7 @@ def esp_photo(key: str, idx: int):
             print(f"Failed to mark photo used: {e}")
 
     p = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
+    _write_fetch_sentinel(idx, p)
     return _send_static_file(p)
 
 
@@ -2126,6 +2238,7 @@ def esp_latest(key: str):
             print(f"Failed to mark photo used: {e}")
 
     p = BIN_OUTPUT_DIR / "latest.bin"
+    _write_fetch_sentinel(-1, p)
     return _send_static_file(p)
 
 
@@ -2135,6 +2248,21 @@ def esp_preview(key: str):
         abort(404)
     p = BIN_OUTPUT_DIR / "preview.png"
     return _send_static_file(p)
+
+
+@app.post("/static/inktime/<key>/shutdown")
+def esp_shutdown(key: str):
+    """供 inktime_daily.sh 在检测到 ESP32 拉取后优雅关闭 server。"""
+    if key != DOWNLOAD_KEY:
+        abort(404)
+
+    def _stop() -> None:
+        time.sleep(0.3)  # 留时间让响应先返回
+        print("[InkTime] shutdown via /shutdown")
+        os._exit(0)
+
+    threading.Thread(target=_stop, daemon=True).start()
+    return "shutting down", 200
 
 
 @app.get("/files/")

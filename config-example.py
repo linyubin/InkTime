@@ -25,6 +25,15 @@ FLASK_PORT = 8765
 # 是否开启照片库 WebUI（前期检验提示词选片效果时使用，跑通后建议关闭）
 ENABLE_REVIEW_WEBUI = True
 
+# ── 投递/能力开关（可并存，互不干扰；为未来功能如舵机控制留扩展）──
+# 由 scripts/inktime_daily.sh 读取，决定 render 之后跑哪些投递步骤
+ENABLE_BLE_PUSH    = True   # True: render 后 BLE 推送到 nRF5 设备（push_to_epd_ble.py）
+ENABLE_ESP32_SERVE = True   # True: render 后临时启动 server.py 供 ESP32 主动拉取
+# ESP32 拉取等待：render 后 server 最多在线多久（分钟），超时未拉取则关闭
+ESP32_SERVE_WAIT_MIN = 15
+# 未来扩展预留：
+# ENABLE_SERVO_CONTROL = False
+
 # 离线中文城市名索引，使用 geonames 数据制作
 WORLD_CITIES_CSV = "./data/world_cities_zh.csv"
 
@@ -41,7 +50,7 @@ HOME_RADIUS_KM = 60.0
 # 最大接受距离（公里），超出则认为“不在任何城市附近”
 CITY_MAX_DISTANCE_KM = 100.0
 
-# 墨水屏渲染 BIN 文件输出目录
+# 墨水屏渲染 BIN 文件输出目录（server.py 在 /static/inktime/<DOWNLOAD_KEY>/ 下提供下载；传输日志见 logs/transfer.log）
 BIN_OUTPUT_DIR = "./output"
 
 # 自定义字体路径（为空则退回默认字体）

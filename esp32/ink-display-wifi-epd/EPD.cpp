@@ -10,11 +10,24 @@ void delay_xms(unsigned int xms)
 ////////////////////////////////////E-paper demo//////////////////////////////////////////////////////////
 //Busy function
 void lcd_chkstatus(void)
-{ 
-  while(1)
-  {	 //=0 BUSY
-     if(isEPD_W21_BUSY==1) break;
-  }  
+{
+  int waited = 0;  // 单位 10ms
+  while (1)
+  {  //=0 BUSY
+    if (isEPD_W21_BUSY == 1) {
+      Serial.printf("[EPD] BUSY=idle ✅ (等了 %dms)\n", waited * 10);
+      break;
+    }
+    delay(10);
+    waited++;
+    if (waited % 100 == 0) {  // 每约 1s 报告一次
+      Serial.printf("[EPD] 等待 BUSY idle… 已等 %dms, BUSY=%d\n", waited * 10, (int)isEPD_W21_BUSY);
+    }
+    if (waited >= 3000) {  // 30s 超时：四色全屏刷新约需 12-16s，留足余量
+      Serial.println("[EPD] ⚠️ BUSY 超时 30s！面板无应答，放弃等待继续。");
+      break;
+    }
+  }
 }
 void EPD_init(void)
 {

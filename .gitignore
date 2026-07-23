@@ -30,6 +30,9 @@ filelist.txt
 # Logs
 logs/
 
+# Runtime 临时文件（拉取哨兵 last_fetch.json、防重入锁等）
+tmp/
+
 # Others
 test/
 old/

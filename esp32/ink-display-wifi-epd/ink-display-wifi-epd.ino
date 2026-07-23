@@ -6,9 +6,9 @@
  * 功能：
  *   1. 首次启动进入 AP 配网模式（SSID: InkTime-xxxx / 密码: 12345678）
  *   2. 配网后通过 WiFi 连接服务器，HTTP 下载当日照片 .bin 文件
- *   3. GxEPD2 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
+ *   3. ESP32epdx 低层驱动 (EPD.h) 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
- *   5. 上电时按住 GPIO38 可恢复出厂设置（清空 NVS + 重新配网）
+ *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网）
  *
  * 硬件参数（对齐 push_to_epd_ble.py 中的墨水屏配置）：
  *   - 屏幕型号：GDEY073D46 (EL073TS3)，7.3 寸四色（黑/白/红/黄）
@@ -18,11 +18,11 @@
  *   - SPI 通信
  *
  * 依赖库：
- *   - GxEPD2 (by Jean-Marc Zingg)
+ *   - ESP32epdx 
  *   - ESP32 Arduino Core
  *
  * 开发板选择：
- *   - ESP32-S3 Dev Module（开启 PSRAM: OPI PSRAM）
+ *   - ESP32-L Module
  * ──────────────────────────────────────────────────────────────
  */
 
@@ -49,13 +49,11 @@
 // ============================================================
 #define DEBUG_LOG 1
 
-HardwareSerial DebugSerial(0);
-
 #if DEBUG_LOG
-  #define DBG_BEGIN()    DebugSerial.begin(115200)
-  #define DBG_PRINT(x)   DebugSerial.print(x)
-  #define DBG_PRINTLN(x) DebugSerial.println(x)
-  #define DBG_PRINTF(fmt, ...) DebugSerial.printf(fmt, ##__VA_ARGS__)
+  #define DBG_BEGIN()    Serial.begin(115200)
+  #define DBG_PRINT(x)   Serial.print(x)
+  #define DBG_PRINTLN(x) Serial.println(x)
+  #define DBG_PRINTF(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
 #else
   #define DBG_BEGIN()
   #define DBG_PRINT(x)
@@ -106,7 +104,7 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 //  每日照片下载配置
 //  URL 路径前缀，需与 config.py 中的 DOWNLOAD_KEY 保持一致
 // ============================================================
-#define DAILY_PHOTO_PATH_PREFIX "/static/inktime/yourdownloadkey/photo_"
+#define DAILY_PHOTO_PATH_PREFIX "/static/inktime/andyhome0203/photo_"
 #define DAILY_PHOTO_COUNT       5  // photo_0.bin ~ photo_4.bin
 
 // ============================================================
@@ -130,6 +128,19 @@ static const int32_t DEFAULT_TZ       = 8;     // UTC+8
 static const uint8_t DEFAULT_HOUR     = 8;     // 每天 8 点刷新
 
 Config   g_cfg;
+
+// 前置声明：正常调用 idx 固定为 0；debug 传入 forcedIdx 与日志缓冲
+bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx = -1, String* logBuf = nullptr);
+// 日志辅助：同时写 Serial 和（若提供）logBuf；定义在 downloadAndRenderDailyPhoto 之前
+static void pushLog(String* logBuf, const String& line);
+
+// ── 手动调试模式（仅手动唤醒后生效；RAM 变量，每个唤醒周期独立）──
+volatile bool g_debugMode         = false;   // /debug?state=on|off 切换
+volatile bool g_debugOffRequested = false;   // 用户请求退出 debug → 进入 deep sleep
+volatile bool g_requestHappened   = false;   // 任意请求触发，用于重置空闲计时
+String        g_fetchLog;                     // /fetch 产出 + /log 下载的日志缓冲
+static const uint32_t INITIAL_WINDOW_MS = 3UL  * 60UL * 1000UL;  // 手动唤醒后初始 web 在线窗口
+static const uint32_t DEBUG_IDLE_MS    = 30UL * 60UL * 1000UL;  // debug 下无操作自动休眠
 
 // ============================================================
 //  GPIO 管理：启动时释放所有 Deep Sleep 期间的引脚保持
@@ -489,6 +500,107 @@ void handleSave() {
 }
 
 // ============================================================
+//  手动调试路由：/fetch  /log  /debug
+// ============================================================
+
+// /fetch?idx=N —— 手动拉取指定照片并渲染，把本次完整日志返回给浏览器
+void handleFetch() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] GET /fetch");
+
+  g_fetchLog = "";
+  pushLog(&g_fetchLog, String("[Fetch] 开始 ms=") + (int)millis());
+
+  int idx = server.hasArg("idx") ? server.arg("idx").toInt() : -1;
+  if (idx < 0 || idx >= DAILY_PHOTO_COUNT) {
+    pushLog(&g_fetchLog, String("[Fetch] idx 非法: ") + idx + "，回退为 0");
+    idx = 0;
+  }
+
+  bool ok = downloadAndRenderDailyPhoto(g_cfg, idx, &g_fetchLog);
+  pushLog(&g_fetchLog, ok ? "[Fetch] 结果: 成功 ✅" : "[Fetch] 结果: 失败 ❌");
+
+  String html;
+  html.reserve(g_fetchLog.length() + 700);
+  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>InkTime Debug - Fetch</title><style>");
+  html += F("body{font-family:monospace;background:#0b0c10;color:#cfd8e3;padding:16px;margin:0}");
+  html += F("h3{color:#9cffd6}.bar{margin:12px 0}");
+  html += F("pre{background:#11161f;padding:12px;border-radius:8px;white-space:pre-wrap;");
+  html += F("word-break:break-all;border:1px solid #1f2a37;overflow:auto}");
+  html += F(".links a{display:inline-block;margin-right:14px;color:#8ab4ff}");
+  html += F("</style></head><body>");
+  html += F("<h3>📸 手动拉取渲染</h3>");
+  html += F("<div class='bar'>结果：<strong>");
+  html += (ok ? F("✅ 成功") : F("❌ 失败"));
+  html += F("</strong> | idx=");
+  html += String(idx);
+  html += F("</div>");
+  html += F("<div class='links'>");
+  html += F("<a href='/'>[配置页]</a>");
+  html += F("<a href='/log'>[下载日志]</a>");
+  html += F("<a href='/debug?state=off'>[退出 debug]</a>");
+  html += F("</div>");
+  html += F("<pre>");
+  html += htmlEscape(g_fetchLog);
+  html += F("</pre></body></html>");
+
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// /log —— 下载累计的拉取日志
+void handleLog() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] GET /log");
+  server.sendHeader("Content-Disposition", "attachment; filename=inktime_fetch.log");
+  server.send(200, "text/plain; charset=utf-8", g_fetchLog.length() ? g_fetchLog : String(F("(暂无日志)")));
+}
+
+// /debug?state=on|off|confirm_off —— 切换 debug 模式（两步关闭，关前提示下载日志）
+void handleDebug() {
+  g_requestHappened = true;
+  String st = server.hasArg("state") ? server.arg("state") : "";
+  st.toLowerCase();
+  DBG_PRINTF("[HTTP] GET /debug state=%s\n", st.c_str());
+
+  String html;
+  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>InkTime Debug</title><style>");
+  html += F("body{font-family:sans-serif;background:#f0f2f5;padding:24px;text-align:center;color:#1a1a2e}");
+  html += F("a{display:inline-block;margin:8px;padding:10px 16px;background:#4361ee;color:#fff;");
+  html += F("text-decoration:none;border-radius:8px}");
+  html += F("</style></head><body>");
+
+  if (st == "on") {
+    g_debugMode = true;
+    g_debugOffRequested = false;
+    html += F("<h3>🔧 Debug 模式已开启</h3>");
+    html += F("<p>设备保持唤醒，直到你手动关闭或 30 分钟无操作。</p>");
+    html += F("<p><a href='/fetch?idx=0'>手动拉取 idx=0</a>");
+    html += F("<a href='/log'>下载日志</a></p>");
+  } else if (st == "off") {
+    html += F("<h3>准备退出 Debug 模式</h3>");
+    html += F("<p>设备即将进入 Deep Sleep。请先下载本次日志：</p>");
+    html += F("<p><a href='/log'>⬇️ 下载日志 (inktime_fetch.log)</a></p>");
+    html += F("<p><a href='/debug?state=confirm_off'>确认退出并休眠 →</a></p>");
+  } else if (st == "confirm_off") {
+    html += F("<h3>已退出 Debug，进入 Deep Sleep...</h3>");
+    g_debugOffRequested = true;
+  } else {
+    html += F("<h3>🔧 InkTime Debug</h3>");
+    html += F("<p>当前 debug 模式：<strong>");
+    html += (g_debugMode ? F("开启") : F("关闭"));
+    html += F("</strong></p>");
+    html += F("<p><a href='/debug?state=on'>开启 debug</a>");
+    html += F("<a href='/debug?state=off'>关闭 debug</a></p>");
+  }
+  html += F("</body></html>");
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// ============================================================
 //  Deep Sleep 电源管理
 // ============================================================
 
@@ -669,7 +781,13 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
 // ============================================================
 //  下载每日照片并渲染到 GDEM075F52
 // ============================================================
-bool downloadAndRenderDailyPhoto(const Config &cfg) {
+// 把一行日志同时写到 Serial 和（若提供）logBuf，供 /fetch 返回给浏览器
+static void pushLog(String* logBuf, const String& line) {
+  DBG_PRINTLN(line);
+  if (logBuf) { *logBuf += line; *logBuf += '\n'; }
+}
+
+bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBuf) {
   size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;  // 96,000 bytes
   
   // 分配 Canvas
@@ -691,12 +809,13 @@ bool downloadAndRenderDailyPhoto(const Config &cfg) {
 
   if (cfg.backend_hostport.length() == 0) {
     DBG_PRINTLN("[HTTP] 服务器地址为空，跳过下载");
+    pushLog(logBuf, "[拉取] 服务器地址为空，跳过下载");
     heap_caps_free(BlackImage);
     return false;
   }
 
-  // 随机选择一张照片
-  int idx = random(0, DAILY_PHOTO_COUNT);
+  // 选择照片：正常固定 idx=0（评分最高）；debug 时用传入的 forcedIdx
+  int idx = (forcedIdx >= 0 && forcedIdx < DAILY_PHOTO_COUNT) ? forcedIdx : 0;
 
   // 构建下载 URL
   String url;
@@ -710,12 +829,14 @@ bool downloadAndRenderDailyPhoto(const Config &cfg) {
   }
 
   DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+  pushLog(logBuf, String("[拉取] idx=") + idx + " | GET " + url);
 
   HTTPClient http;
   http.begin(url);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
     DBG_PRINTF("[HTTP] 返回码: %d\n", code);
+    pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code + "（非 200）");
     http.end();
     heap_caps_free(BlackImage);
     return false;
@@ -723,6 +844,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg) {
 
   int len = http.getSize();
   DBG_PRINTF("[HTTP] Content-Length: %d\n", len);
+  pushLog(logBuf, String("[拉取] Content-Length: ") + len + " bytes");
 
   WiFiClient *stream = http.getStreamPtr();
   size_t totalBytesReceived = 0;
@@ -783,9 +905,12 @@ bool downloadAndRenderDailyPhoto(const Config &cfg) {
   http.end();
 
   DBG_PRINTF("[HTTP] 下载完成: %d / %d bytes\n", (int)totalBytesReceived, (int)targetBytes);
+  pushLog(logBuf, String("[拉取] 下载完成: ") + (int)totalBytesReceived + " / " + (int)targetBytes
+                       + " bytes，耗时 " + (int)(millis() - start_ms) + "ms");
 
   if (totalBytesReceived != targetBytes) {
     DBG_PRINTF("[HTTP] 尺寸不匹配！期望 %d，实际 %d\n", (int)targetBytes, (int)totalBytesReceived);
+    pushLog(logBuf, "[拉取] 尺寸不匹配，渲染中止");
     heap_caps_free(BlackImage);
     return false;
   }
@@ -798,6 +923,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg) {
 
   heap_caps_free(BlackImage);
   DBG_PRINTLN("[EPD] 渲染完成，屏幕已休眠");
+  pushLog(logBuf, "[拉取] EPD 渲染完成 ✅");
   return true;
 }
 
@@ -891,8 +1017,11 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
   }
 
   DBG_PRINTLN("[EPD] 刷新网络信息页面...");
+  DBG_PRINTLN("[EPD] -> EPD_init()");
   EPD_init();
+  DBG_PRINTLN("[EPD] -> PIC_display()");
   PIC_display(BlackImage);
+  DBG_PRINTLN("[EPD] -> EPD_DeepSleep()");
   EPD_DeepSleep();
   heap_caps_free(BlackImage);
 }
@@ -904,7 +1033,7 @@ void setup() {
   // 1. 释放 Deep Sleep 引脚保持
   releaseAllGpioHoldsAtBoot();
 
-  // 2. 降频省电
+  // 2. 降频省电 (注释掉，防止某些开发板在 80MHz 下 WiFi 不稳定)
   setCpuFrequencyMhz(80);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
@@ -939,6 +1068,9 @@ void setup() {
   pinMode(PIN_EPD_DC, OUTPUT);   // DC
   pinMode(PIN_EPD_CS, OUTPUT);   // CS
   SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
+  // 注意：SPI.begin() 不传 ss 参数！PIN_EPD_CS(27) 由 EPD 驱动手动控制
+  // （EPD_W21_CS_0/1 宏）。若把 27 作为 ss 传给 SPI.begin，硬件会抢着管理
+  // 片选，与驱动冲突，导致 EPD_init 卡死在 BUSY 等待。
   SPI.begin();
 
   // 7. 无有效配置 → 进入 AP 配网
@@ -975,19 +1107,29 @@ void setup() {
     DBG_PRINTLN("[BOOT] 照片下载或渲染失败");
   }
 
-  // 10.5 如果是手动复位，保持局域网 Web 服务器运行 3 分钟，方便用户修改配置
+  // 10.5 手动唤醒：启动局域网 Web 服务器
+  //      - 未开 debug：保持 INITIAL_WINDOW_MS（3 分钟）供改配置，到期即睡
+  //      - 开了 debug：保持唤醒，直到用户 /debug?state=confirm_off 或 DEBUG_IDLE_MS(30min) 无操作
   if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
-    DBG_PRINTLN("[HTTP] 启动局域网 Web 服务器，保持 3 分钟在线...");
-    server.on("/",     HTTP_GET,  handleRoot);
-    server.on("/save", HTTP_POST, handleSave);
+    DBG_PRINTLN("[HTTP] 启动局域网 Web 服务器（手动唤醒）...");
+    server.on("/",      HTTP_GET,  handleRoot);
+    server.on("/save",  HTTP_POST, handleSave);
+    server.on("/fetch", HTTP_GET,  handleFetch);
+    server.on("/log",   HTTP_GET,  handleLog);
+    server.on("/debug", HTTP_GET,  handleDebug);
     server.begin();
-    
-    uint32_t startMs = millis();
-    while (millis() - startMs < 3 * 60 * 1000) {
+
+    uint32_t bootMs = millis();
+    uint32_t lastAct = bootMs;
+    for (;;) {
       server.handleClient();
+      if (g_requestHappened) { g_requestHappened = false; lastAct = millis(); }
+      if (g_debugOffRequested) break;                                       // 用户确认退出 debug
+      if (!g_debugMode && (millis() - bootMs > INITIAL_WINDOW_MS)) break;   // 初始窗口到期且未开 debug
+      if (g_debugMode && (millis() - lastAct > DEBUG_IDLE_MS)) break;       // debug 下 30 分钟无操作
       delay(10);
     }
-    DBG_PRINTLN("[HTTP] 3 分钟结束，准备进入休眠");
+    DBG_PRINTLN("[HTTP] Web 服务器结束，准备进入休眠");
   }
 
   // 11. 计算下次唤醒时间，进入 Deep Sleep
