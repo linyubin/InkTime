@@ -2226,7 +2226,7 @@ def esp_photo(key: str, idx: int):
 def esp_latest(key: str):
     if key != DOWNLOAD_KEY:
         abort(404)
-    
+
     # 被实际拉取/推送时，标记为已展示
     path_txt = BIN_OUTPUT_DIR / "latest.path.txt"
     if path_txt.exists():
@@ -2239,6 +2239,48 @@ def esp_latest(key: str):
 
     p = BIN_OUTPUT_DIR / "latest.bin"
     _write_fetch_sentinel(-1, p)
+    return _send_static_file(p)
+
+
+# ── 相框旋转：sidecar json（朝向）与标定卡 ───────────────────
+# 注意：只有 .bin 的 fetch 调 mark_photo_used；json / calib 不触发，
+# 以免单纯取朝向就把照片误标为"已展示"。
+
+@app.get("/static/inktime/<key>/photo_<int:idx>.json")
+def esp_photo_sidecar(key: str, idx: int):
+    """返回 photo_<idx>.bin 对应的朝向 sidecar（orientation/w/h）。不标已用。"""
+    if key != DOWNLOAD_KEY:
+        abort(404)
+    if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
+        abort(404)
+    p = BIN_OUTPUT_DIR / f"photo_{idx}.json"
+    return _send_static_file(p)
+
+
+@app.get("/static/inktime/<key>/latest.json")
+def esp_latest_sidecar(key: str):
+    """返回 latest.bin 对应的朝向 sidecar。不标已用。"""
+    if key != DOWNLOAD_KEY:
+        abort(404)
+    p = BIN_OUTPUT_DIR / "latest.json"
+    return _send_static_file(p)
+
+
+@app.get("/static/inktime/<key>/calib_p.bin")
+def esp_calib_portrait(key: str):
+    """竖屏标定卡（480×800），由 render_calib_cards.py 预生成。"""
+    if key != DOWNLOAD_KEY:
+        abort(404)
+    p = BIN_OUTPUT_DIR / "calib_p.bin"
+    return _send_static_file(p)
+
+
+@app.get("/static/inktime/<key>/calib_l.bin")
+def esp_calib_landscape(key: str):
+    """横屏标定卡（800×480），由 render_calib_cards.py 预生成。"""
+    if key != DOWNLOAD_KEY:
+        abort(404)
+    p = BIN_OUTPUT_DIR / "calib_l.bin"
     return _send_static_file(p)
 
 

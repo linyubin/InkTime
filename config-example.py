@@ -62,6 +62,16 @@ MEMORY_THRESHOLD = 70.0
 # 每日挑选的照片数量
 DAILY_PHOTO_QUANTITY = 5
 
+# ── 相框横屏自动旋转（需舵机硬件支持）─────────────────────────
+# 启用后：横排照片走 800×480 横屏渲染管线，ESP32 拉取 photo_N.json sidecar
+#         拿朝向后转舵机 90° 横屏显示。
+# 关闭时：所有照片走原竖屏 480×800 管线，sidecar 永远报 portrait，
+#         对无舵机的老设备零感知（向后兼容）。
+# 详见 docs/plans/2026-07-25-frame-rotation-design.md
+ENABLE_FRAME_ROTATION = False
+LANDSCAPE_CANVAS_WIDTH  = 800
+LANDSCAPE_CANVAS_HEIGHT = 480
+
 # 排除包含以下关键词或特征的路径或文件名（全路径匹配，不区分大小写）
 EXCLUDE_KEYWORDS = ["screenshot", "截屏", "屏幕截图", "cache"]
 

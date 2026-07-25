@@ -130,7 +130,10 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                beauty_score,
                type,
                used_at,
-               subjects_json
+               subjects_json,
+               width,
+               height,
+               orientation
         FROM photo_scores
         WHERE exif_json IS NOT NULL
         """
@@ -138,7 +141,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     conn.close()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json in rows:
+    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json, width, height, orientation_raw in rows:
         date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
@@ -165,6 +168,13 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "type_raw": type_str or "",
             "used_at":  used_at or None,
             "subjects_json": subjects_json or "",
+            # 注意：DB 里的 width/height 是 pre-EXIF-transpose 填充的，
+            # 对带 EXIF 旋转标记的照片不可信——此处仅作粗略统计/排序参考。
+            # 真正用于渲染决策的朝向，由 render_image 内 ImageOps.exif_transpose
+            # 之后的 img_w/img_h 重新计算。故这里命名为 orientation_raw。
+            "width": int(width) if width is not None else None,
+            "height": int(height) if height is not None else None,
+            "orientation_raw": orientation_raw or "",
         }
         items.append(item)
 
@@ -737,16 +747,14 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
         print(f"[WARN] compute_crop_window error: {e}")
         return default_left, default_top
 
-def render_image(item: Dict[str, Any]) -> Image.Image:
+def _resolve_and_load_image(item: Dict[str, Any]) -> Image.Image:
     """
-    根据选中的 item 渲染一张 480x800 的 RGB 图像（竖屏）：
-    - 上方图片：占 [0, CANVAS_HEIGHT - TEXT_AREA_HEIGHT)
-    - 底部 TEXT_AREA_HEIGHT 像素为文字区：第一行 side 文案（最多两行），第二行日期 + 地点
+    把 DB 路径解析成可读的本地文件并加载：
+    - 依次尝试原始路径、PATH_MAP 跨平台映射、IMAGE_DIR 兜底推断。
+    - 加载后做 EXIF transpose 并转 RGB，返回的 img 朝向是真实像素朝向。
+    抽出来供 render_image 与 main() 共用：main() 据此计算 sidecar 朝向，
+    保证 sidecar 写入的 orientation 与 render_image 实际走的分支完全一致。
     """
-    canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-
-    # ---------- 加载原图并按 EXIF 方向纠正 ----------
     raw_path = str(item["path"])
     img_path = Path(raw_path)
 
@@ -790,15 +798,49 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
                 debug_msg += f"[DEBUG] 该拼凑的路径存在吗？{guessed_path_abs.exists()}\n"
             else:
                 debug_msg += f"[DEBUG] {pattern} 不存在于 {norm_raw} 中。推断失效。\n"
-        
+
         debug_msg += f"[DEBUG] 或者，你可以尝试在树莓派的 config.py 里加上 PATH_MAP = {{r'\\\\10.168.1.111\\Photos': '你实际的Linux目录'}}\n"
         raise RuntimeError(debug_msg)
+
     img = Image.open(img_path)
     img = ImageOps.exif_transpose(img).convert("RGB")
+    return img
+
+
+def compute_render_orientation(img_w: int, img_h: int) -> str:
+    """
+    根据 EXIF 修正后的真实像素宽高，判定本张照片该走哪条渲染管线。
+    返回 "landscape" 或 "portrait"（square 也归 portrait，维持原管线不变）。
+    用 getattr 兜底，兼容老 config.py 没有该字段的情况。
+    这是 render_image 与 main() 共用的唯一真相源，保证 sidecar 与实际渲染一致。
+    """
+    if bool(getattr(cfg, "ENABLE_FRAME_ROTATION", False)) and (img_w > img_h):
+        return "landscape"
+    return "portrait"
+
+
+def render_image(item: Dict[str, Any]) -> Image.Image:
+    """
+    根据选中的 item 渲染一张 480x800 的 RGB 图像（竖屏）：
+    - 上方图片：占 [0, CANVAS_HEIGHT - TEXT_AREA_HEIGHT)
+    - 底部 TEXT_AREA_HEIGHT 像素为文字区：第一行 side 文案（最多两行），第二行日期 + 地点
+    """
+    canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    # ---------- 加载原图并按 EXIF 方向纠正 ----------
+    img = _resolve_and_load_image(item)
 
     img_w, img_h = img.size
     if img_w == 0 or img_h == 0:
         raise RuntimeError(f"图片尺寸非法: {img.size}")
+
+    # ---------- 横屏路由（EXIF 修正后判定） ----------
+    # 此处 img_w/img_h 是 EXIF transpose 之后的真实像素朝向，是唯一可信来源。
+    # 用 compute_render_orientation 与 main() 共用同一份决策，保证 sidecar 与实际渲染一致。
+    if compute_render_orientation(img_w, img_h) == "landscape":
+        # 把已经 EXIF 修正过的 PIL 图直接交给横屏管线，避免重复打开/transpose。
+        return render_image_landscape(item, img)
 
     # ---------- 照片区域 ----------
     img_area_w = CANVAS_WIDTH
@@ -987,6 +1029,177 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
 
     return canvas
 
+
+def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: str = "bottom") -> Image.Image:
+    """
+    渲染一张 800×480 的横屏 RGB 图像：
+    - cover-crop 填满横屏画布（β-紧：不做 letterbox 毛玻璃回退）。
+    - 复用竖屏的 compute_crop_window 做主体感知裁剪（该函数对几何不敏感，
+      直接传入横屏的 draw_w/draw_h/img_area_w/img_area_h 即可）。
+    - 底部半透明文案叠层沿用竖屏视觉风格，高度按横屏画布比例（约 15%≈72px），
+      字号/换行逻辑与竖屏一致。
+    - text_layout 是为未来"侧栏文案"留的接口；本轮只实现 "bottom"，
+      其他值静默退化为 "bottom"，不抛异常。
+
+    入参 img 必须已经被调用方完成 EXIF transpose + convert("RGB")，
+    本函数不再重新打开文件。
+    """
+    if text_layout != "bottom":
+        # 前向兼容：未来侧栏布局尚未实现，非 "bottom" 一律按底部处理。
+        text_layout = "bottom"
+
+    canvas_w = int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
+    canvas_h = int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    img_w, img_h = img.size
+    if img_w == 0 or img_h == 0:
+        raise RuntimeError(f"横屏渲染：图片尺寸非法 {img.size}")
+
+    # ---------- 横屏铺满裁剪（cover-crop） ----------
+    img_area_w = canvas_w
+    img_area_h = canvas_h
+
+    scale = max(canvas_w / img_w, canvas_h / img_h)
+
+    # ====== 内容感知缩放（与竖屏同款：防止多个主体相隔太远必然切人） ======
+    subjects_json_str = item.get("subjects_json", "")
+    if subjects_json_str:
+        try:
+            subs = json.loads(subjects_json_str)
+            weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
+            valid_subs = [s for s in subs if s.get("label") in weights_map and s.get("conf", 0) >= 0.2]
+
+            if len(valid_subs) >= 1:
+                xs = []
+                ys = []
+                for s in valid_subs:
+                    cx, cy, bw, bh = s["bbox"]
+                    xs.append(cx - bw/2)
+                    xs.append(cx + bw/2)
+                    ys.append(cy - bh/2)
+                    ys.append(cy + bh/2)
+
+                group_min_x, group_max_x = min(xs), max(xs)
+                group_min_y, group_max_y = min(ys), max(ys)
+
+                group_min_x = max(0.0, group_min_x - 0.05)
+                group_max_x = min(1.0, group_max_x + 0.05)
+                group_min_y = max(0.0, group_min_y - 0.05)
+                group_max_y = min(1.0, group_max_y + 0.05)
+
+                sub_w = (group_max_x - group_min_x) * img_w
+                sub_h = (group_max_y - group_min_y) * img_h
+
+                max_scale_w = img_area_w / sub_w if sub_w > 0 else scale
+                max_scale_h = img_area_h / sub_h if sub_h > 0 else scale
+                max_safe_scale = min(max_scale_w, max_scale_h)
+
+                # 横屏 β-紧：宽度优先（短宽画布靠横向填满），高度允许裁剪。
+                min_scale = max(canvas_w / img_w, canvas_h / img_h)
+
+                if scale > max_safe_scale:
+                    scale = max(max_safe_scale, min_scale)
+        except Exception as e:
+            print(f"[WARN] 横屏内容感知缩放失败: {e}")
+    # =================================================================
+
+    draw_w = int(img_w * scale)
+    draw_h = int(img_h * scale)
+    img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
+
+    # 复用竖屏的主体感知裁剪窗口算法（函数本身几何不敏感）。
+    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str)
+
+    # 越界兜底（与竖屏一致）：scale 缩小导致填不满时回到原点裁切。
+    crop_left = left if draw_w >= img_area_w else 0
+    crop_right = left + img_area_w if draw_w >= img_area_w else draw_w
+    crop_top = top if draw_h >= img_area_h else 0
+    crop_bottom = top + img_area_h if draw_h >= img_area_h else draw_h
+
+    img_cropped = img_resized.crop((crop_left, crop_top, crop_right, crop_bottom))
+
+    # 横屏画布矮宽，照片基本都能填满；不做竖屏的 letterbox 毛玻璃回退（β-紧）。
+    pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
+    paste_x = (img_area_w - draw_w) // 2 if draw_w < img_area_w else 0
+    paste_y = (img_area_h - draw_h) // 2 if draw_h < img_area_h else 0
+    pic_area.paste(img_cropped, (paste_x, paste_y))
+
+    canvas.paste(pic_area, (0, 0))
+
+    # ---------- 底部半透明文案叠层（高度按横屏画布 15%≈72px） ----------
+    text_area_height = max(56, int(canvas_h * 0.15))  # 约 72px，留最小值兜底
+    padding_x = 24
+    text_area_top = canvas_h - text_area_height + 10
+
+    box_x0 = 10
+    box_y0 = text_area_top - 8
+    box_x1 = canvas_w - 10
+    box_y1 = canvas_h - 8
+    box_w = box_x1 - box_x0
+    box_h = box_y1 - box_y0
+
+    from PIL import ImageFilter
+    bg_crop = canvas.crop((box_x0, box_y0, box_x1, box_y1))
+    bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=12))
+
+    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 110))
+    glass_bg = Image.alpha_composite(bg_crop_blurred.convert("RGBA"), overlay)
+
+    mask = Image.new("L", (box_w, box_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, box_w, box_h), radius=14, fill=255)
+
+    canvas.paste(glass_bg.convert("RGB"), (box_x0, box_y0), mask)
+
+    def _get_font(path: str, size: int):
+        if path and Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+        if os.name == "nt":
+            for fallback in [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc", r"C:\Windows\Fonts\simhei.ttf"]:
+                if os.path.exists(fallback):
+                    try:
+                        return ImageFont.truetype(fallback, size)
+                    except Exception:
+                        continue
+        return ImageFont.load_default()
+
+    font_big = _get_font(str(FONT_PATH), 22)    # 文案（与竖屏同字号）
+    font_small = _get_font(str(FONT_PATH), 20)  # 日期/地点（与竖屏同字号）
+    text_width = canvas_w - 2 * padding_x
+
+    side_text = item.get("side") or ""
+    text_fill = (0, 0, 0)
+    stroke_w = 0.3
+
+    # 文案：最多两行
+    y = text_area_top
+    if side_text:
+        lines = wrap_text_chinese(draw, side_text, font_big, text_width, max_lines=2)
+        for line in lines:
+            draw.text((padding_x, y), line, font=font_big, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
+            y += 24
+
+    # 日期 + 地点：底部第二行
+    date_display = format_date_display(item.get("date", ""))
+    loc_display = format_location(item.get("lat"), item.get("lon"), item.get("city") or "")
+
+    second_line_y = text_area_top + 44
+    draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
+
+    loc_w = draw.textlength(loc_display, font=font_small)
+    loc_x = padding_x + text_width - loc_w
+    if loc_x < padding_x:
+        loc_x = padding_x
+    draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
+
+    return canvas
+
+
 def apply_four_color_dither(img: Image.Image) -> Image.Image:
     """
     对图像做 Floyd–Steinberg 抖动，量化到四种颜色（黑/白/红/黄）。
@@ -1052,27 +1265,34 @@ def apply_four_color_dither(img: Image.Image) -> Image.Image:
     return img
 
 
-def image_to_palette_bin(img: Image.Image) -> bytes:
+def image_to_palette_bin(img: Image.Image, orientation: str = "portrait") -> bytes:
     """
     把已经量化到 PALETTE 的图像转换成 BIN：
     - 行优先，从上到下，从左到右
     - 每像素 1 字节：0=黑,1=白,2=红,3=黄
+    - orientation="portrait" 期望 480×800；"landscape" 期望 800×480。
+      两种尺寸字节数完全相同（384000），只是逻辑宽高互换。
     """
     img = img.convert("RGB")
-    if img.size != (CANVAS_WIDTH, CANVAS_HEIGHT):
-        raise RuntimeError(f"图像尺寸错误：{img.size}，应为 {(CANVAS_WIDTH, CANVAS_HEIGHT)}")
+    expected = (
+        int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800)),
+        int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480)),
+    ) if orientation == "landscape" else (CANVAS_WIDTH, CANVAS_HEIGHT)
+    if img.size != expected:
+        raise RuntimeError(f"图像尺寸错误：{img.size}，应为 {expected}")
 
-    data = bytearray(CANVAS_WIDTH * CANVAS_HEIGHT)
+    w, h = img.size  # 按图像实际宽高迭代，不再硬编码 CANVAS_WIDTH/CANVAS_HEIGHT
+    data = bytearray(w * h)
     idx_map = {c: i for i, c in enumerate(PALETTE)}  # (r,g,b) -> index
 
-    for y in range(CANVAS_HEIGHT):
-        for x in range(CANVAS_WIDTH):
+    for y in range(h):
+        for x in range(w):
             r, g, b = img.getpixel((x, y))
             key = (int(r), int(g), int(b))
             idx = idx_map.get(key)
             if idx is None:
                 idx, _, _, _ = nearest_palette_color(r, g, b)
-            data[y * CANVAS_WIDTH + x] = idx
+            data[y * w + x] = idx
 
     return bytes(data)
 
@@ -1146,6 +1366,17 @@ def main():
         # 渲染成完整成品图（照片 + 文案 + 日期 + 地点）
         img = render_image(chosen)
 
+        # 朝向决策：与 render_image 内部走的是同一份 compute_render_orientation，
+        # 保证 sidecar json 写入的 orientation 与实际渲染的画布一致。
+        # 用同一张已加载、已 EXIF transpose 的源图来判定，避免重算路径解析。
+        try:
+            src_img = _resolve_and_load_image(chosen)
+            src_w, src_h = src_img.size
+            render_orientation = compute_render_orientation(src_w, src_h)
+        except Exception:
+            # 加载失败则保守按竖屏处理（render_image 若也失败会另行抛错）。
+            render_orientation = "portrait"
+
         # 抖动成四色墨水屏风格
         img_dithered = apply_four_color_dither(img)
 
@@ -1154,12 +1385,12 @@ def main():
         img_dithered.save(preview_path)
         print(f"[OK] 已保存预览 PNG: {preview_path}")
 
-        # 转 BIN：photo_0.bin, photo_1.bin, ...
-        bin_data = image_to_palette_bin(img_dithered)
+        # 转 BIN：photo_0.bin, photo_1.bin, ...（按朝向校验画布尺寸）
+        bin_data = image_to_palette_bin(img_dithered, orientation=render_orientation)
         bin_path = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
         with open(bin_path, "wb") as f:
             f.write(bin_data)
-        print(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节）")
+        print(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节, {render_orientation}）")
 
         # 头文件数组：photo_0.h, photo_1.h，数组名区分开
         h_path = BIN_OUTPUT_DIR / f"photo_{idx}.h"
@@ -1171,6 +1402,22 @@ def main():
         path_file = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
         with open(path_file, "w", encoding="utf-8") as f:
             f.write(chosen["path"])
+
+        # 写 sidecar json：标注本张照片实际渲染朝向与画布尺寸，供 ESP32 / debug 读取。
+        if render_orientation == "landscape":
+            sidecar_w = int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
+            sidecar_h = int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
+        else:
+            sidecar_w = CANVAS_WIDTH
+            sidecar_h = CANVAS_HEIGHT
+        sidecar = {
+            "orientation": render_orientation,
+            "w": sidecar_w,
+            "h": sidecar_h,
+        }
+        sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
+        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+        print(f"[OK] 已生成 sidecar: {sidecar_path} ({sidecar})")
 
     # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
     first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
@@ -1193,6 +1440,13 @@ def main():
         print(f"[OK] 已更新 preview.png -> {first_preview.name}")
     if first_path.exists():
         shutil.copyfile(first_path, latest_path)
+
+    # 同步 latest.json（朝向 sidecar），供走 latest 路径的设备拿朝向。
+    first_json = BIN_OUTPUT_DIR / "photo_0.json"
+    latest_json = BIN_OUTPUT_DIR / "latest.json"
+    if first_json.exists():
+        shutil.copyfile(first_json, latest_json)
+        print(f"[OK] 已更新 latest.json -> {first_json.name}")
 
 
 if __name__ == "__main__":
