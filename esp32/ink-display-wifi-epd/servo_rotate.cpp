@@ -1,0 +1,114 @@
+/*
+ * servo_rotate.cpp — 极简舵机驱动实现
+ *
+ * 设计参考 esp32/servo_serial_cmd/motion.cpp（已验证平顺）：
+ *  - 舵机全程保持 attach，不在每次转动后 detach。ESP32Servo 的 attach() 会立即
+ *    输出 PWM 且首帧脉宽不可控，反复 attach/detach 是抖动的根源。
+ *  - 只在主流程深睡前调 servo_detach() 一次（省电，PWM 停止）。
+ *  - servo_rotate_to() 假定已 attach（servo_init 时 attach 一次后不再 detach），
+ *    内部不 attach/detach，纯按速度推进角度，与 motion.tick() 的推进逻辑一致。
+ *  - 阻塞小循环推进（主流程无 loop()），millis() 算 dt，每 20ms 写一次。
+ *
+ * 位置跟踪：
+ *  - _angleKnown 只在 servo_init() 首次为 false（开机，舵机断电过、位置未知）。
+ *  - servo_detach() 不动 _angleKnown（机械保持，detach 后物理姿态不变）。
+ *  - 首次转动从默认起点 0° 平滑走到 target；之后所有转动从 _curAngle 平滑走。
+ */
+#include "servo_rotate.h"
+#include <ESP32Servo.h>
+
+static Servo   _servo;
+static bool    _attached   = false;
+static float   _curAngle   = 0.0f;
+static bool    _angleKnown = false;  // 仅开机首次 false
+static float   _defaultSpeed = SERVO_DEFAULT_SPEED;
+
+void servo_init() {
+  // attach 前先 write(0)：ESP32Servo attach 瞬间会输出 PWM，先 write 让首帧脉宽确定
+  // 为 0° 对应值（而不是库默认的不可控脉宽）。开机后保持 attach，深睡前才 detach。
+  _servo.write(0);
+  ESP32PWM::allocateTimer(0);
+  _servo.setPeriodHertz(50);
+  _servo.attach(SERVO_PIN, 500, 2400);
+  _attached = true;
+  _angleKnown = false;
+  _curAngle = 0.0f;
+}
+
+void servo_set_default_speed(float speed_deg_s) {
+  if (speed_deg_s >= 1.0f) _defaultSpeed = speed_deg_s;
+}
+
+void servo_attach() {
+  // 深睡前 detach 过、现在要恢复：重新 attach。先 write 当前已知角度避免跳。
+  if (_attached) return;
+  float w = _angleKnown ? _curAngle : 0.0f;
+  _servo.write(w);
+  ESP32PWM::allocateTimer(0);
+  _servo.setPeriodHertz(50);
+  _servo.attach(SERVO_PIN, 500, 2400);
+  _attached = true;
+}
+
+void servo_detach() {
+  if (!_attached) return;
+  _servo.detach();
+  _attached = false;
+  // 不动 _angleKnown：相框靠机械保持，detach 后物理姿态不变，_curAngle 仍可信。
+}
+
+bool servo_rotate_to(float target_deg, float speed_deg_s, uint32_t timeout_ms) {
+  // 确保已 attach（深睡恢复后 / 兜底）
+  if (!_attached) servo_attach();
+
+  // 速度：<0 用全局默认；<1 兜底防 0/负值卡死
+  if (speed_deg_s < 0.0f) speed_deg_s = _defaultSpeed;
+  if (speed_deg_s < 1.0f) speed_deg_s = 1.0f;
+
+  // 起点：已知用 _curAngle；首次开机未知用 0°
+  float startAngle = _angleKnown ? _curAngle : 0.0f;
+  _curAngle = startAngle;
+
+  float diff = target_deg - startAngle;
+  if (fabs(diff) < 0.5f) {
+    // 已到位：写一次定位（位移极小，不甩）
+    _servo.write(target_deg);
+    delay(100);
+    _curAngle = target_deg;
+    _angleKnown = true;
+    return true;   // 不 detach，保持 attach
+  }
+
+  // 平滑推进（与 motion.tick 同款逻辑，阻塞版）
+  uint32_t start = millis();
+  uint32_t lastTick = millis();
+
+  while (true) {
+    uint32_t now = millis();
+
+    if (now - start >= timeout_ms) {
+      return false;   // 超时不 detach，保持 attach（深睡时统一 detach）
+    }
+
+    if (now - lastTick >= 20) {
+      float dt = (now - lastTick) / 1000.0f;
+      lastTick = now;
+
+      float step = speed_deg_s * dt;
+      diff = target_deg - _curAngle;
+
+      if (fabs(diff) <= step) {
+        _curAngle = target_deg;
+        _servo.write(target_deg);
+        delay(150);   // 最后就位时间
+        _angleKnown = true;
+        return true;   // 不 detach
+      } else {
+        _curAngle += (diff > 0 ? step : -step);
+        _servo.write(_curAngle);
+      }
+    }
+
+    delay(2);
+  }
+}

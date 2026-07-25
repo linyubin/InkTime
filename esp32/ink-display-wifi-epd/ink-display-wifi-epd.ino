@@ -42,6 +42,7 @@
 #include <ESP32epdx.h>
 #include "EPD.h"
 #include "ap_bg.h"
+#include "servo_rotate.h"
 
 
 // ============================================================
@@ -103,6 +104,7 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 // ============================================================
 //  每日照片下载配置
 //  URL 路径前缀，需与 config.py 中的 DOWNLOAD_KEY 保持一致
+//  支持三种文件：.bin（画面）/ .json（朝向 sidecar）/ calib_{p,l}.bin（标定卡）
 // ============================================================
 #define DAILY_PHOTO_PATH_PREFIX "/static/inktime/andyhome0203/photo_"
 #define DAILY_PHOTO_COUNT       5  // photo_0.bin ~ photo_4.bin
@@ -121,18 +123,50 @@ struct Config {
   uint8_t refresh_hour;      // 每日刷新时间（0-23）
   bool    rotate180;         // 画面旋转 180°
   bool    valid;             // 配置是否有效
+  // ── 舵机标定参数（相框旋转功能）──
+  float   servo_portrait_deg;   // 竖屏目标角度（°，标定写入）
+  float   servo_landscape_deg;  // 横屏目标角度（°，标定写入）
+  float   servo_speed;          // 转动速度（°/s，默认 40，标定可调）
+  bool    servo_calibrated;     // 是否已标定（false 时禁用舵机、不挡渲染）
+  bool    landscape_invert;     // 横屏画面方向反转（现场标定）
+  String  last_orientation;     // 上次朝向 "portrait"/"landscape"，跨深睡存活；空串触发首次归位
 };
 
 static const char*   DEFAULT_HOSTPORT = "";
 static const int32_t DEFAULT_TZ       = 8;     // UTC+8
 static const uint8_t DEFAULT_HOUR     = 8;     // 每天 8 点刷新
+// 舵机默认值（servo_calibrated=false 时这些值不会被使用）
+static const float   DEFAULT_SERVO_SPEED = 40.0f;   // °/s，偏慢保扭矩
 
 Config   g_cfg;
 
-// 前置声明：正常调用 idx 固定为 0；debug 传入 forcedIdx 与日志缓冲
-bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx = -1, String* logBuf = nullptr);
-// 日志辅助：同时写 Serial 和（若提供）logBuf；定义在 downloadAndRenderDailyPhoto 之前
+// 前置声明
+// 主流程：fetch json → fetch bin 到 framebuffer → 转舵机 → 刷屏
+//   forcedIdx<0 时取 idx=0（评分最高）；debug /fetch?idx=N 传具体 idx
+//   forcedCalibBin 非空时跳过 bin 下载，直接把标定卡字节流渲染到 framebuffer（标定台用）
+bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx = -1, String* logBuf = nullptr,
+                                 const char* forcedCalibBin = nullptr, const char* forcedCalibOri = nullptr);
+// 日志辅助：同时写 Serial 和（若提供）logBuf
 static void pushLog(String* logBuf, const String& line);
+// 舵机决策：根据当前/上次朝向决定是否转、转到哪
+static void applyServoForOrientation(const Config &cfg, const String &orientation, String* logBuf);
+// 渲染阶段辅助函数的前置声明（定义在文件后半部，handleServo 在它们之前调用）
+static String buildPhotoUrl(const Config &cfg, const String &suffix);
+static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrientation, String* logBuf);
+static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
+                                       unsigned char* BlackImage, String* logBuf);
+static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, const String &orientation);
+static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_t *outLen, String* logBuf);
+// HTML 组件前置声明（定义在文件前部 htmlEscape 之后）
+static String htmlHead(const String& title, const char* activeKey);
+static String htmlNav(const char* activeKey);
+static String htmlFoot();
+static String buildNeedNetworkPage();
+// 路由 handler 前置声明
+void handleRoot();         // /  (hub 首页)
+void handleNetwork();      // /network
+void handleScreen();       // /screen
+void handleServoTest();    // /servo_test
 
 // ── 手动调试模式（仅手动唤醒后生效；RAM 变量，每个唤醒周期独立）──
 volatile bool g_debugMode         = false;   // /debug?state=on|off 切换
@@ -141,6 +175,12 @@ volatile bool g_requestHappened   = false;   // 任意请求触发，用于重�
 String        g_fetchLog;                     // /fetch 产出 + /log 下载的日志缓冲
 static const uint32_t INITIAL_WINDOW_MS = 3UL  * 60UL * 1000UL;  // 手动唤醒后初始 web 在线窗口
 static const uint32_t DEBUG_IDLE_MS    = 30UL * 60UL * 1000UL;  // debug 下无操作自动休眠
+
+// ── EPD 屏幕存在检测（开机时探测一次）──
+// false 时所有 EPD 调用静默跳过，避免无屏时 lcd_chkstatus 卡满 30s × 多次。
+// 默认 true（乐观），detectEpdPresent() 在 setup() 早期修正它。
+bool g_epdPresent = true;
+static bool detectEpdPresent();   // 定义在 setup() 附近
 
 // ============================================================
 //  GPIO 管理：启动时释放所有 Deep Sleep 期间的引脚保持
@@ -173,6 +213,13 @@ void loadConfig(Config &cfg) {
   cfg.tz_offset_hours  = prefs.getInt("tz", DEFAULT_TZ);
   cfg.refresh_hour     = (uint8_t)prefs.getUChar("hour", DEFAULT_HOUR);
   cfg.rotate180        = prefs.getBool("rot180", false);
+  // 舵机标定参数（默认未标定）
+  cfg.servo_portrait_deg  = prefs.getFloat("sv_p_deg", 0.0f);
+  cfg.servo_landscape_deg = prefs.getFloat("sv_l_deg", 90.0f);
+  cfg.servo_speed         = prefs.getFloat("sv_spd",   DEFAULT_SERVO_SPEED);
+  cfg.servo_calibrated    = prefs.getBool("sv_cal",    false);
+  cfg.landscape_invert    = prefs.getBool("ls_inv",    false);
+  cfg.last_orientation    = prefs.getString("last_ori", "");
   prefs.end();
 
   cfg.valid = (cfg.wifi_ssid.length() > 0);
@@ -183,6 +230,11 @@ void loadConfig(Config &cfg) {
   DBG_PRINTF("[CFG] hostport=%s\n",   cfg.backend_hostport.c_str());
   DBG_PRINTF("[CFG] tz=%d, hour=%d\n", cfg.tz_offset_hours, (int)cfg.refresh_hour);
   DBG_PRINTF("[CFG] rotate180=%s\n",  cfg.rotate180 ? "true" : "false");
+  DBG_PRINTF("[CFG] servo_cal=%s p=%.1f l=%.1f spd=%.1f inv=%s\n",
+             cfg.servo_calibrated ? "Y" : "N",
+             cfg.servo_portrait_deg, cfg.servo_landscape_deg,
+             cfg.servo_speed, cfg.landscape_invert ? "Y" : "N");
+  DBG_PRINTF("[CFG] last_ori=%s\n",   cfg.last_orientation.c_str());
   DBG_PRINTF("[CFG] valid=%s\n",      cfg.valid ? "true" : "false");
 #endif
 }
@@ -197,6 +249,26 @@ void saveConfig(const Config &cfg) {
   prefs.putBool("rot180",     cfg.rotate180);
   prefs.end();
   DBG_PRINTLN("[CFG] 配置已保存");
+}
+
+// 保存舵机标定参数（独立于 saveConfig，避免每次改 WiFi 都重写舵机字段）
+void saveServoConfig(const Config &cfg) {
+  prefs.begin("dashcfg", false);
+  prefs.putFloat("sv_p_deg", cfg.servo_portrait_deg);
+  prefs.putFloat("sv_l_deg", cfg.servo_landscape_deg);
+  prefs.putFloat("sv_spd",   cfg.servo_speed);
+  prefs.putBool ("sv_cal",   cfg.servo_calibrated);
+  prefs.putBool ("ls_inv",   cfg.landscape_invert);
+  prefs.end();
+  DBG_PRINTLN("[CFG] 舵机标定已保存");
+}
+
+// 保存上次朝向（每次成功转动后调用，跨深睡存活）
+void saveLastOrientation(const String &ori) {
+  prefs.begin("dashcfg", false);
+  prefs.putString("last_ori", ori);
+  prefs.end();
+  DBG_PRINTF("[CFG] last_orientation=%s 已保存\n", ori.c_str());
 }
 
 // ============================================================
@@ -271,6 +343,139 @@ String htmlEscape(const String &s) {
 }
 
 // ============================================================
+//  共享 HTML 组件（统一浅色主题 + 顶部导航）
+//  所有页面通过 htmlHead/htmlFoot 包裹，单点维护样式和导航。
+// ============================================================
+
+// 模块定义：导航栏 + hub 卡片共用。activeKey 用于导航高亮。
+struct WebModule {
+  const char* key;     // 唯一标识
+  const char* path;    // URL
+  const char* title;   // 显示名
+  const char* desc;    // 一句话描述（hub 卡片用）
+  const char* icon;    // emoji 图标
+  bool needsNetwork;   // true=依赖 STA 网络（AP 模式下灰显）
+};
+
+static const WebModule WEB_MODULES[] = {
+  {"network", "/network",    "网络配置",     "WiFi / 服务器 / 刷新时间",          "📶", false},
+  {"fetch",   "/fetch",      "图片拉取",     "手动拉取指定 idx 的照片并渲染",     "🖼", true},
+  {"screen",  "/screen",     "屏幕显示测试", "发送 4 色测试条，验证墨水屏",        "📺", false},
+  {"servotest","/servo_test", "舵机控制测试", "填角度+速度，纯转动验证（不保存）", "⚙", false},
+  {"calib",   "/servo?test=show", "相框标定", "标定横竖屏角度+保存，端到端测试",   "🎯", false},
+};
+static const int WEB_MODULE_COUNT = sizeof(WEB_MODULES) / sizeof(WEB_MODULES[0]);
+
+// 顶部导航条：返回 hub 首页 + 当前模块名。activeKey 高亮当前模块（nullptr 则只显首页链接）。
+static String htmlNav(const char* activeKey) {
+  String s;
+  s += F("<nav class='topnav'><div class='nav-inner'>");
+  s += F("<a href='/' class='brand'>🖼 InkTime</a>");
+  if (activeKey) {
+    // 找到当前模块名显示在导航上
+    for (int i = 0; i < WEB_MODULE_COUNT; ++i) {
+      if (strcmp(WEB_MODULES[i].key, activeKey) == 0) {
+        s += F("<span class='nav-sep'>›</span><span class='nav-current'>");
+        s += WEB_MODULES[i].title;
+        s += F("</span>");
+        break;
+      }
+    }
+  }
+  s += F("</div></nav>");
+  return s;
+}
+
+// HTML 头部 + 共享 CSS（浅色主题）+ 导航条。
+// activeKey: 当前模块 key（用于导航高亮），nullptr 表示是 hub 自身（不高亮任何模块）。
+static String htmlHead(const String& title, const char* activeKey) {
+  String s;
+  s.reserve(2400);
+  s += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
+  s += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
+  s += F("<title>");
+  s += title;
+  s += F("</title><style>");
+  // 共享浅色主题（提取自原 buildConfigPage，统一全站）
+  s += F("*{box-sizing:border-box;margin:0;padding:0}");
+  s += F("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;");
+  s += F("background:#f0f2f5;color:#1a1a2e;padding:20px;min-height:100vh}");
+  s += F(".card{max-width:480px;margin:0 auto;background:#fff;border-radius:16px;");
+  s += F("box-shadow:0 4px 24px rgba(0,0,0,0.08);padding:28px;border:1px solid #e8eaed}");
+  s += F("h2{text-align:center;color:#16213e;margin-bottom:6px;font-size:22px}");
+  s += F("h3{color:#16213e;margin-bottom:12px;font-size:18px}");
+  s += F(".subtitle{text-align:center;color:#888;font-size:13px;margin-bottom:20px}");
+  s += F("label{display:block;font-weight:600;margin-bottom:6px;color:#333;font-size:14px}");
+  s += F("input[type=text],input[type=password],input[type=number],select{width:100%;padding:10px 14px;");
+  s += F("border:1.5px solid #ddd;border-radius:10px;font-size:15px;outline:none;");
+  s += F("transition:border-color 0.2s;background:#fafbfc}");
+  s += F("input:focus,select:focus{border-color:#4361ee}");
+  s += F(".group{margin-bottom:18px}");
+  s += F(".row{display:flex;gap:12px}");
+  s += F(".row .group{flex:1}");
+  s += F(".cb-group{display:flex;align-items:center;gap:8px;margin:18px 0}");
+  s += F(".cb-group input{width:18px;height:18px;accent-color:#4361ee}");
+  s += F(".cb-group label{margin:0;font-weight:400;font-size:14px}");
+  s += F("button,.btn{display:inline-block;width:100%;padding:12px;background:linear-gradient(135deg,#4361ee,#3a0ca3);");
+  s += F("color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:600;");
+  s += F("cursor:pointer;transition:opacity 0.2s;margin-top:8px;text-decoration:none;text-align:center}");
+  s += F("button:hover,.btn:hover{opacity:0.9}");
+  s += F(".btn-secondary{background:#e8eaed;color:#1a1a2e}");
+  s += F(".btn-row{display:flex;gap:10px}");
+  s += F(".btn-row button,.btn-row .btn{margin-top:0}");
+  // 导航条样式
+  s += F(".topnav{background:#fff;border-bottom:1px solid #e8eaed;margin:-20px -20px 20px;padding:14px 20px}");
+  s += F(".nav-inner{max-width:480px;margin:0 auto;display:flex;align-items:center;gap:8px}");
+  s += F(".brand{color:#16213e;text-decoration:none;font-weight:700;font-size:16px}");
+  s += F(".nav-sep{color:#aaa}");
+  s += F(".nav-current{color:#4361ee;font-weight:600;font-size:15px}");
+  // hub 专用样式
+  s += F(".grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}");
+  s += F(".module-card{display:block;background:#fff;border:1px solid #e8eaed;border-radius:14px;");
+  s += F("padding:18px;text-decoration:none;color:#1a1a2e;transition:all 0.2s}");
+  s += F(".module-card:hover{border-color:#4361ee;box-shadow:0 4px 16px rgba(67,97,238,0.12);transform:translateY(-1px)}");
+  s += F(".module-card.disabled{opacity:0.45;pointer-events:none;background:#f8f9fa}");
+  s += F(".module-card .ico{font-size:28px;margin-bottom:8px}");
+  s += F(".module-card .t{font-weight:700;font-size:15px;margin-bottom:4px}");
+  s += F(".module-card .d{font-size:12px;color:#888;line-height:1.4}");
+  // 状态条
+  s += F(".status-bar{background:#f8f9fa;border:1px solid #e8eaed;border-radius:10px;");
+  s += F("padding:12px 14px;margin-bottom:18px;font-size:13px}");
+  s += F(".status-bar .row-s{display:flex;justify-content:space-between;padding:3px 0}");
+  s += F(".status-bar .k{color:#666}");
+  s += F(".status-bar .v{font-weight:600}");
+  s += F(".ok{color:#2e7d32}.warn{color:#c62828}");
+  // 提示框
+  s += F(".note{background:#fff8e1;border:1px solid #ffe082;border-radius:8px;");
+  s += F("padding:10px 14px;font-size:13px;color:#6b5800;margin:12px 0}");
+  s += F(".log{background:#0b0c10;color:#cfd8e3;padding:12px;border-radius:8px;");
+  s += F("white-space:pre-wrap;font-family:monospace;font-size:12px;margin-top:12px;");
+  s += F("max-height:300px;overflow:auto}");
+  s += F("</style></head><body>");
+  s += htmlNav(activeKey);
+  return s;
+}
+
+static String htmlFoot() {
+  return F("</body></html>");
+}
+
+// "需要先配网" 提示页（AP 模式下访问需要网络的模块时返回）
+static String buildNeedNetworkPage() {
+  String s = htmlHead(F("需要网络"), nullptr);
+  s += F("<div class='card'>");
+  s += F("<h3>⚠️ 需要先完成网络配置</h3>");
+  s += F("<p style='color:#666;font-size:14px;margin:12px 0'>");
+  s += F("此模块需要设备已连接 WiFi（STA 模式）。请先在网络配置里填好 WiFi 和服务器，");
+  s += F("设备重启进入正常运行后，手动唤醒（按 RST 键）再访问。</p>");
+  s += F("<a href='/' class='btn'>← 返回首页</a>");
+  s += F("<a href='/network' class='btn btn-secondary' style='margin-top:10px'>去网络配置</a>");
+  s += F("</div>");
+  s += htmlFoot();
+  return s;
+}
+
+// ============================================================
 //  WiFi 硬件重置（进入 AP 配网前调用）
 // ============================================================
 static void wifiHardResetForPortal() {
@@ -308,40 +513,13 @@ String buildConfigPage() {
   String html;
   html.reserve(6144);
 
-  // ── HTML 头部 & 样式 ──
-  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
-  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>InkTime WiFi 设置</title>");
-  html += F("<style>");
-  html += F("*{box-sizing:border-box;margin:0;padding:0}");
-  html += F("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;");
-  html += F("background:#f0f2f5;color:#1a1a2e;padding:20px;min-height:100vh}");
-  html += F(".card{max-width:420px;margin:0 auto;background:#fff;border-radius:16px;");
-  html += F("box-shadow:0 4px 24px rgba(0,0,0,0.08);padding:32px;border:1px solid #e8eaed}");
-  html += F("h2{text-align:center;color:#16213e;margin-bottom:8px;font-size:22px}");
-  html += F(".subtitle{text-align:center;color:#888;font-size:13px;margin-bottom:24px}");
-  html += F("label{display:block;font-weight:600;margin-bottom:6px;color:#333;font-size:14px}");
-  html += F("input[type=text],input[type=password],select{width:100%;padding:10px 14px;");
-  html += F("border:1.5px solid #ddd;border-radius:10px;font-size:15px;outline:none;");
-  html += F("transition:border-color 0.2s;background:#fafbfc}");
-  html += F("input:focus,select:focus{border-color:#4361ee}");
-  html += F(".group{margin-bottom:18px}");
-  html += F(".row{display:flex;gap:12px}");
-  html += F(".row .group{flex:1}");
-  html += F(".cb-group{display:flex;align-items:center;gap:8px;margin:18px 0}");
-  html += F(".cb-group input{width:18px;height:18px;accent-color:#4361ee}");
-  html += F(".cb-group label{margin:0;font-weight:400;font-size:14px}");
-  html += F("button{width:100%;padding:12px;background:linear-gradient(135deg,#4361ee,#3a0ca3);");
-  html += F("color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;");
-  html += F("cursor:pointer;transition:opacity 0.2s;margin-top:8px}");
-  html += F("button:hover{opacity:0.9}");
-  html += F(".warn{color:#c00;font-size:13px;margin-top:12px;text-align:center}");
-  html += F("</style></head><body>");
+  // ── HTML 头部（共享样式 + 导航）──
+  html += htmlHead(F("网络配置 · InkTime"), "network");
 
   // ── 表单主体 ──
   html += F("<div class='card'>");
-  html += F("<h2>🖼 InkTime</h2>");
-  html += F("<p class='subtitle'>WiFi 墨水屏相框设置</p>");
+  html += F("<h2>📶 网络配置</h2>");
+  html += F("<p class='subtitle'>WiFi / 服务器 / 刷新时间</p>");
 
   // 显示当前网络状态
   html += F("<div style='background:#f8f9fa;padding:12px;border-radius:8px;margin-bottom:20px;text-align:center;font-size:14px;'>");
@@ -438,7 +616,10 @@ String buildConfigPage() {
 
   // 提交按钮
   html += F("<button type='submit'>保存并重启</button>");
-  html += F("</form></div></body></html>");
+  html += F("</form>");
+  html += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
+  html += F("</div>");
+  html += htmlFoot();
 
   return html;
 }
@@ -446,8 +627,79 @@ String buildConfigPage() {
 // ============================================================
 //  WebServer 路由处理
 // ============================================================
+
+// 构建状态条（hub 顶部显示设备状态）
+static String buildStatusBar() {
+  String s;
+  s += F("<div class='status-bar'>");
+  // 屏幕
+  s += F("<div class='row-s'><span class='k'>屏幕</span><span class='v ");
+  s += g_epdPresent ? F("ok'>已连接") : F("warn'>未检测到");
+  s += F("</span></div>");
+  // 舵机
+  s += F("<div class='row-s'><span class='k'>舵机</span><span class='v ");
+  s += g_cfg.servo_calibrated ? F("ok'>已标定") : F("warn'>未标定");
+  s += F("</span></div>");
+  // WiFi
+  bool apMode = (WiFi.status() != WL_CONNECTED);
+  s += F("<div class='row-s'><span class='k'>网络</span><span class='v ");
+  s += apMode ? F("warn'>AP 配网模式") : F("ok'>STA 已连接");
+  s += F("</span></div>");
+  // IP
+  s += F("<div class='row-s'><span class='k'>IP</span><span class='v'>");
+  s += apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  s += F("</span></div>");
+  s += F("</div>");
+  return s;
+}
+
+// GET / —— hub 首页（卡片导航）
 void handleRoot() {
-  DBG_PRINTLN("[HTTP] GET /");
+  DBG_PRINTLN("[HTTP] GET / (hub)");
+  g_requestHappened = true;
+
+  bool apMode = (WiFi.status() != WL_CONNECTED);
+
+  String s = htmlHead(F("InkTime 控制台"), nullptr);
+  s += F("<div class='card'>");
+  s += F("<h2>🖼 InkTime</h2>");
+  s += F("<p class='subtitle'>墨水屏相框控制台</p>");
+
+  s += buildStatusBar();
+
+  if (apMode) {
+    s += F("<div class='note'>📡 AP 配网模式：请先完成「网络配置」连上 WiFi，");
+    s += F("设备重启进入正常运行后，手动唤醒（按 RST）即可使用全部模块。</div>");
+  }
+
+  s += F("<div class='grid'>");
+  for (int i = 0; i < WEB_MODULE_COUNT; ++i) {
+    const WebModule& m = WEB_MODULES[i];
+    bool disabled = apMode && m.needsNetwork;
+    s += F("<a class='module-card");
+    if (disabled) s += F(" disabled");
+    s += F("' href='");
+    s += m.path;
+    s += F("'>");
+    s += F("<div class='ico'>");
+    s += m.icon;
+    s += F("</div><div class='t'>");
+    s += m.title;
+    s += F("</div><div class='d'>");
+    s += m.desc;
+    if (disabled) s += F("（需先配网）");
+    s += F("</div></a>");
+  }
+  s += F("</div>");  // .grid
+  s += F("</div>");  // .card
+  s += htmlFoot();
+  server.send(200, "text/html; charset=utf-8", s);
+}
+
+// GET /network —— 网络配置表单（原 handleRoot 的内容）
+void handleNetwork() {
+  DBG_PRINTLN("[HTTP] GET /network");
+  g_requestHappened = true;
   server.send(200, "text/html; charset=utf-8", buildConfigPage());
 }
 
@@ -485,14 +737,12 @@ void handleSave() {
 
   saveConfig(newCfg);
 
-  String resp;
-  resp += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
-  resp += F("<style>body{font-family:sans-serif;display:flex;align-items:center;");
-  resp += F("justify-content:center;height:100vh;background:#f0f2f5}");
-  resp += F(".msg{text-align:center;padding:40px;background:#fff;border-radius:16px;");
-  resp += F("box-shadow:0 4px 24px rgba(0,0,0,0.08)}</style></head><body>");
-  resp += F("<div class='msg'><h3>✅ 保存成功</h3><p>设备即将重启...</p></div>");
-  resp += F("</body></html>");
+  String resp = htmlHead(F("保存成功 · InkTime"), "network");
+  resp += F("<div class='card' style='text-align:center'>");
+  resp += F("<h3>✅ 保存成功</h3>");
+  resp += F("<p style='color:#666;margin:12px 0'>设备即将重启...</p>");
+  resp += F("</div>");
+  resp += htmlFoot();
 
   server.send(200, "text/html; charset=utf-8", resp);
   delay(800);
@@ -503,50 +753,70 @@ void handleSave() {
 //  手动调试路由：/fetch  /log  /debug
 // ============================================================
 
-// /fetch?idx=N —— 手动拉取指定照片并渲染，把本次完整日志返回给浏览器
+// /fetch —— 图片拉取模块页。无 idx 参数显示选择器；有 idx 执行拉取渲染并显示日志。
 void handleFetch() {
   g_requestHappened = true;
   DBG_PRINTLN("[HTTP] GET /fetch");
 
-  g_fetchLog = "";
-  pushLog(&g_fetchLog, String("[Fetch] 开始 ms=") + (int)millis());
-
-  int idx = server.hasArg("idx") ? server.arg("idx").toInt() : -1;
-  if (idx < 0 || idx >= DAILY_PHOTO_COUNT) {
-    pushLog(&g_fetchLog, String("[Fetch] idx 非法: ") + idx + "，回退为 0");
-    idx = 0;
+  // AP 模式 / hostport 为空：这个模块依赖服务器，提示先配网
+  bool apMode = (WiFi.status() != WL_CONNECTED);
+  bool noHost = (g_cfg.backend_hostport.length() == 0);
+  if (apMode || noHost) {
+    server.send(200, "text/html; charset=utf-8", buildNeedNetworkPage());
+    return;
   }
 
-  bool ok = downloadAndRenderDailyPhoto(g_cfg, idx, &g_fetchLog);
-  pushLog(&g_fetchLog, ok ? "[Fetch] 结果: 成功 ✅" : "[Fetch] 结果: 失败 ❌");
+  String s = htmlHead(F("图片拉取 · InkTime"), "fetch");
+  s += F("<div class='card'>");
+  s += F("<h2>🖼 图片拉取</h2>");
+  s += F("<p class='subtitle'>手动拉取指定编号的照片并渲染到屏幕</p>");
 
-  String html;
-  html.reserve(g_fetchLog.length() + 700);
-  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
-  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>InkTime Debug - Fetch</title><style>");
-  html += F("body{font-family:monospace;background:#0b0c10;color:#cfd8e3;padding:16px;margin:0}");
-  html += F("h3{color:#9cffd6}.bar{margin:12px 0}");
-  html += F("pre{background:#11161f;padding:12px;border-radius:8px;white-space:pre-wrap;");
-  html += F("word-break:break-all;border:1px solid #1f2a37;overflow:auto}");
-  html += F(".links a{display:inline-block;margin-right:14px;color:#8ab4ff}");
-  html += F("</style></head><body>");
-  html += F("<h3>📸 手动拉取渲染</h3>");
-  html += F("<div class='bar'>结果：<strong>");
-  html += (ok ? F("✅ 成功") : F("❌ 失败"));
-  html += F("</strong> | idx=");
-  html += String(idx);
-  html += F("</div>");
-  html += F("<div class='links'>");
-  html += F("<a href='/'>[配置页]</a>");
-  html += F("<a href='/log'>[下载日志]</a>");
-  html += F("<a href='/debug?state=off'>[退出 debug]</a>");
-  html += F("</div>");
-  html += F("<pre>");
-  html += htmlEscape(g_fetchLog);
-  html += F("</pre></body></html>");
+  // idx 选择表单
+  s += F("<div class='group'><label>照片编号 (0=评分最高)</label>");
+  s += F("<select id='idx'>");
+  for (int i = 0; i < DAILY_PHOTO_COUNT; ++i) {
+    s += F("<option value='");
+    s += String(i);
+    s += F("'>photo_");
+    s += String(i);
+    s += F("</option>");
+  }
+  s += F("</select></div>");
+  s += F("<button onclick='doFetch()'>📥 拉取并渲染</button>");
+  s += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
+  s += F("<div id='log' class='log' style='display:none'></div>");
+  s += F("</div>");
 
-  server.send(200, "text/html; charset=utf-8", html);
+  s += F("<script>");
+  s += F("function doFetch(){");
+  s += F("var idx=document.getElementById('idx').value;");
+  s += F("var el=document.getElementById('log');");
+  s += F("el.style.display='block';el.textContent='正在拉取 idx='+idx+' ...（可能需要 10-30 秒）';");
+  s += F("fetch('/fetch?idx='+idx).then(r=>r.text()).then(t=>{el.textContent=t;}).catch(e=>{el.textContent='请求失败: '+e;});");
+  s += F("}");
+  s += F("</script>");
+
+  // 如果带 idx 参数（来自上面的 fetch 调用），执行拉取并返回纯文本日志（内联进 #log）
+  if (server.hasArg("idx")) {
+    g_fetchLog = "";
+    pushLog(&g_fetchLog, String("[Fetch] 开始 idx=") + server.arg("idx") + " ms=" + (int)millis());
+
+    int idx = server.arg("idx").toInt();
+    if (idx < 0 || idx >= DAILY_PHOTO_COUNT) {
+      pushLog(&g_fetchLog, String("[Fetch] idx 非法: ") + idx + "，回退为 0");
+      idx = 0;
+    }
+
+    bool ok = downloadAndRenderDailyPhoto(g_cfg, idx, &g_fetchLog);
+    pushLog(&g_fetchLog, ok ? "[Fetch] 结果: 成功 ✅" : "[Fetch] 结果: 失败 ❌");
+
+    // 直接返回纯文本日志（JS 端塞进 #log）
+    server.send(200, "text/plain; charset=utf-8", g_fetchLog);
+    return;
+  }
+
+  s += htmlFoot();
+  server.send(200, "text/html; charset=utf-8", s);
 }
 
 // /log —— 下载累计的拉取日志
@@ -564,39 +834,337 @@ void handleDebug() {
   st.toLowerCase();
   DBG_PRINTF("[HTTP] GET /debug state=%s\n", st.c_str());
 
-  String html;
-  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>");
-  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>InkTime Debug</title><style>");
-  html += F("body{font-family:sans-serif;background:#f0f2f5;padding:24px;text-align:center;color:#1a1a2e}");
-  html += F("a{display:inline-block;margin:8px;padding:10px 16px;background:#4361ee;color:#fff;");
-  html += F("text-decoration:none;border-radius:8px}");
-  html += F("</style></head><body>");
+  String html = htmlHead(F("Debug · InkTime"), nullptr);
+  html += F("<div class='card' style='text-align:center'>");
 
   if (st == "on") {
     g_debugMode = true;
     g_debugOffRequested = false;
     html += F("<h3>🔧 Debug 模式已开启</h3>");
-    html += F("<p>设备保持唤醒，直到你手动关闭或 30 分钟无操作。</p>");
-    html += F("<p><a href='/fetch?idx=0'>手动拉取 idx=0</a>");
-    html += F("<a href='/log'>下载日志</a></p>");
+    html += F("<p style='color:#666;margin:12px 0'>设备保持唤醒，直到你手动关闭或 30 分钟无操作。</p>");
+    html += F("<p style='margin-top:16px'><a href='/' class='btn'>← 返回首页</a></p>");
   } else if (st == "off") {
     html += F("<h3>准备退出 Debug 模式</h3>");
-    html += F("<p>设备即将进入 Deep Sleep。请先下载本次日志：</p>");
-    html += F("<p><a href='/log'>⬇️ 下载日志 (inktime_fetch.log)</a></p>");
-    html += F("<p><a href='/debug?state=confirm_off'>确认退出并休眠 →</a></p>");
+    html += F("<p style='color:#666;margin:12px 0'>设备即将进入 Deep Sleep。请先下载本次日志：</p>");
+    html += F("<p style='margin-top:16px'><a href='/log' class='btn'>⬇️ 下载日志 (inktime_fetch.log)</a></p>");
+    html += F("<p><a href='/debug?state=confirm_off' class='btn btn-secondary'>确认退出并休眠 →</a></p>");
   } else if (st == "confirm_off") {
     html += F("<h3>已退出 Debug，进入 Deep Sleep...</h3>");
     g_debugOffRequested = true;
   } else {
     html += F("<h3>🔧 InkTime Debug</h3>");
-    html += F("<p>当前 debug 模式：<strong>");
+    html += F("<p style='color:#666;margin:12px 0'>当前 debug 模式：<strong>");
     html += (g_debugMode ? F("开启") : F("关闭"));
     html += F("</strong></p>");
-    html += F("<p><a href='/debug?state=on'>开启 debug</a>");
-    html += F("<a href='/debug?state=off'>关闭 debug</a></p>");
+    html += F("<p style='margin-top:16px'><a href='/debug?state=on' class='btn'>开启 debug</a></p>");
+    html += F("<p><a href='/debug?state=off' class='btn btn-secondary'>关闭 debug</a></p>");
+    html += F("<p style='margin-top:16px'><a href='/' class='btn btn-secondary'>← 返回首页</a></p>");
   }
-  html += F("</body></html>");
+  html += F("</div>");
+  html += htmlFoot();
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// /screen —— 屏幕显示测试模块页。
+//   无参数：显示页面（屏幕状态 + "发送 4 色测试条"按钮）。
+//   ?run=1：执行 4 色测试图案刷新，返回纯文本结果（AJAX 用）。
+void handleScreen() {
+  g_requestHappened = true;
+
+  // ?run=1 执行测试
+  if (server.hasArg("run")) {
+    if (!g_epdPresent) {
+      server.send(200, "text/plain; charset=utf-8", "❌ 未检测到屏幕，无法测试。");
+      return;
+    }
+    DBG_PRINTLN("[HTTP] GET /screen?run (4 色测试图案)");
+
+    size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;
+    unsigned char* BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+    if (!BlackImage) BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT);
+    if (!BlackImage) {
+      server.send(200, "text/plain; charset=utf-8", "❌ 内存分配失败");
+      return;
+    }
+
+    uint16_t paintRotate = g_cfg.rotate180 ? ROTATE_270 : ROTATE_90;
+    Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
+    Paint_SetScale(4);
+    Paint_SelectImage(BlackImage);
+
+    // 4 条横带：黑 / 白 / 红 / 黄
+    for (int y = 0; y < FB_HEIGHT; ++y) {
+      uint8_t c;
+      if      (y < FB_HEIGHT / 4)     c = BLACK0;
+      else if (y < FB_HEIGHT / 2)     c = WHITE0;
+      else if (y < FB_HEIGHT * 3 / 4) c = RED0;
+      else                            c = YELLOW0;
+      for (int x = 0; x < FB_WIDTH; ++x) Paint_SetPixel(x, y, c);
+    }
+
+    DBG_PRINTLN("[TEST] 刷新测试图案...");
+    EPD_init();
+    PIC_display(BlackImage);
+    EPD_DeepSleep();
+    heap_caps_free(BlackImage);
+    server.send(200, "text/plain; charset=utf-8", "✅ 已发送 4 色测试图案（黑/白/红/黄），请看屏幕。");
+    return;
+  }
+
+  // 显示页面
+  DBG_PRINTLN("[HTTP] GET /screen");
+  String s = htmlHead(F("屏幕显示测试 · InkTime"), "screen");
+  s += F("<div class='card'>");
+  s += F("<h2>📺 屏幕显示测试</h2>");
+  s += F("<p class='subtitle'>发送 4 色测试条验证墨水屏</p>");
+
+  // 屏幕状态
+  s += F("<div class='status-bar'>");
+  s += F("<div class='row-s'><span class='k'>屏幕</span><span class='v ");
+  s += g_epdPresent ? F("ok'>已连接") : F("warn'>未检测到");
+  s += F("</span></div></div>");
+
+  if (!g_epdPresent) {
+    s += F("<div class='note'>⚠️ 未检测到屏幕接入。请检查排线，或重启设备重新探测。");
+    s += F("（无屏状态下按钮已禁用）</div>");
+    s += F("<button disabled>🎨 发送 4 色测试条</button>");
+  } else {
+    s += F("<button onclick='runTest()'>🎨 发送 4 色测试条</button>");
+    s += F("<div id='log' class='log' style='display:none'></div>");
+    s += F("<script>");
+    s += F("function runTest(){");
+    s += F("var el=document.getElementById('log');");
+    s += F("el.style.display='block';el.textContent='正在刷新...（约 12-16 秒）';");
+    s += F("fetch('/screen?run=1').then(r=>r.text()).then(t=>{el.textContent=t;}).catch(e=>{el.textContent='请求失败: '+e;});");
+    s += F("}");
+    s += F("</script>");
+  }
+  s += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
+  s += F("</div>");
+  s += htmlFoot();
+  server.send(200, "text/html; charset=utf-8", s);
+}
+
+// ============================================================
+//  /servo_test —— 舵机控制测试（极简纯转动页）
+//    用途：装相框时随手转转找物理 home 位。
+//    与 /servo（标定页）的区别：只填角度+速度+点转动，不 fetch 标定卡、不刷屏、不写 NVS。
+//    ?run=1 时执行 servo_rotate_to，返回纯文本结果（AJAX 用）。
+// ============================================================
+void handleServoTest() {
+  g_requestHappened = true;
+
+  // ?run=1 + angle + speed 参数：执行转动
+  if (server.hasArg("run")) {
+    if (!server.hasArg("angle")) {
+      server.send(200, "text/plain; charset=utf-8", "❌ 缺 angle 参数");
+      return;
+    }
+    float angle = server.arg("angle").toFloat();
+    float speed = server.hasArg("speed") ? server.arg("speed").toFloat() : g_cfg.servo_speed;
+    if (speed < 1.0f) speed = 40.0f;
+
+    DBG_PRINTF("[HTTP] /servo_test?run angle=%.1f speed=%.1f\n", angle, speed);
+    bool ok = servo_rotate_to(angle, speed, 3000);
+    String msg = ok ? (String("✅ 转到 ") + angle + "° 完成") 
+                    : (String("⚠️ 转到 ") + angle + "° 超时（已 detach）");
+    server.send(200, "text/plain; charset=utf-8", msg);
+    return;
+  }
+
+  // 显示页面
+  DBG_PRINTLN("[HTTP] GET /servo_test");
+  String s = htmlHead(F("舵机控制测试 · InkTime"), "servotest");
+  s += F("<div class='card'>");
+  s += F("<h2>⚙ 舵机控制测试</h2>");
+  s += F("<p class='subtitle'>填角度+速度，纯转动验证（不保存、不刷屏）</p>");
+
+  s += F("<div class='group'><label>目标角度 (°)</label>");
+  s += F("<input id='angle' type='number' step='1' value='0'></div>");
+  s += F("<div class='group'><label>转动速度 (°/s, 默认 ");
+  s += String(g_cfg.servo_speed, 0);
+  s += F(")</label><input id='speed' type='number' step='1' value='");
+  s += String(g_cfg.servo_speed, 0);
+  s += F("'></div>");
+
+  s += F("<button onclick='doRotate()'>🔄 转动到该角度</button>");
+  s += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
+  s += F("<a href='/servo?test=show' class='btn btn-secondary' style='margin-top:10px'>→ 去正式标定</a>");
+
+  s += F("<div id='log' class='log' style='display:none'></div>");
+  s += F("</div>");
+
+  s += F("<script>");
+  s += F("function doRotate(){");
+  s += F("var a=document.getElementById('angle').value;");
+  s += F("var sp=document.getElementById('speed').value;");
+  s += F("var el=document.getElementById('log');");
+  s += F("el.style.display='block';el.textContent='正在转到 '+a+'° ...';");
+  s += F("fetch('/servo_test?run=1&angle='+a+'&speed='+sp).then(r=>r.text()).then(t=>{el.textContent=t;}).catch(e=>{el.textContent='请求失败: '+e;});");
+  s += F("}");
+  s += F("</script>");
+
+  s += htmlFoot();
+  server.send(200, "text/html; charset=utf-8", s);
+}
+
+
+//  - "测试"用表单当前值（非已保存值），方便反复迭代标定不用先存
+//  - fetch 失败时仍执行舵机转动（不刷屏），方便在服务器还没配好时调机械角度
+//  - 测试路径与每日正常运行共用 servo_rotate_to / displayFramebuffer，标定=端到端真测试
+// ============================================================
+
+// 解析表单 float 参数（缺省回退到已保存值）
+static float parseServoArg(const String &name, float fallback) {
+  if (!server.hasArg(name)) return fallback;
+  String v = server.arg(name);
+  v.trim();
+  if (v.length() == 0) return fallback;
+  return v.toFloat();
+}
+
+// 标定页 HTML（显示当前已保存值 + 表单 + 测试/保存按钮）
+static String buildServoPage(const Config &cfg) {
+  String html = htmlHead(F("相框标定 · InkTime"), "calib");
+  html += F("<div class='card'>");
+  html += F("<h2>🎯 相框标定</h2>");
+  html += F("<p class='subtitle'>标定横竖屏角度+保存，端到端测试</p>");
+  html += F("<p style='font-size:12px;color:#888;margin:0 0 16px'>");
+  html += F("填入当前值 → 点测试按钮验证 → 满意后保存。测试用表单当前值（非已保存值）。</p>");
+
+  html += F("<form id='f' method='post' action='/servo_save'>");
+  html += F("<div class='group'><label>竖屏角度 (°)</label>");
+  html += F("<input type='number' step='0.1' name='p_deg' value='");
+  html += String(cfg.servo_portrait_deg, 1);
+  html += F("'></div>");
+  html += F("<div class='group'><label>横屏角度 (°)</label>");
+  html += F("<input type='number' step='0.1' name='l_deg' value='");
+  html += String(cfg.servo_landscape_deg, 1);
+  html += F("'></div>");
+  html += F("<div class='group'><label>转动速度 (°/s, 默认 ");
+  html += String(cfg.servo_speed, 0);
+  html += F(")</label><input type='number' step='1' name='spd' value='");
+  html += String(cfg.servo_speed, 1);
+  html += F("'></div>");
+  html += F("<div class='cb-group'><input type='checkbox' id='inv' name='inv' value='1'");
+  if (cfg.landscape_invert) html += F(" checked");
+  html += F("><label for='inv'>横屏画面方向反转</label></div>");
+  html += F("</form>");
+
+  html += F("<div class='btn-row'>");
+  // 测试按钮：把表单值塞 query string 走 GET /servo?test=*
+  html += F("<button class='btn-test' onclick=\"testOri('portrait')\">测试竖屏</button>");
+  html += F("<button class='btn-test' onclick=\"testOri('landscape')\">测试横屏</button>");
+  html += F("</div>");
+  html += F("<button class='btn-save' onclick=\"document.getElementById('f').submit()\">💾 保存标定</button>");
+
+  html += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
+  html += F("<a href='/servo_test' class='btn btn-secondary' style='margin-top:10px'>→ 简单舵机测试</a>");
+
+  html += F("<div id='log' class='log' style='display:none'></div>");
+  html += F("</div>");
+
+  html += F("<script>");
+  html += F("function fv(n){var e=document.querySelector('[name='+n+']');return e?encodeURIComponent(e.value):'';}");
+  html += F("function finv(){return document.getElementById('inv').checked?'1':'0';}");
+  html += F("function testOri(o){");
+  html += F("var q='p_deg='+fv('p_deg')+'&l_deg='+fv('l_deg')+'&spd='+fv('spd')+'&inv='+finv();");
+  html += F("var u='/servo?test='+o+'&'+q;");
+  html += F("document.getElementById('log').style.display='block';");
+  html += F("document.getElementById('log').textContent='正在执行：'+o+' ...（含下载标定卡+转舵机+刷屏，约 15-20 秒）';");
+  html += F("fetch(u).then(r=>r.text()).then(t=>{document.getElementById('log').innerHTML=t;});");
+  html += F("}");
+  html += F("</script>");
+
+  html += htmlFoot();
+  return html;
+}
+
+// GET /servo?test=portrait|landscape|show
+void handleServo() {
+  g_requestHappened = true;
+  String action = server.hasArg("test") ? server.arg("test") : String("show");
+  DBG_PRINTF("[HTTP] GET /servo test=%s\n", action.c_str());
+
+  if (action == "show") {
+    server.send(200, "text/html; charset=utf-8", buildServoPage(g_cfg));
+    return;
+  }
+  if (action != "portrait" && action != "landscape") {
+    server.send(400, "text/plain; charset=utf-8", "test must be portrait|landscape|show");
+    return;
+  }
+
+  // 从表单读当前值（缺省回退到已保存值）
+  Config trial = g_cfg;
+  trial.servo_portrait_deg  = parseServoArg("p_deg", g_cfg.servo_portrait_deg);
+  trial.servo_landscape_deg = parseServoArg("l_deg", g_cfg.servo_landscape_deg);
+  trial.servo_speed         = parseServoArg("spd",   g_cfg.servo_speed);
+  trial.landscape_invert    = server.hasArg("inv") && server.arg("inv") == "1";
+
+  String log;
+  String ori = action;   // "portrait" or "landscape"
+  log += String("[标定] 测试 ") + ori + "\n";
+  log += String("  竖屏=") + trial.servo_portrait_deg + " 横屏=" + trial.servo_landscape_deg;
+  log += String(" 速度=") + trial.servo_speed + " invert=" + (trial.landscape_invert ? "Y" : "N") + "\n";
+
+  // 1. fetch 标定卡到内存
+  String calibName = (ori == "landscape") ? String("calib_l.bin") : String("calib_p.bin");
+  size_t calibLen = 0;
+  uint8_t *calibBuf = fetchCalibCard(trial, calibName, &calibLen, &log);
+
+  // 2. 转舵机（用表单当前值；无论 fetch 是否成功都转，方便调机械角度）
+  float target = (ori == "landscape") ? trial.servo_landscape_deg : trial.servo_portrait_deg;
+  log += String("[舵机] 转 → ") + target + "° @ " + trial.servo_speed + "°/s\n";
+  bool servOk = servo_rotate_to(target, trial.servo_speed, 3000);
+  log += servOk ? "[舵机] 到位 ✅\n" : "[舵机] 超时（已 detach）\n";
+
+  // 3. 刷屏（仅当标定卡 fetch 成功）
+  if (calibBuf && calibLen > 0) {
+    const char* oriC = (ori == "landscape") ? "landscape" : "portrait";
+    downloadAndRenderDailyPhoto(trial, -1, &log, (const char*)calibBuf, oriC);
+    heap_caps_free(calibBuf);
+  } else {
+    log += "[标定] 标定卡 fetch 失败，仅转舵机不刷屏（仍可调机械角度）\n";
+  }
+
+  // 返回日志（fetch 回调里 innerHTML 显示）
+  String escaped;
+  escaped.reserve(log.length() + 64);
+  for (size_t i = 0; i < log.length(); ++i) {
+    char c = log[i];
+    if      (c == '\n') escaped += F("<br>");
+    else if (c == '<')  escaped += F("&lt;");
+    else if (c == '>')  escaped += F("&gt;");
+    else if (c == '&')  escaped += F("&amp;");
+    else                escaped += c;
+  }
+  server.send(200, "text/html; charset=utf-8", escaped);
+}
+
+// POST /servo_save —— 写入 4 字段 + servo_calibrated=true
+void handleServoSave() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] POST /servo_save");
+
+  Config newCfg = g_cfg;
+  newCfg.servo_portrait_deg  = parseServoArg("p_deg", g_cfg.servo_portrait_deg);
+  newCfg.servo_landscape_deg = parseServoArg("l_deg", g_cfg.servo_landscape_deg);
+  newCfg.servo_speed         = parseServoArg("spd",   g_cfg.servo_speed);
+  newCfg.landscape_invert    = server.hasArg("inv") && server.arg("inv") == "1";
+  newCfg.servo_calibrated    = true;   // 保存即视为已标定
+  saveServoConfig(newCfg);
+  g_cfg = newCfg;
+  servo_set_default_speed(g_cfg.servo_speed);   // 立即生效（不必等下次重启）
+
+  String html = htmlHead(F("标定已保存 · InkTime"), "calib");
+  html += F("<div class='card' style='text-align:center'>");
+  html += F("<h3>✅ 标定已保存</h3>");
+  html += F("<p style='color:#666;margin:12px 0'>舵机功能已启用，下次每日刷新将自动旋转。</p>");
+  html += F("<a href='/servo?test=show' class='btn'>← 返回标定页</a>");
+  html += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>返回首页</a>");
+  html += F("</div>");
+  html += htmlFoot();
   server.send(200, "text/html; charset=utf-8", html);
 }
 
@@ -656,6 +1224,7 @@ void goDeepSleepMinutes(uint32_t minutes) {
 
   // 关闭外设
   powerDownEPD();
+  servo_detach();   // 舵机停止 PWM 省电（运行态保持 attach 平顺，仅深睡前 detach）
 
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
@@ -691,8 +1260,16 @@ void startConfigPortal() {
   DBG_PRINTF("[CFG] AP 启动 %s\n", apOk ? "成功" : "失败");
   DBG_PRINTF("[CFG] SSID: %s, IP: %s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
 
-  server.on("/",     HTTP_GET,  handleRoot);
-  server.on("/save", HTTP_POST, handleSave);
+  // AP 模式：hub + 网络配置 + 不依赖网络的本地模块（屏幕测试、舵机测试）。
+  // 依赖网络的模块（fetch/servo 标定）路由也注册，但 handler 内部会检测并提示先配网。
+  server.on("/",          HTTP_GET,  handleRoot);
+  server.on("/network",   HTTP_GET,  handleNetwork);
+  server.on("/save",      HTTP_POST, handleSave);
+  server.on("/screen",    HTTP_GET,  handleScreen);
+  server.on("/servo_test",HTTP_GET,  handleServoTest);
+  server.on("/fetch",     HTTP_GET,  handleFetch);
+  server.on("/servo",     HTTP_GET,  handleServo);
+  server.on("/servo_save",HTTP_POST, handleServoSave);
   server.begin();
 
   uint32_t enterMs = millis();
@@ -787,9 +1364,218 @@ static void pushLog(String* logBuf, const String& line) {
   if (logBuf) { *logBuf += line; *logBuf += '\n'; }
 }
 
-bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBuf) {
+// ============================================================
+//  构建下载 URL（hostport + prefix + 名字）
+// ============================================================
+static String buildPhotoUrl(const Config &cfg, const String &suffix) {
+  String hp = cfg.backend_hostport;
+  hp.trim();
+  if (hp.startsWith("http://") || hp.startsWith("https://")) {
+    return hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
+  }
+  return "http://" + hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
+}
+
+// ============================================================
+//  fetch photo_N.json sidecar，解析出 orientation
+//    成功返回 true 并填 outOrientation（"portrait"/"landscape"）
+//    失败返回 false（调用方负责降级）
+// ============================================================
+static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrientation, String* logBuf) {
+  String url = buildPhotoUrl(cfg, String(idx) + ".json");
+  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+  pushLog(logBuf, String("[朝向] GET ") + url);
+
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(8000);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    pushLog(logBuf, String("[朝向] HTTP 失败 code=") + code + "，将降级用 last_orientation");
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+
+  // 极简 JSON 解析：找 "orientation":"xxx"
+  // 不引入 ArduinoJson，sidecar 就这一行
+  int k = body.indexOf("\"orientation\"");
+  if (k < 0) { pushLog(logBuf, "[朝向] json 无 orientation 字段"); return false; }
+  int c1 = body.indexOf('"', k + 13);
+  int c2 = body.indexOf('"', c1 + 1);
+  if (c1 < 0 || c2 < 0) { pushLog(logBuf, "[朝向] json 解析失败"); return false; }
+  outOrientation = body.substring(c1 + 1, c2);
+  pushLog(logBuf, String("[朝向] orientation=") + outOrientation);
+  return (outOrientation == "portrait" || outOrientation == "landscape");
+}
+
+// ============================================================
+//  把字节流（HTTP stream 或内存 buffer）按朝向写入 Paint framebuffer
+//    orientation="portrait"  → 逻辑画布 480×800（currentX∈[0,480)）
+//    orientation="landscape" → 逻辑画布 800×480（currentX∈[0,800)）
+//  字节数都是 384000，颜色编码 0/1/2/3 不变
+// ============================================================
+static bool streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t memLen,
+                                const String &orientation, uint32_t timeoutMs, String* logBuf) {
+  int fbW = (orientation == "landscape") ? FB_HEIGHT : FB_WIDTH;   // 横屏逻辑宽=800, 竖屏=480
+  int fbH = (orientation == "landscape") ? FB_WIDTH  : FB_HEIGHT;  // 横屏逻辑高=480, 竖屏=800
+  size_t targetBytes = (size_t)fbW * fbH;   // 384000
+  size_t totalRecv = 0;
+  uint32_t start = millis();
+
+  const size_t bufSize = 512;
+  uint8_t buf[bufSize];
+
+  int curX = 0, curY = 0;
+
+  // HTTP 流模式
+  if (stream) {
+    while (stream->connected() && totalRecv < targetBytes) {
+      if (millis() - start > timeoutMs) { pushLog(logBuf, "[拉取] 超时"); return false; }
+      size_t avail = stream->available();
+      if (avail) {
+        size_t toRead = avail; if (toRead > bufSize) toRead = bufSize;
+        if (toRead > targetBytes - totalRecv) toRead = targetBytes - totalRecv;
+        int r = stream->read(buf, toRead);
+        if (r > 0) {
+          for (int i = 0; i < r; ++i) {
+            uint8_t colorVal;
+            switch (buf[i]) {
+              case 0:  colorVal = BLACK0;  break;
+              case 1:  colorVal = WHITE0;  break;
+              case 2:  colorVal = RED0;    break;
+              case 3:  colorVal = YELLOW0; break;
+              default: colorVal = WHITE0;  break;
+            }
+            Paint_SetPixel(curX, curY, colorVal);
+            curX++;
+            if (curX >= fbW) { curX = 0; curY++; }
+          }
+          totalRecv += r;
+        }
+      } else { delay(1); }
+    }
+  }
+  // 内存 buffer 模式（标定卡：forcedCalibBin）
+  else if (memBuf && memLen > 0) {
+    size_t cap = (memLen < targetBytes) ? memLen : targetBytes;
+    for (size_t i = 0; i < cap; ++i) {
+      uint8_t colorVal;
+      switch (memBuf[i]) {
+        case 0:  colorVal = BLACK0;  break;
+        case 1:  colorVal = WHITE0;  break;
+        case 2:  colorVal = RED0;    break;
+        case 3:  colorVal = YELLOW0; break;
+        default: colorVal = WHITE0;  break;
+      }
+      Paint_SetPixel(curX, curY, colorVal);
+      curX++;
+      if (curX >= fbW) { curX = 0; curY++; }
+      totalRecv++;
+    }
+  }
+
+  if (totalRecv != targetBytes) {
+    pushLog(logBuf, String("[拉取] 尺寸不匹配 ") + (int)totalRecv + "/" + (int)targetBytes);
+    return false;
+  }
+  pushLog(logBuf, String("[拉取] 入 framebuffer ") + (int)totalRecv + " bytes (" + fbW + "x" + fbH + ")");
+  return true;
+}
+
+// ============================================================
+//  fetch photo_N.bin 到 Paint framebuffer
+//    成功返回 true。Paint 已绑定到 BlackImage，调用方负责后续刷屏。
+// ============================================================
+static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
+                                       unsigned char* /*BlackImage*/, String* logBuf) {
+  String url = buildPhotoUrl(cfg, String(idx) + ".bin");
+  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+  pushLog(logBuf, String("[拉取] idx=") + idx + " | GET " + url);
+
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(30000);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code);
+    http.end();
+    return false;
+  }
+  WiFiClient *stream = http.getStreamPtr();
+  bool ok = streamToPaintHelper(stream, nullptr, 0, orientation, 60000, logBuf);
+  http.end();
+  return ok;
+}
+
+// ============================================================
+//  根据朝向选 Paint 旋转方向并刷屏
+// ============================================================
+static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, const String &orientation) {
+  if (!g_epdPresent) {
+    DBG_PRINTLN("[EPD] 无屏，跳过刷屏");
+    return;
+  }
+  uint16_t paintRotate;
+  if (orientation == "landscape") {
+    paintRotate = cfg.landscape_invert ? ROTATE_270 : ROTATE_90;   // 初值，标定验证后可调
+  } else {
+    paintRotate = cfg.rotate180 ? ROTATE_270 : ROTATE_90;          // 竖屏现状不动
+  }
+  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
+  Paint_SetScale(4);
+  Paint_SelectImage(BlackImage);
+
+  DBG_PRINTLN("[EPD] 初始化并开始显示画面");
+  EPD_init();
+  PIC_display(BlackImage);
+  EPD_DeepSleep();
+  DBG_PRINTLN("[EPD] 渲染完成，屏幕已休眠");
+}
+
+// ============================================================
+//  舵机决策：根据朝向决定是否转、转到哪
+//    规则（来自设计 grilling）：
+//    a. !servo_calibrated  → 跳过（不挡渲染）
+//    b. last_orientation 空 → 首次归位：转 portrait_deg，写 last_orientation=portrait
+//    c. orientation == last_orientation → 跳过（省机械磨损）
+//    d. 不同 → 转对应角度（3s 超时 detach 继续），成功后写 last_orientation
+// ============================================================
+static void applyServoForOrientation(const Config &cfg, const String &orientation, String* logBuf) {
+  if (!cfg.servo_calibrated) {
+    pushLog(logBuf, "[舵机] 未标定，跳过转动");
+    return;
+  }
+  // 首次开机归位（last_orientation 为空）
+  if (cfg.last_orientation.length() == 0) {
+    pushLog(logBuf, "[舵机] 首次开机，归位竖屏 home");
+    servo_rotate_to(cfg.servo_portrait_deg, cfg.servo_speed, 3000);
+    saveLastOrientation("portrait");
+    return;
+  }
+  // 同朝向跳过
+  if (orientation == cfg.last_orientation) {
+    pushLog(logBuf, String("[舵机] 同朝向（") + orientation + "），跳过转动");
+    return;
+  }
+  // 不同朝向，转
+  float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
+  pushLog(logBuf, String("[舵机] 转 → ") + orientation + " (" + target + "°)");
+  bool ok = servo_rotate_to(target, cfg.servo_speed, 3000);
+  pushLog(logBuf, ok ? "[舵机] 到位 ✅" : "[舵机] 超时（已 detach 继续）");
+  if (ok) saveLastOrientation(orientation);
+}
+
+// ============================================================
+//  主流程：fetch json → fetch bin 到 framebuffer → 转舵机 → 刷屏
+//    forcedIdx<0       → idx=0（正常每日）
+//    forcedCalibBin!=0 → 跳过 bin 下载，直接渲染标定卡（标定台用，forcedCalibOri 指定朝向）
+// ============================================================
+bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBuf,
+                                 const char* forcedCalibBin, const char* forcedCalibOri) {
   size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;  // 96,000 bytes
-  
+
   // 分配 Canvas
   unsigned char* BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
   if (!BlackImage) {
@@ -800,131 +1586,110 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
     return false;
   }
 
-  // 初始化 Paint 属性
-  uint16_t paintRotate = cfg.rotate180 ? ROTATE_270 : ROTATE_90;
-  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
+  // 标定卡模式：forcedCalibBin 是内存中的字节流指针 + forcedCalibOri 朝向
+  if (forcedCalibBin != nullptr && forcedCalibOri != nullptr) {
+    String ori = String(forcedCalibOri);
+    pushLog(logBuf, String("[标定] 渲染标定卡 (") + ori + ")");
+
+    // 先初始化 Paint（朝向在 streamToPaintHelper 里只用于宽高）
+    Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
+    Paint_SetScale(4);
+    Paint_SelectImage(BlackImage);
+    Paint_Clear(WHITE0);
+
+    // 标定卡字节数：竖屏 480*800=384000，横屏 800*480=384000（一致）
+    bool ok = streamToPaintHelper(nullptr, (const uint8_t*)forcedCalibBin, 384000, ori, 5000, logBuf);
+    if (!ok) {
+      heap_caps_free(BlackImage);
+      return false;
+    }
+    // 标定模式下舵机转动由调用方（标定台）按"表单当前值"处理，这里不重复转
+    displayFramebuffer(BlackImage, cfg, ori);
+    heap_caps_free(BlackImage);
+    pushLog(logBuf, "[标定] 完成 ✅");
+    return true;
+  }
+
+  // 正常流程：json → bin → 转舵机 → 刷屏
+  if (cfg.backend_hostport.length() == 0) {
+    pushLog(logBuf, "[拉取] 服务器地址为空，跳过");
+    heap_caps_free(BlackImage);
+    return false;
+  }
+
+  int idx = (forcedIdx >= 0 && forcedIdx < DAILY_PHOTO_COUNT) ? forcedIdx : 0;
+
+  // ── 阶段 A1：fetch sidecar json 拿朝向（失败降级用 last_orientation，仍尝试下 bin）──
+  String orientation;
+  bool gotOri = fetchPhotoOrientation(cfg, idx, orientation, logBuf);
+  if (!gotOri) {
+    orientation = cfg.last_orientation.length() > 0 ? cfg.last_orientation : String("portrait");
+    pushLog(logBuf, String("[朝向] 降级为 ") + orientation);
+  }
+
+  // ── 阶段 A2：fetch bin 到 framebuffer（失败 → 不转舵机、不刷屏、保留昨天姿态）──
+  // Paint 先用任意朝向初始化（displayFramebuffer 里会按朝向重设）
+  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
   Paint_SetScale(4);
   Paint_SelectImage(BlackImage);
   Paint_Clear(WHITE0);
 
-  if (cfg.backend_hostport.length() == 0) {
-    DBG_PRINTLN("[HTTP] 服务器地址为空，跳过下载");
-    pushLog(logBuf, "[拉取] 服务器地址为空，跳过下载");
+  if (!fetchPhotoBinToFramebuffer(cfg, idx, orientation, BlackImage, logBuf)) {
+    pushLog(logBuf, "[拉取] bin 下载失败，不转舵机不刷屏，保留昨天姿态");
     heap_caps_free(BlackImage);
     return false;
   }
 
-  // 选择照片：正常固定 idx=0（评分最高）；debug 时用传入的 forcedIdx
-  int idx = (forcedIdx >= 0 && forcedIdx < DAILY_PHOTO_COUNT) ? forcedIdx : 0;
+  // ── 阶段 B：转舵机（下载成功后才转）──
+  applyServoForOrientation(cfg, orientation, logBuf);
 
-  // 构建下载 URL
-  String url;
+  // ── 阶段 C：刷屏 ──
+  displayFramebuffer(BlackImage, cfg, orientation);
+
+  heap_caps_free(BlackImage);
+  pushLog(logBuf, "[拉取] 完成 ✅");
+  return true;
+}
+
+// ============================================================
+//  fetch 标定卡到内存 buffer（标定台用）
+//    calibName = "calib_p.bin" 或 "calib_l.bin"
+//    成功返回 malloc 的 buffer（调用方负责 free），*outLen 写入长度
+//    失败返回 nullptr
+// ============================================================
+static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_t *outLen, String* logBuf) {
+  // 标定卡 URL 路径与 .bin 同目录但前缀不含 "photo_"：
+  //   /static/inktime/<key>/calib_p.bin  / calib_l.bin
+  // DAILY_PHOTO_PATH_PREFIX = "/static/inktime/<key>/photo_"，去掉末尾 "photo_" 即得 calib 基路径
+  String base = String(DAILY_PHOTO_PATH_PREFIX);
+  base.remove(base.length() - String("photo_").length());   // → "/static/inktime/<key>/"
   String hp = cfg.backend_hostport;
   hp.trim();
-
-  if (hp.startsWith("http://") || hp.startsWith("https://")) {
-    url = hp + String(DAILY_PHOTO_PATH_PREFIX) + String(idx) + ".bin";
-  } else {
-    url = "http://" + hp + String(DAILY_PHOTO_PATH_PREFIX) + String(idx) + ".bin";
-  }
+  String url = (hp.startsWith("http") ? hp : ("http://" + hp)) + base + calibName;
 
   DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
-  pushLog(logBuf, String("[拉取] idx=") + idx + " | GET " + url);
+  pushLog(logBuf, String("[标定] GET ") + url);
 
   HTTPClient http;
   http.begin(url);
+  http.setTimeout(15000);
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    DBG_PRINTF("[HTTP] 返回码: %d\n", code);
-    pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code + "（非 200）");
+    pushLog(logBuf, String("[标定] HTTP 失败 code=") + code);
     http.end();
-    heap_caps_free(BlackImage);
-    return false;
+    return nullptr;
   }
-
-  int len = http.getSize();
-  DBG_PRINTF("[HTTP] Content-Length: %d\n", len);
-  pushLog(logBuf, String("[拉取] Content-Length: ") + len + " bytes");
-
-  WiFiClient *stream = http.getStreamPtr();
-  size_t totalBytesReceived = 0;
-  size_t targetBytes = (size_t)FB_WIDTH * FB_HEIGHT; // 384,000 bytes
-
-  const uint32_t DOWNLOAD_TIMEOUT_MS = 60 * 1000;
-  uint32_t start_ms = millis();
-
-  // 缓冲区
-  const size_t bufSize = 512;
-  uint8_t buf[bufSize];
-
-  int currentX = 0;
-  int currentY = 0;
-
-  while (http.connected() && (len > 0 || len == -1) && totalBytesReceived < targetBytes) {
-    if (millis() - start_ms > DOWNLOAD_TIMEOUT_MS) {
-      DBG_PRINTLN("[HTTP] 下载超时");
-      http.end();
-      heap_caps_free(BlackImage);
-      return false;
-    }
-
-    size_t avail = stream->available();
-    if (avail) {
-      size_t toRead = avail;
-      if (toRead > bufSize) toRead = bufSize;
-      if (toRead > targetBytes - totalBytesReceived) toRead = targetBytes - totalBytesReceived;
-
-      int r = stream->read(buf, toRead);
-      if (r > 0) {
-        for (int i = 0; i < r; ++i) {
-          uint8_t c = buf[i];
-          uint8_t colorVal;
-          switch (c) {
-            case 0:  colorVal = BLACK0;  break;  // 黑
-            case 1:  colorVal = WHITE0;  break;  // 白
-            case 2:  colorVal = RED0;    break;  // 红
-            case 3:  colorVal = YELLOW0; break;  // 黄
-            default: colorVal = WHITE0;  break;
-          }
-          Paint_SetPixel(currentX, currentY, colorVal);
-
-          currentX++;
-          if (currentX >= FB_WIDTH) {
-            currentX = 0;
-            currentY++;
-          }
-        }
-        totalBytesReceived += r;
-        if (len > 0) len -= r;
-      }
-    } else {
-      delay(1);
-    }
-  }
-
+  String body = http.getString();
   http.end();
 
-  DBG_PRINTF("[HTTP] 下载完成: %d / %d bytes\n", (int)totalBytesReceived, (int)targetBytes);
-  pushLog(logBuf, String("[拉取] 下载完成: ") + (int)totalBytesReceived + " / " + (int)targetBytes
-                       + " bytes，耗时 " + (int)(millis() - start_ms) + "ms");
-
-  if (totalBytesReceived != targetBytes) {
-    DBG_PRINTF("[HTTP] 尺寸不匹配！期望 %d，实际 %d\n", (int)targetBytes, (int)totalBytesReceived);
-    pushLog(logBuf, "[拉取] 尺寸不匹配，渲染中止");
-    heap_caps_free(BlackImage);
-    return false;
-  }
-
-  // 刷屏显示
-  DBG_PRINTLN("[EPD] 初始化并开始显示画面");
-  EPD_init();
-  PIC_display(BlackImage);
-  EPD_DeepSleep();
-
-  heap_caps_free(BlackImage);
-  DBG_PRINTLN("[EPD] 渲染完成，屏幕已休眠");
-  pushLog(logBuf, "[拉取] EPD 渲染完成 ✅");
-  return true;
+  size_t n = body.length();
+  if (n == 0) { pushLog(logBuf, "[标定] 空响应"); return nullptr; }
+  uint8_t *buf = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_8BIT);
+  if (!buf) { pushLog(logBuf, "[标定] 内存分配失败"); return nullptr; }
+  memcpy(buf, body.c_str(), n);
+  *outLen = n;
+  pushLog(logBuf, String("[标定] 收到 ") + (int)n + " bytes");
+  return buf;
 }
 
 // ============================================================
@@ -956,6 +1721,10 @@ void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &no
 //  显示配网/网络状态信息页面
 // ============================================================
 void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
+  if (!g_epdPresent) {
+    DBG_PRINTLN("[EPD] 无屏，跳过网络信息页面");
+    return;
+  }
   size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;
   unsigned char* BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
   if (!BlackImage) {
@@ -1027,6 +1796,45 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
 }
 
 // ============================================================
+//  EPD 屏幕存在检测（开机一次性探测）
+//
+//  原理：真屏在 RST 下降沿后会主动把 BUSY 拉低（忙），几十~几百 ms 后释放回高（idle）。
+//        无屏时 RST 操作对 BUSY 引脚无任何驱动效果——BUSY 只被外部上拉决定。
+//  判据（对上拉免疫）：RST 脉冲后 300ms 内采样多次，若 BUSY 曾经出现低电平 → 有屏；
+//                       若全程高电平 → 无屏。
+//  这避免"加 INPUT_PULLUP 后无屏也读 1=idle"的误判：我们检测的是"面板有没有驱动过 BUSY"，
+//  而不是 BUSY 的静止电平。
+// ============================================================
+static bool detectEpdPresent() {
+  // BUSY 引脚上拉：真屏会强驱动它，无屏时被上拉到 1（idle）。上拉本身不会产生误判，
+  // 因为下面的判据看的是"RST 后 BUSY 有没有被拉低过"。
+  pinMode(PIN_EPD_BUSY, INPUT_PULLUP);
+  // RST/DC/CS 已在 setup() 主流程里配成 OUTPUT（detectEpdPresent 在 SPI 初始化之后调用）
+  delay(10);
+
+  // 记录 RST 前的 BUSY 静止电平（参考用）
+  int idleBefore = digitalRead(PIN_EPD_BUSY);
+
+  // 发一个 RST 脉冲（与 EPD_init 一致：拉低 ≥10ms 再拉高）
+  digitalWrite(PIN_EPD_RST, LOW);
+  delay(15);
+  digitalWrite(PIN_EPD_RST, HIGH);
+
+  // 采样 300ms，看 BUSY 是否被面板拉低过
+  bool sawLow = false;
+  uint32_t start = millis();
+  while (millis() - start < 300) {
+    if (digitalRead(PIN_EPD_BUSY) == LOW) { sawLow = true; break; }
+    delay(5);
+  }
+
+  bool present = sawLow;
+  DBG_PRINTF("[EPD] detectEpdPresent: BUSY idleBefore=%d, sawLow=%d → present=%d\n",
+             idleBefore, (int)sawLow, (int)present);
+  return present;
+}
+
+// ============================================================
 //  setup()
 // ============================================================
 void setup() {
@@ -1063,7 +1871,7 @@ void setup() {
   loadConfig(g_cfg);
 
   // 6.5 初始化墨水屏 SPI 引脚 (必须在 showNetworkInfoScreen 之前调用)
-  pinMode(PIN_EPD_BUSY, INPUT);  // BUSY
+  pinMode(PIN_EPD_BUSY, INPUT_PULLUP);  // BUSY（上拉：无屏时读 idle，配合 detectEpdPresent 判据）
   pinMode(PIN_EPD_RST, OUTPUT);  // RES
   pinMode(PIN_EPD_DC, OUTPUT);   // DC
   pinMode(PIN_EPD_CS, OUTPUT);   // CS
@@ -1072,6 +1880,17 @@ void setup() {
   // （EPD_W21_CS_0/1 宏）。若把 27 作为 ss 传给 SPI.begin，硬件会抢着管理
   // 片选，与驱动冲突，导致 EPD_init 卡死在 BUSY 等待。
   SPI.begin();
+
+  // 6.55 探测屏幕是否接入（必须在任何 EPD_init 之前；无屏时设 g_epdPresent=false
+  //      让后续 showNetworkInfoScreen/displayFramebuffer 静默跳过，避免 lcd_chkstatus 卡 30s）
+  g_epdPresent = detectEpdPresent();
+
+  // 6.6 初始化舵机（IO32，与 EPD SPI 引脚无冲突，避开 DAC 脚 25/26）
+  //     未标定时 servo_rotate_to 不会被调用，但 attach 本身开销极小，先就位。
+  //     注意：不再立即 servo_detach()——舵机需保持 attach 才平顺（参考 servo_serial_cmd）。
+  //     深睡时由 goDeepSleepMinutes 统一 detach 省电。
+  servo_init();
+  servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
 
   // 7. 无有效配置 → 进入 AP 配网
   if (!g_cfg.valid) {
@@ -1112,11 +1931,17 @@ void setup() {
   //      - 开了 debug：保持唤醒，直到用户 /debug?state=confirm_off 或 DEBUG_IDLE_MS(30min) 无操作
   if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
     DBG_PRINTLN("[HTTP] 启动局域网 Web 服务器（手动唤醒）...");
-    server.on("/",      HTTP_GET,  handleRoot);
-    server.on("/save",  HTTP_POST, handleSave);
-    server.on("/fetch", HTTP_GET,  handleFetch);
-    server.on("/log",   HTTP_GET,  handleLog);
-    server.on("/debug", HTTP_GET,  handleDebug);
+    server.on("/",          HTTP_GET,  handleRoot);
+    server.on("/network",   HTTP_GET,  handleNetwork);
+    server.on("/save",      HTTP_POST, handleSave);
+    server.on("/fetch",     HTTP_GET,  handleFetch);
+    server.on("/log",       HTTP_GET,  handleLog);
+    server.on("/debug",     HTTP_GET,  handleDebug);
+    server.on("/screen",    HTTP_GET,  handleScreen);
+    server.on("/test",      HTTP_GET,  handleScreen);   // 向后兼容别名
+    server.on("/servo_test",HTTP_GET,  handleServoTest);
+    server.on("/servo",     HTTP_GET,  handleServo);
+    server.on("/servo_save", HTTP_POST, handleServoSave);
     server.begin();
 
     uint32_t bootMs = millis();
