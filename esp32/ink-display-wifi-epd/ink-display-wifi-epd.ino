@@ -157,6 +157,9 @@ static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String 
                                        unsigned char* BlackImage, String* logBuf);
 static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, const String &orientation);
 static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_t *outLen, String* logBuf);
+static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibName,
+                                        const String &orientation,
+                                        unsigned char* BlackImage, String* logBuf);
 // HTML 组件前置声明（定义在文件前部 htmlEscape 之后）
 static String htmlHead(const String& title, const char* activeKey);
 static String htmlNav(const char* activeKey);
@@ -1108,24 +1111,30 @@ void handleServo() {
   log += String("  竖屏=") + trial.servo_portrait_deg + " 横屏=" + trial.servo_landscape_deg;
   log += String(" 速度=") + trial.servo_speed + " invert=" + (trial.landscape_invert ? "Y" : "N") + "\n";
 
-  // 1. fetch 标定卡到内存
-  String calibName = (ori == "landscape") ? String("calib_l.bin") : String("calib_p.bin");
-  size_t calibLen = 0;
-  uint8_t *calibBuf = fetchCalibCard(trial, calibName, &calibLen, &log);
-
-  // 2. 转舵机（用表单当前值；无论 fetch 是否成功都转，方便调机械角度）
+  // 1. 转舵机（用表单当前值；无论后续 fetch 是否成功都转，方便调机械角度）
   float target = (ori == "landscape") ? trial.servo_landscape_deg : trial.servo_portrait_deg;
   log += String("[舵机] 转 → ") + target + "° @ " + trial.servo_speed + "°/s\n";
   bool servOk = servo_rotate_to(target, trial.servo_speed, 3000);
   log += servOk ? "[舵机] 到位 ✅\n" : "[舵机] 超时（已 detach）\n";
 
-  // 3. 刷屏（仅当标定卡 fetch 成功）
-  if (calibBuf && calibLen > 0) {
-    const char* oriC = (ori == "landscape") ? "landscape" : "portrait";
-    downloadAndRenderDailyPhoto(trial, -1, &log, (const char*)calibBuf, oriC);
-    heap_caps_free(calibBuf);
+  // 2. 分配 EPD framebuffer（96KB，ESP32-L 可分配；不要 384KB 中转 buffer）
+  size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;  // 96,000 bytes
+  unsigned char* BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+  if (!BlackImage) BlackImage = (unsigned char*)heap_caps_malloc(epd_array_size, MALLOC_CAP_8BIT);
+  if (!BlackImage) {
+    log += "[标定] framebuffer 分配失败，仅转舵机不刷屏\n";
   } else {
-    log += "[标定] 标定卡 fetch 失败，仅转舵机不刷屏（仍可调机械角度）\n";
+    // 3. 流式拉取标定卡直写 framebuffer，再刷屏
+    String calibName = (ori == "landscape") ? String("calib_l.bin") : String("calib_p.bin");
+    bool fetchOk = fetchCalibCardToFramebuffer(trial, calibName, ori, BlackImage, &log);
+    if (fetchOk) {
+      log += "[标定] 渲染标定卡 (" + ori + ")\n";
+      displayFramebuffer(BlackImage, trial, ori);
+      log += "[标定] 完成 ✅\n";
+    } else {
+      log += "[标定] 标定卡 fetch 失败，仅转舵机不刷屏（仍可调机械角度）\n";
+    }
+    heap_caps_free(BlackImage);
   }
 
   // 返回日志（fetch 回调里 innerHTML 显示）
@@ -1705,7 +1714,73 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
 }
 
 // ============================================================
-//  fetch 标定卡到内存 buffer（标定台用）
+//  fetch 标定卡流式直写 framebuffer（ESP32-L 无 PSRAM 专用）
+//    calibName  = "calib_p.bin" 或 "calib_l.bin"
+//    BlackImage = 调用方已分配的 EPD framebuffer（EPD_WIDTH*EPD_HEIGHT/4 字节）
+//
+//  与照片 .bin 完全同构：384000 字节、1byte/像素、颜色编码 0/1/2/3。
+//  因此复用 fetchPhotoBinToFramebuffer 的全套健壮读取逻辑：
+//    HTTPClient + streamToPaintHelper 流模式（含 stall/整体超时、重试），
+//    直接把 HTTP 流逐字节写进 96KB framebuffer。
+//
+//  不再经过 384KB 中转 buffer（旧 fetchCalibCard 的方式），后者在
+//  ESP32-L 无 PSRAM 的设备上 heap_caps_malloc(384000) 必然失败。
+//
+//  返回 true=成功（已写入 framebuffer，调用方负责刷屏）；false=失败。
+// ============================================================
+static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibName,
+                                        const String &orientation,
+                                        unsigned char* BlackImage, String* logBuf) {
+  // URL 构造：DAILY_PHOTO_PATH_PREFIX 去掉末尾 "photo_" 得到 calib 基路径
+  String base = String(DAILY_PHOTO_PATH_PREFIX);
+  base.remove(base.length() - String("photo_").length());   // → "/static/inktime/<key>/"
+  String hp = cfg.backend_hostport;
+  hp.trim();
+  String url = (hp.startsWith("http") ? hp : ("http://" + hp)) + base + calibName;
+
+  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+
+  // 先用任意朝向初始化 Paint（displayFramebuffer 里会按朝向重设）
+  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
+  Paint_SetScale(4);
+  Paint_SelectImage(BlackImage);
+  Paint_Clear(WHITE0);
+
+  const int MAX_RETRY = 3;
+  for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+    pushLog(logBuf, String("[标定] 尝试 ") + attempt + "/" + MAX_RETRY + " | GET " + url);
+
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(15000);
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+      pushLog(logBuf, String("[标定] HTTP 失败 code=") + code);
+      http.end();
+      if (attempt < MAX_RETRY) { delay(500); continue; }
+      return false;
+    }
+
+    size_t contentLen = (size_t)http.getSize();
+    WiFiClient *stream = http.getStreamPtr();
+    int rc = streamToPaintHelper(stream, nullptr, 0, orientation, contentLen,
+                                 5000 /*stallMs*/, 60000 /*overallMs*/, logBuf);
+    http.end();
+
+    if (rc == 0) return true;
+    if (attempt < MAX_RETRY) {
+      pushLog(logBuf, String("[标定] 等待 500ms 后重试…"));
+      delay(500);
+      continue;
+    }
+    pushLog(logBuf, String("[标定] 已达最大重试次数，放弃"));
+    return false;
+  }
+  return false;
+}
+
+// ============================================================
+//  fetch 标定卡到内存 buffer（标定台用，需 PSRAM；ESP32-L 标定页不调用此函数）
 //    calibName = "calib_p.bin" 或 "calib_l.bin"
 //    成功返回 malloc 的 buffer（调用方负责 free），*outLen 写入长度
 //    失败返回 nullptr
