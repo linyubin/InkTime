@@ -1065,7 +1065,7 @@ static String buildServoPage(const Config &cfg) {
   html += F("</div>");
 
   html += F("<script>");
-  html += F("function fv(n){var e=document.querySelector('[name='+n+']');return e?encodeURIComponent(e.value):'';}");
+  html += F("function fv(n){var e=document.querySelector(\"[name='\"+n+\"']\");return e?encodeURIComponent(e.value):'';}");
   html += F("function finv(){return document.getElementById('inv').checked?'1':'0';}");
   html += F("function testOri(o){");
   html += F("var q='p_deg='+fv('p_deg')+'&l_deg='+fv('l_deg')+'&spd='+fv('spd')+'&inv='+finv();");
