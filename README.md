@@ -30,6 +30,22 @@ InkTime 分为三部分：
 3. **下载与展示（ESP32）**  
    ESP32 定时从服务器拉取 `.bin` → 刷新墨水屏 → 深度休眠直至下次唤醒
 
+### 两套 ESP32 固件（按需选择）
+
+`esp32/` 下并存两套独立固件，**硬件平台、投递方式、功能范围都不同**，部署前请先确认你用的是哪套：
+
+| | `ink-display-7C-photo`（原作者） | `ink-display-wifi-epd`（本 fork 主力维护） |
+|---|---|---|
+| 主控 | ESP32-S3-N8R8（**需 PSRAM** ≥384K） | ESP32-L（**无 PSRAM** 亦可） |
+| 屏幕 | 7.3″ 四色 GDEY073D46（GxEPD2 库） | 7.3″ 四色 EL073TS3（厂商 EPD_SPI 库） |
+| 投递方式 | 服务器 BLE 推送 / 同方案拉取 | **HTTP 拉取**（设备主动 GET `.bin`） |
+| 相框旋转 | 无 | **有**（舵机横竖屏旋转 + 现场标定） |
+| Web 调试 | 无 | 有（hub / `/fetch` / `/servo` 标定 / `/debug`） |
+| 引脚 | 见下文「7C-photo 引脚」 | 见下文「wifi-epd 引脚」 |
+
+> 本 README 后续章节若涉及具体引脚、选型、标定，默认以 **`ink-display-wifi-epd`**（本 fork 主力）为准；原作者 `7C-photo` 方案的细节保留在「ESP32 硬件部分」原章节内并明确标注。
+> 拉取式投递的完整设计见 [`docs/esp32-pull-delivery.md`](docs/esp32-pull-delivery.md)。
+
 ---
 ## 环境准备
 
@@ -184,7 +200,10 @@ sudo -u inktime crontab -e
 
 # ESP32 墨水屏硬件部分
 
-## 硬件与引脚
+> ⚠️ 本章节原为原作者的 `ink-display-7C-photo` 方案（ESP32-S3 + PSRAM + GxEPD2）撰写。
+> 本 fork 主力维护的 `ink-display-wifi-epd`（ESP32-L + 厂商 EPD_SPI + 拉取投递 + 相框旋转）硬件细节见本节末尾「ink-display-wifi-epd 方案」小节。
+
+## 硬件与引脚（7C-photo 方案）
 #### 主控
 本项目使用乐鑫 ESP32-S3-N8R8 模块。  
 当然，你也可以使用任何成品 ESP32 开发板进行制作。  
@@ -196,7 +215,7 @@ sudo -u inktime crontab -e
 本项目使用 B 站"记得带马扎"制作的七色 EPD 墨水屏转接板（49-pin）。  
 但市面上的大部分 24-pin 墨水屏搭配 SPI 转接板亦可兼容。
 
-#### 引脚定义
+#### 引脚定义（7C-photo）
 墨水屏使用 SPI 通信，本项目默认引脚为：
 - `PIN_EPD_BUSY = 14`
 - `PIN_EPD_RST  = 13`
@@ -205,7 +224,7 @@ sudo -u inktime crontab -e
 - `PIN_EPD_SCLK = 10`
 - `PIN_EPD_DIN  = 9`
 
-### 主板焊接
+### 主板焊接（7C-photo）
 原理图、BOM清单、制板文件均位于```esp32/pcb```文件夹中。  
 原理图中的 H1 - H6 为测试焊盘引出，无需焊接真实器件：
 - H1: UART 串口
@@ -227,12 +246,49 @@ SW3 / SW4: 备用 GPIO，以防未来需要添加的功能。如无需要，可�
   <img src="esp32/pcb/pcb.jpeg" width="80%">
 </p>
 
+## 硬件与引脚（ink-display-wifi-epd 方案 · 本 fork 主力）
+
+本方案用 **ESP32-L**（普通 ESP32，**无 PSRAM**）+ 7.3″ 四色屏 EL073TS3，固件用厂商 `EPD_SPI` 库驱动。与 7C-photo 方案的引脚**完全不同**，请勿混用。
+
+#### 主控与选型
+- 主控：ESP32-L 模块（普通 ESP32，**不需要 PSRAM**）。任意成品 ESP32 开发板亦可。
+- 屏幕：7.3″ 四色墨水屏 EL073TS3（49-pin）。
+- 转接板：与 7C-photo 方案兼容的 49-pin 七色 EPD 转接板即可。
+- **舵机（可选，相框旋转功能）**：一个普通 PWM 舵机（如 SG90），接在 `SERVO_PIN`，由独立 5V 供电（不要从 ESP32 3.3V 取电）。
+
+#### 引脚定义（ink-display-wifi-epd）
+墨水屏 SPI 引脚（定义在 `ink-display-wifi-epd.ino` 顶部）：
+
+| 信号 | GPIO |
+|---|---|
+| `PIN_EPD_BUSY` | 13 |
+| `PIN_EPD_RST`  | 12 |
+| `PIN_EPD_DC`   | 14 |
+| `PIN_EPD_CS`   | 27 |
+| `PIN_EPD_SCLK` | 18 |
+| `PIN_EPD_DIN`  | 23 |
+
+其它：
+- `PIN_FACTORY_RESET = 0`（BOOT 键，长按复位 WiFi/清空 NVS）
+- `LED_BUILTIN = 2`
+- 舵机信号脚见固件 `servo_rotate.h`（默认 GPIO 可在标定页之外按需改）
+
+> 两套方案引脚差异较大（如 BUSY 7C=14 / wifi-epd=13，CS 7C=11 / wifi-epd=27 等），烧录前务必核对所用固件对应的引脚表。
+
 ## 编译与烧录
 
-建议使用 Arduino IDE。
+建议使用 Arduino IDE。**两套固件的编译方式不同，请按你选用的方案操作。**
 
+### 方案 A：ink-display-wifi-epd（本 fork 主力）
 1. 安装 ESP32 Arduino Core。
-2. 选择开发板：ESP32-S3（必须开启 PSRAM）。
+2. 选择开发板：**ESP32**（普通 ESP32，**无需 PSRAM**；若用 ESP32-S3 也可，但不强制）。
+3. 安装依赖库：屏幕驱动用厂商 **`EPD_SPI`** 库（随屏提供，放入 Arduino `libraries/`）；舵机用 `ESP32Servo`。
+4. 打开并编译/烧录 `esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino`。
+5. 烧录建议用 UART 串口（BOOT 接 GND 上电进下载模式）。
+
+### 方案 B：ink-display-7C-photo（原作者）
+1. 安装 ESP32 Arduino Core。
+2. 选择开发板：ESP32-S3（**必须开启 PSRAM**）。
 3. 安装依赖库：
    - `GxEPD2`
 4. 打开并编译/烧录 `ink-display-7C.ino`。
@@ -248,6 +304,50 @@ SW3 / SW4: 备用 GPIO，以防未来需要添加的功能。如无需要，可�
 - 默认密码：`12345678`
 - 连接 AP ，用浏览器访问配置页面：`http://192.168.4.1/`
 - 配置 Wi-Fi、服务器地址、定时更新时间并保存，设备会自动重启并进入正常工作流程。
+
+## Web 调试页面（ink-display-wifi-epd）
+
+设备配网后，在手动唤醒 / Debug 期间会在局域网 IP 上开放一个 Web Hub（端口见固件，默认 80）。从首页可进入各功能页：
+
+| 页面 | 路径 | 用途 |
+|---|---|---|
+| Hub 首页 | `/` | 导航 + 设备状态 |
+| 网络配置 | `/network` | WiFi / 服务器 / 刷新时间 / **竖屏画面旋转 180°** |
+| 屏幕测试 | `/screen` | 4 色测试图案，验证屏幕与颜色 |
+| 简单舵机测试 | `/servo_test` | 填角度+速度纯转动验证（不刷屏、不存） |
+| **相框标定** | `/servo` | 横竖屏角度 + 画面方向，端到端测试 + 保存 |
+| 图片拉取 | `/fetch?idx=N` | 手动拉取并渲染指定 idx 的照片 |
+| 日志 / Debug | `/log` `/debug` | 下载拉取日志 / 开关 Debug 模式 |
+
+> Debug 模式下设备保持唤醒不进入 Deep Sleep，方便反复调试；调试完务必 `/debug?state=off` 退出，否则 30 分钟无操作才自动休眠。
+
+## 相框标定流程（ink-display-wifi-epd）
+
+首次使用舵机旋转功能前，必须现场标定竖屏 / 横屏的舵机绝对角度，以及画面方向开关。在 Web Hub → **相框标定**（`/servo`）：
+
+1. 填入竖屏角度（°）、横屏角度（°）、转动速度（°/s）。
+2. 点 **「测试竖屏」/「测试横屏」**：固件会拉取对应标定卡 → 转舵机 → 刷屏显示标定卡。**测试用表单当前值，不写入，可反复迭代。**
+3. 观察标定卡是否正放：中央箭头应**朝上**、`TOP/上` 在顶部、`L/左`/`R/右` 在两侧、左上角红三角、右下角黄方块。
+4. 若画面方向不对，用两个翻转开关修正后再测：
+   - **竖屏画面旋转 180°**：竖屏画面上下颠倒时勾选。
+   - **横屏画面方向反转**：横屏画面方向不对时勾选。
+5. 全部满意后点 **「💾 保存标定」**，参数写入 NVS（`servo_calibrated` 置 true）。
+
+> 标定卡由服务端的 `render_calib_cards.py` 预生成（见前文「生成相框旋转标定卡」一节）。未生成时标定页会报 `HTTP 404`。
+
+## 首次部署自检清单（ink-display-wifi-epd）
+
+这套固件有多条渲染路径（竖屏/横屏、照片/标定卡、翻转开关），首次部署或换机后请按顺序走一遍，确保各路径都通——这些问题大多是**隐藏的**，平时只跑竖屏照片不会暴露：
+
+- [ ] **服务端**：`server.py` 已启动，`output/` 下有当日 `photo_0.bin` + `latest.bin`（各 384000 字节）。
+- [ ] **标定卡已生成**：跑过 `python3 render_calib_cards.py`，`output/calib_p.bin`、`calib_l.bin` 存在。否则 `/servo` 标定会 `404`。
+- [ ] **`/screen` 测试图案**：4 色横带显示正常 → 屏幕接线、颜色映射 OK。
+- [ ] **`/fetch?idx=0` 拉取照片**：成功刷屏，无 `[拉取] 尺寸不匹配` / `链路中断` 报错（偶发抖断固件会自动重试，最多 3 次）。
+- [ ] **`/servo` 测试竖屏**：标定卡正放（箭头朝上），舵机转到竖屏角度。
+- [ ] **`/servo` 测试横屏**：标定卡横向铺满、箭头朝上（方向不对就勾「横屏画面方向反转」再测）。
+- [ ] **翻转开关生效**：勾选「竖屏画面旋转 180°」再测竖屏，画面应翻转；取消则恢复（若勾不勾都一样，说明固件未含 `computePaintRotate` 修复，需更新）。
+- [ ] **保存标定**：点「💾 保存标定」，重启后舵机仍按标定角度转动。
+- [ ] **`/debug?state=off`**：调试完退出 Debug，让设备恢复定时 Deep Sleep。
 
 ## 刷新与休眠
 
