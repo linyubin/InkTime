@@ -95,6 +95,33 @@ InkTime 使用 OpenAI 接口（LM Studio / 其它兼容服务均可）。
 
 ```python3 render_daily_photo.py```
 
+## 生成相框旋转标定卡（首次部署必做，仅 `ink-display-wifi-epd` 固件）
+
+> 仅当使用 `esp32/ink-display-wifi-epd/` 固件（带相框旋转 / 舵机功能）时需要。
+> 老的 `ink-display-7C-photo` / `ink-display-133C-photo` 固件无此功能，可跳过本节。
+
+该固件支持通过舵机在竖屏（portrait）/ 横屏（landscape）之间旋转相框，安装时需要两张「朝向无歧义」的标定卡来现场标定舵机的绝对角度、转速与画面方向反转开关。标定卡上印有向上箭头、TOP/上、L/左、R/右及左上红三角 / 右下黄方块等不对称标记，便于一眼判断画面是否正放、颠倒或镜像。
+
+标定卡是一次性部署产物（不随每日 `render_daily_photo.py` 重跑）。**首次部署、换机重装或想更新标定卡图案时，需手动执行：**
+
+```bash
+python3 render_calib_cards.py
+```
+
+产物写入 `output/`：
+
+- `calib_p.bin`（竖屏 480×800，384000 字节）
+- `calib_l.bin`（横屏 800×480，384000 字节）
+
+生成后由 `server.py` 通过以下端点下发，供 ESP32 调试页拉取：
+
+```
+GET /static/inktime/<DOWNLOAD_KEY>/calib_p.bin
+GET /static/inktime/<DOWNLOAD_KEY>/calib_l.bin
+```
+
+> ⚠️ 若不执行此步骤，ESP32 标定页拉取时会返回 `HTTP 404`，日志提示 `[标定] HTTP 失败 code=404`。
+
 ## 启动 ESP32 下载服务器和 WebUI
 执行：
 
