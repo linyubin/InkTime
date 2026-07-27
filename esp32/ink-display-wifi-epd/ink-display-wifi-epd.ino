@@ -1577,11 +1577,15 @@ static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, con
     DBG_PRINTLN("[EPD] 无屏，跳过刷屏");
     return;
   }
+  // 按朝向选基础旋转（物理 framebuffer 800×480）：
+  //   竖屏数据 480×800 → ROTATE_90 转竖向；rotate180 开关 → 再翻 180° = ROTATE_270
+  //   横屏数据 800×480 → ROTATE_0 不转（本就是物理朝向）；invert 开关 → ROTATE_180
+  //   （与 fetchCalibCardToFramebuffer / fetchPhotoBinToFramebuffer 的 Paint 初始化一致）
   uint16_t paintRotate;
   if (orientation == "landscape") {
-    paintRotate = cfg.landscape_invert ? ROTATE_270 : ROTATE_90;   // 初值，标定验证后可调
+    paintRotate = cfg.landscape_invert ? ROTATE_180 : ROTATE_0;
   } else {
-    paintRotate = cfg.rotate180 ? ROTATE_270 : ROTATE_90;          // 竖屏现状不动
+    paintRotate = cfg.rotate180 ? ROTATE_270 : ROTATE_90;
   }
   Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
   Paint_SetScale(4);
@@ -1651,8 +1655,9 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
     String ori = String(forcedCalibOri);
     pushLog(logBuf, String("[标定] 渲染标定卡 (") + ori + ")");
 
-    // 先初始化 Paint（朝向在 streamToPaintHelper 里只用于宽高）
-    Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
+    // 按朝向初始化 Paint 旋转（与 displayFramebuffer / fetchCalibCardToFramebuffer 一致）
+    uint16_t paintRotate = (ori == "landscape") ? ROTATE_0 : ROTATE_90;
+    Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
     Paint_SetScale(4);
     Paint_SelectImage(BlackImage);
     Paint_Clear(WHITE0);
@@ -1690,8 +1695,12 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
   }
 
   // ── 阶段 A2：fetch bin 到 framebuffer（失败 → 不转舵机、不刷屏、保留昨天姿态）──
-  // Paint 先用任意朝向初始化（displayFramebuffer 里会按朝向重设）
-  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
+  // Paint 按朝向初始化（必须与 displayFramebuffer 的旋转一致，否则横屏会错位）：
+  //   竖屏数据 480×800 → ROTATE_90；横屏数据 800×480 → ROTATE_0
+  {
+    uint16_t paintRotate = (orientation == "landscape") ? ROTATE_0 : ROTATE_90;
+    Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
+  }
   Paint_SetScale(4);
   Paint_SelectImage(BlackImage);
   Paint_Clear(WHITE0);
@@ -1740,8 +1749,12 @@ static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibNa
 
   DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
 
-  // 先用任意朝向初始化 Paint（displayFramebuffer 里会按朝向重设）
-  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, ROTATE_90, WHITE0);
+  // 按朝向选 Paint 旋转（与 displayFramebuffer 保持一致）：
+  //   物理 framebuffer 是 800×480。竖屏数据 480×800 需 ROTATE_90 转成竖向；
+  //   横屏数据 800×480 本就是物理朝向，用 ROTATE_0 不旋转。
+  //   streamToPaintHelper 的写入坐标空间随之匹配（竖 480×800 / 横 800×480）。
+  uint16_t paintRotate = (orientation == "landscape") ? ROTATE_0 : ROTATE_90;
+  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
   Paint_SetScale(4);
   Paint_SelectImage(BlackImage);
   Paint_Clear(WHITE0);
