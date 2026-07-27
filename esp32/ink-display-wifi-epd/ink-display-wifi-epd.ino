@@ -1415,14 +1415,30 @@ static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrienta
 //    orientation="portrait"  → 逻辑画布 480×800（currentX∈[0,480)）
 //    orientation="landscape" → 逻辑画布 800×480（currentX∈[0,800)）
 //  字节数都是 384000，颜色编码 0/1/2/3 不变
+//
+//  返回码（供上层决定是否重试）：
+//    0 = 成功
+//    1 = 链路中断（stream 模式：available()==0 持续超过 stallMs 且未读够；可重试）
+//    2 = 整体超时（超过 overallMs；可重试）
+//    3 = 内存模式长度不足（不可重试）
+//
+//  参数：
+//    expectedLen  服务端声明的 Content-Length（权威）；<=0 或超过画布尺寸则退回 fbW*fbH
+//    stallMs      stream 模式下，available() 持续为空超过该值且未读够，判定链路中断
+//    overallMs    stream 模式整体超时兜底
 // ============================================================
-static bool streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t memLen,
-                                const String &orientation, uint32_t timeoutMs, String* logBuf) {
+static int streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t memLen,
+                               const String &orientation, size_t expectedLen,
+                               uint32_t stallMs, uint32_t overallMs, String* logBuf) {
   int fbW = (orientation == "landscape") ? FB_HEIGHT : FB_WIDTH;   // 横屏逻辑宽=800, 竖屏=480
   int fbH = (orientation == "landscape") ? FB_WIDTH  : FB_HEIGHT;  // 横屏逻辑高=480, 竖屏=800
   size_t targetBytes = (size_t)fbW * fbH;   // 384000
+  // 以服务端 Content-Length 为准；未声明或异常则退回画布尺寸
+  size_t want = (expectedLen > 0 && expectedLen <= targetBytes) ? expectedLen : targetBytes;
+
   size_t totalRecv = 0;
   uint32_t start = millis();
+  uint32_t lastRecv = millis();
 
   const size_t bufSize = 512;
   uint8_t buf[bufSize];
@@ -1431,12 +1447,15 @@ static bool streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_
 
   // HTTP 流模式
   if (stream) {
-    while (stream->connected() && totalRecv < targetBytes) {
-      if (millis() - start > timeoutMs) { pushLog(logBuf, "[拉取] 超时"); return false; }
+    // 每次进入（含重试）都清空 framebuffer 并重置游标，避免脏数据/像素错位
+    Paint_Clear(WHITE0);
+    while (totalRecv < want) {
+      uint32_t now = millis();
+      if (now - start > overallMs) { pushLog(logBuf, "[拉取] 整体超时"); return 2; }
       size_t avail = stream->available();
       if (avail) {
         size_t toRead = avail; if (toRead > bufSize) toRead = bufSize;
-        if (toRead > targetBytes - totalRecv) toRead = targetBytes - totalRecv;
+        if (toRead > want - totalRecv) toRead = want - totalRecv;
         int r = stream->read(buf, toRead);
         if (r > 0) {
           for (int i = 0; i < r; ++i) {
@@ -1453,13 +1472,23 @@ static bool streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_
             if (curX >= fbW) { curX = 0; curY++; }
           }
           totalRecv += r;
+          lastRecv = now;
         }
-      } else { delay(1); }
+      } else {
+        // available()==0：若持续超过 stallMs 且未读够，判定链路中断（可重试）
+        if (now - lastRecv > stallMs) {
+          pushLog(logBuf, String("[拉取] 链路中断 ") + (int)totalRecv + "/" + (int)want);
+          return 1;
+        }
+        delay(1);
+      }
     }
+    pushLog(logBuf, String("[拉取] 入 framebuffer ") + (int)totalRecv + " bytes (" + fbW + "x" + fbH + ")");
+    return 0;
   }
   // 内存 buffer 模式（标定卡：forcedCalibBin）
-  else if (memBuf && memLen > 0) {
-    size_t cap = (memLen < targetBytes) ? memLen : targetBytes;
+  if (memBuf && memLen > 0) {
+    size_t cap = (memLen < want) ? memLen : want;
     for (size_t i = 0; i < cap; ++i) {
       uint8_t colorVal;
       switch (memBuf[i]) {
@@ -1474,14 +1503,16 @@ static bool streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_
       if (curX >= fbW) { curX = 0; curY++; }
       totalRecv++;
     }
+    if (totalRecv != want) {
+      pushLog(logBuf, String("[拉取] 标定卡长度不足 ") + (int)totalRecv + "/" + (int)want);
+      return 3;
+    }
+    pushLog(logBuf, String("[拉取] 入 framebuffer ") + (int)totalRecv + " bytes (" + fbW + "x" + fbH + ")");
+    return 0;
   }
-
-  if (totalRecv != targetBytes) {
-    pushLog(logBuf, String("[拉取] 尺寸不匹配 ") + (int)totalRecv + "/" + (int)targetBytes);
-    return false;
-  }
-  pushLog(logBuf, String("[拉取] 入 framebuffer ") + (int)totalRecv + " bytes (" + fbW + "x" + fbH + ")");
-  return true;
+  // 既无 stream 也无 memBuf
+  pushLog(logBuf, "[拉取] 无数据源");
+  return 1;
 }
 
 // ============================================================
@@ -1492,21 +1523,41 @@ static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String 
                                        unsigned char* /*BlackImage*/, String* logBuf) {
   String url = buildPhotoUrl(cfg, String(idx) + ".bin");
   DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
-  pushLog(logBuf, String("[拉取] idx=") + idx + " | GET " + url);
 
-  HTTPClient http;
-  http.begin(url);
-  http.setTimeout(30000);
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code);
+  // WiFi 偶发抖断会导致 384KB 流式读取中途断开（少几百字节）。
+  // 每次重试重建连接、清空 framebuffer 重写；最多 MAX_RETRY 次。
+  const int MAX_RETRY = 3;
+  for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+    pushLog(logBuf, String("[拉取] idx=") + idx + " 尝试 " + attempt + "/" + MAX_RETRY + " | GET " + url);
+
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(30000);
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+      pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code);
+      http.end();
+      if (attempt < MAX_RETRY) { delay(500); continue; }
+      return false;
+    }
+
+    size_t contentLen = (size_t)http.getSize();   // Content-Length（0 表示服务端未声明）
+    WiFiClient *stream = http.getStreamPtr();
+    int rc = streamToPaintHelper(stream, nullptr, 0, orientation, contentLen,
+                                 5000 /*stallMs*/, 60000 /*overallMs*/, logBuf);
     http.end();
+
+    if (rc == 0) return true;
+    // rc==1 链路中断、rc==2 整体超时 → 均可重建连接重试
+    if (attempt < MAX_RETRY) {
+      pushLog(logBuf, String("[拉取] 等待 500ms 后重试…"));
+      delay(500);
+      continue;
+    }
+    pushLog(logBuf, String("[拉取] 已达最大重试次数，放弃"));
     return false;
   }
-  WiFiClient *stream = http.getStreamPtr();
-  bool ok = streamToPaintHelper(stream, nullptr, 0, orientation, 60000, logBuf);
-  http.end();
-  return ok;
+  return false;
 }
 
 // ============================================================
@@ -1598,8 +1649,10 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
     Paint_Clear(WHITE0);
 
     // 标定卡字节数：竖屏 480*800=384000，横屏 800*480=384000（一致）
-    bool ok = streamToPaintHelper(nullptr, (const uint8_t*)forcedCalibBin, 384000, ori, 5000, logBuf);
-    if (!ok) {
+    // 内存模式：expectedLen=384000，stall/overall 对内存模式无意义，传 0
+    int rc = streamToPaintHelper(nullptr, (const uint8_t*)forcedCalibBin, 384000, ori,
+                                 384000, 0, 0, logBuf);
+    if (rc != 0) {
       heap_caps_free(BlackImage);
       return false;
     }
