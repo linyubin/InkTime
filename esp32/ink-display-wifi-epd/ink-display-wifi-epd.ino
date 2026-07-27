@@ -255,6 +255,8 @@ void saveConfig(const Config &cfg) {
 }
 
 // 保存舵机标定参数（独立于 saveConfig，避免每次改 WiFi 都重写舵机字段）
+// 注：rot180（竖屏画面旋转 180°）也在此保存，让标定页能即时调整竖屏方向；
+//     /network 页面的 saveConfig 仍会写同一个 NVS key，两边对 rot180 共享。
 void saveServoConfig(const Config &cfg) {
   prefs.begin("dashcfg", false);
   prefs.putFloat("sv_p_deg", cfg.servo_portrait_deg);
@@ -262,6 +264,7 @@ void saveServoConfig(const Config &cfg) {
   prefs.putFloat("sv_spd",   cfg.servo_speed);
   prefs.putBool ("sv_cal",   cfg.servo_calibrated);
   prefs.putBool ("ls_inv",   cfg.landscape_invert);
+  prefs.putBool ("rot180",   cfg.rotate180);
   prefs.end();
   DBG_PRINTLN("[CFG] 舵机标定已保存");
 }
@@ -1049,6 +1052,9 @@ static String buildServoPage(const Config &cfg) {
   html += F(")</label><input type='number' step='1' name='spd' value='");
   html += String(cfg.servo_speed, 1);
   html += F("'></div>");
+  html += F("<div class='cb-group'><input type='checkbox' id='rot180' name='rot180' value='1'");
+  if (cfg.rotate180) html += F(" checked");
+  html += F("><label for='rot180'>竖屏画面旋转 180°</label></div>");
   html += F("<div class='cb-group'><input type='checkbox' id='inv' name='inv' value='1'");
   if (cfg.landscape_invert) html += F(" checked");
   html += F("><label for='inv'>横屏画面方向反转</label></div>");
@@ -1070,8 +1076,9 @@ static String buildServoPage(const Config &cfg) {
   html += F("<script>");
   html += F("function fv(n){var e=document.querySelector(\"[name='\"+n+\"']\");return e?encodeURIComponent(e.value):'';}");
   html += F("function finv(){return document.getElementById('inv').checked?'1':'0';}");
+  html += F("function frot(){return document.getElementById('rot180').checked?'1':'0';}");
   html += F("function testOri(o){");
-  html += F("var q='p_deg='+fv('p_deg')+'&l_deg='+fv('l_deg')+'&spd='+fv('spd')+'&inv='+finv();");
+  html += F("var q='p_deg='+fv('p_deg')+'&l_deg='+fv('l_deg')+'&spd='+fv('spd')+'&inv='+finv()+'&rot180='+frot();");
   html += F("var u='/servo?test='+o+'&'+q;");
   html += F("document.getElementById('log').style.display='block';");
   html += F("document.getElementById('log').textContent='正在执行：'+o+' ...（含下载标定卡+转舵机+刷屏，约 15-20 秒）';");
@@ -1103,13 +1110,15 @@ void handleServo() {
   trial.servo_portrait_deg  = parseServoArg("p_deg", g_cfg.servo_portrait_deg);
   trial.servo_landscape_deg = parseServoArg("l_deg", g_cfg.servo_landscape_deg);
   trial.servo_speed         = parseServoArg("spd",   g_cfg.servo_speed);
-  trial.landscape_invert    = server.hasArg("inv") && server.arg("inv") == "1";
+  trial.landscape_invert    = server.hasArg("inv")    && server.arg("inv")    == "1";
+  trial.rotate180           = server.hasArg("rot180") && server.arg("rot180") == "1";
 
   String log;
   String ori = action;   // "portrait" or "landscape"
   log += String("[标定] 测试 ") + ori + "\n";
   log += String("  竖屏=") + trial.servo_portrait_deg + " 横屏=" + trial.servo_landscape_deg;
-  log += String(" 速度=") + trial.servo_speed + " invert=" + (trial.landscape_invert ? "Y" : "N") + "\n";
+  log += String(" 速度=") + trial.servo_speed + " invert=" + (trial.landscape_invert ? "Y" : "N")
+       + " rot180=" + (trial.rotate180 ? "Y" : "N") + "\n";
 
   // 1. 转舵机（用表单当前值；无论后续 fetch 是否成功都转，方便调机械角度）
   float target = (ori == "landscape") ? trial.servo_landscape_deg : trial.servo_portrait_deg;
@@ -1160,7 +1169,8 @@ void handleServoSave() {
   newCfg.servo_portrait_deg  = parseServoArg("p_deg", g_cfg.servo_portrait_deg);
   newCfg.servo_landscape_deg = parseServoArg("l_deg", g_cfg.servo_landscape_deg);
   newCfg.servo_speed         = parseServoArg("spd",   g_cfg.servo_speed);
-  newCfg.landscape_invert    = server.hasArg("inv") && server.arg("inv") == "1";
+  newCfg.landscape_invert    = server.hasArg("inv")    && server.arg("inv")    == "1";
+  newCfg.rotate180           = server.hasArg("rot180") && server.arg("rot180") == "1";
   newCfg.servo_calibrated    = true;   // 保存即视为已标定
   saveServoConfig(newCfg);
   g_cfg = newCfg;
