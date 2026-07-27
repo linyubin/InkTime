@@ -1732,16 +1732,55 @@ static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_
     http.end();
     return nullptr;
   }
-  String body = http.getString();
+
+  // 流式读取到 malloc buffer，绝不经过 Arduino String。
+  // 原因：标定卡是 384000 字节纯二进制（每字节 0/1/2/3 颜色索引，含大量 0x00），
+  // http.getString() 返回的 String 对大二进制不可靠（易返回空或被 0x00 截断），
+  // 表现为 [标定] 空响应。改用 Content-Length 预分配 + WiFiClient 流式读取，
+  // 与照片 .bin 的下载路径保持一致。
+  size_t expected = (size_t)http.getSize();   // Content-Length（0 表示未声明）
+  if (expected == 0) expected = (size_t)FB_WIDTH * FB_HEIGHT;  // 384000
+  uint8_t *buf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_8BIT);
+  if (!buf) {
+    pushLog(logBuf, String("[标定] 内存分配失败 ") + (int)expected);
+    http.end();
+    return nullptr;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  size_t total = 0;
+  uint32_t startMs = millis();
+  const uint32_t STALL_MS = 5000, OVERALL_MS = 30000;
+  uint32_t lastRecv = millis();
+  while (total < expected) {
+    uint32_t now = millis();
+    if (now - startMs > OVERALL_MS) {
+      pushLog(logBuf, String("[标定] 整体超时，已收 ") + (int)total + "/" + (int)expected);
+      heap_caps_free(buf);
+      http.end();
+      return nullptr;
+    }
+    size_t avail = stream->available();
+    if (avail) {
+      size_t toRead = avail;
+      if (toRead > expected - total) toRead = expected - total;
+      int r = stream->read(buf + total, toRead);
+      if (r > 0) { total += r; lastRecv = now; }
+    } else {
+      if (now - lastRecv > STALL_MS) {
+        pushLog(logBuf, String("[标定] 链路中断，已收 ") + (int)total + "/" + (int)expected);
+        heap_caps_free(buf);
+        http.end();
+        return nullptr;
+      }
+      delay(1);
+    }
+  }
   http.end();
 
-  size_t n = body.length();
-  if (n == 0) { pushLog(logBuf, "[标定] 空响应"); return nullptr; }
-  uint8_t *buf = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_8BIT);
-  if (!buf) { pushLog(logBuf, "[标定] 内存分配失败"); return nullptr; }
-  memcpy(buf, body.c_str(), n);
-  *outLen = n;
-  pushLog(logBuf, String("[标定] 收到 ") + (int)n + " bytes");
+  if (total == 0) { pushLog(logBuf, "[标定] 空响应"); heap_caps_free(buf); return nullptr; }
+  *outLen = total;
+  pushLog(logBuf, String("[标定] 收到 ") + (int)total + " bytes");
   return buf;
 }
 
