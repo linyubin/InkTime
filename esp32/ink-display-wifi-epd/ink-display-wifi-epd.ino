@@ -1430,6 +1430,27 @@ static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrienta
 }
 
 // ============================================================
+//  计算写入 framebuffer 时 Paint_NewImage 应用的旋转值
+//
+//  关键事实（已通过 PIC_display 源码确认）：PIC_display 把 framebuffer 字节
+//  按固定顺序原样推给屏幕，完全无视 Paint 的 rotate。因此画面朝向只由
+//  【写入时】Paint_NewImage 的 rotate 决定（它影响 Paint_SetPixel 的坐标映射），
+//  在刷屏阶段再设 rotate 是无效的。所有写入点都必须用本函数选 rotate。
+//
+//  物理屏 800×480。服务端 .bin 字节序：
+//    portrait  → 480×800 行优先    landscape → 800×480 行优先
+//  旋转选择（基于已验证的竖屏 ROTATE_90 正常工作反推）：
+//    portrait: 基础 ROTATE_90（把 480×800 转成竖向）；rotate180 → ROTATE_270
+//    landscape: 基础 ROTATE_0（数据本就是物理朝向）；invert → ROTATE_180
+// ============================================================
+static uint16_t computePaintRotate(const Config &cfg, const String &orientation) {
+  if (orientation == "landscape") {
+    return cfg.landscape_invert ? ROTATE_180 : ROTATE_0;
+  }
+  return cfg.rotate180 ? ROTATE_270 : ROTATE_90;
+}
+
+// ============================================================
 //  把字节流（HTTP stream 或内存 buffer）按朝向写入 Paint framebuffer
 //    orientation="portrait"  → 逻辑画布 480×800（currentX∈[0,480)）
 //    orientation="landscape" → 逻辑画布 800×480（currentX∈[0,800)）
@@ -1583,22 +1604,14 @@ static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String 
 //  根据朝向选 Paint 旋转方向并刷屏
 // ============================================================
 static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, const String &orientation) {
+  (void)cfg; (void)orientation;   // 画面朝向已在写入阶段（Paint_NewImage）定型，刷屏无需再处理
   if (!g_epdPresent) {
     DBG_PRINTLN("[EPD] 无屏，跳过刷屏");
     return;
   }
-  // 按朝向选基础旋转（物理 framebuffer 800×480）：
-  //   竖屏数据 480×800 → ROTATE_90 转竖向；rotate180 开关 → 再翻 180° = ROTATE_270
-  //   横屏数据 800×480 → ROTATE_0 不转（本就是物理朝向）；invert 开关 → ROTATE_180
-  //   （与 fetchCalibCardToFramebuffer / fetchPhotoBinToFramebuffer 的 Paint 初始化一致）
-  uint16_t paintRotate;
-  if (orientation == "landscape") {
-    paintRotate = cfg.landscape_invert ? ROTATE_180 : ROTATE_0;
-  } else {
-    paintRotate = cfg.rotate180 ? ROTATE_270 : ROTATE_90;
-  }
-  Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
-  Paint_SetScale(4);
+  // 注意：PIC_display 把 framebuffer 字节原样推给屏幕，不读 Paint 的 rotate/状态。
+  // 画面朝向（含 rot180/landscape_invert 翻转）已在写入 framebuffer 时由
+  // computePaintRotate 选定的 Paint_NewImage 旋转决定，此处无需、也无法再改朝向。
   Paint_SelectImage(BlackImage);
 
   DBG_PRINTLN("[EPD] 初始化并开始显示画面");
@@ -1665,8 +1678,8 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
     String ori = String(forcedCalibOri);
     pushLog(logBuf, String("[标定] 渲染标定卡 (") + ori + ")");
 
-    // 按朝向初始化 Paint 旋转（与 displayFramebuffer / fetchCalibCardToFramebuffer 一致）
-    uint16_t paintRotate = (ori == "landscape") ? ROTATE_0 : ROTATE_90;
+    // 写入时的 Paint 旋转决定画面朝向（含 rot180/landscape_invert 翻转开关）
+    uint16_t paintRotate = computePaintRotate(cfg, ori);
     Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
     Paint_SetScale(4);
     Paint_SelectImage(BlackImage);
@@ -1705,10 +1718,9 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
   }
 
   // ── 阶段 A2：fetch bin 到 framebuffer（失败 → 不转舵机、不刷屏、保留昨天姿态）──
-  // Paint 按朝向初始化（必须与 displayFramebuffer 的旋转一致，否则横屏会错位）：
-  //   竖屏数据 480×800 → ROTATE_90；横屏数据 800×480 → ROTATE_0
+  // 写入时的 Paint 旋转决定画面朝向（含 rot180/landscape_invert 翻转开关）。
   {
-    uint16_t paintRotate = (orientation == "landscape") ? ROTATE_0 : ROTATE_90;
+    uint16_t paintRotate = computePaintRotate(cfg, orientation);
     Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
   }
   Paint_SetScale(4);
@@ -1759,11 +1771,9 @@ static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibNa
 
   DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
 
-  // 按朝向选 Paint 旋转（与 displayFramebuffer 保持一致）：
-  //   物理 framebuffer 是 800×480。竖屏数据 480×800 需 ROTATE_90 转成竖向；
-  //   横屏数据 800×480 本就是物理朝向，用 ROTATE_0 不旋转。
-  //   streamToPaintHelper 的写入坐标空间随之匹配（竖 480×800 / 横 800×480）。
-  uint16_t paintRotate = (orientation == "landscape") ? ROTATE_0 : ROTATE_90;
+  // 写入时的 Paint 旋转决定画面朝向（PIC_display 原样发送，刷屏阶段再设 rotate 无效）。
+  // computePaintRotate 综合 orientation + cfg.rotate180/landscape_invert 给出最终旋转。
+  uint16_t paintRotate = computePaintRotate(cfg, orientation);
   Paint_NewImage(BlackImage, EPD_WIDTH, EPD_HEIGHT, paintRotate, WHITE0);
   Paint_SetScale(4);
   Paint_SelectImage(BlackImage);
