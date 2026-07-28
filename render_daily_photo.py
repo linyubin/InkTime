@@ -1128,30 +1128,53 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
 
     canvas.paste(pic_area, (0, 0))
 
-    # ---------- 底部半透明文案叠层（高度按横屏画布 15%≈72px） ----------
-    text_area_height = max(56, int(canvas_h * 0.15))  # 约 72px，留最小值兜底
-    padding_x = 24
-    text_area_top = canvas_h - text_area_height + 10
+    # ---------- 底部 3D 玻璃圆角卡片（不贴底）----------
+    # 设计要点（经四色抖动实测验证）：
+    #   1) 卡片不贴底（box_y1 = canvas_h-14），四角圆角完整；
+    #      3D 立体感靠「柔和投影 + 白色高光边」实现。
+    #   2) ⚠️ 不能用深色描边（如 outline=(55,55,55)）：实测四色抖动后深灰描边会
+    #      塌缩成 95%+ 的水平实心黑线（Floyd-Steinberg 误差扩散）。
+    #      立体感只用投影（深色在卡片外）+ 白色高光边（浅色在卡片内边缘），避免卡内黑线。
+    #   3) 毛玻璃 alpha=180：四色抖动下 alpha<150 的半透明区会生成密集黑点脏背景
+    #      （与竖屏 render_image 的 939 行注释同源结论），≥150 才干净。
+    #   4) 文字 Y 坐标：日期行锚在卡片底描边上方（second_line_y = box_y1-25），
+    #      文字底距卡片底边留 10px 安全距，避免文字压在卡片边上；
+    #      同时解决原 bug 版日期底溢出画布的问题。
+    text_area_height = 110
+    padding_x = 28
+    text_area_top = canvas_h - text_area_height  # 卡片逻辑顶
 
-    box_x0 = 10
-    box_y0 = text_area_top - 8
-    box_x1 = canvas_w - 10
-    box_y1 = canvas_h - 8
+    box_x0 = 14
+    box_y0 = text_area_top - 4
+    box_x1 = canvas_w - 14
+    box_y1 = canvas_h - 14  # 不贴底，留 14px 边，四角圆角完整
     box_w = box_x1 - box_x0
     box_h = box_y1 - box_y0
 
     from PIL import ImageFilter
-    bg_crop = canvas.crop((box_x0, box_y0, box_x1, box_y1))
-    bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=12))
+    # 1) 柔和投影：向下偏移 6px + 模糊，制造卡片浮于照片之上的 3D 层次感
+    shadow_layer = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow_layer).rounded_rectangle(
+        (box_x0 + 6, box_y0 + 6, box_x1 + 6, box_y1 + 6), radius=18, fill=(0, 0, 0, 95)
+    )
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=8))
+    canvas.paste(shadow_layer.convert("RGB"), (0, 0), shadow_layer)
 
-    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 110))
+    # 2) 毛玻璃主体：高斯模糊 + 高 alpha 白色叠加
+    bg_crop = canvas.crop((box_x0, box_y0, box_x1, box_y1))
+    bg_crop_blurred = bg_crop.filter(ImageFilter.GaussianBlur(radius=14))
+    overlay = Image.new("RGBA", (box_w, box_h), (255, 255, 255, 180))
     glass_bg = Image.alpha_composite(bg_crop_blurred.convert("RGBA"), overlay)
 
+    # 3) 圆角 mask（清晰圆角矩形边缘，不做羽化）
     mask = Image.new("L", (box_w, box_h), 0)
     mask_draw = ImageDraw.Draw(mask)
-    mask_draw.rounded_rectangle((0, 0, box_w, box_h), radius=14, fill=255)
+    mask_draw.rounded_rectangle((0, 0, box_w, box_h), radius=18, fill=255)
 
     canvas.paste(glass_bg.convert("RGB"), (box_x0, box_y0), mask)
+
+    # 4) 白色高光边：模拟卡片受光面，强化 3D 浮起感（浅色，抖动后不产生黑线）
+    draw.rounded_rectangle((box_x0, box_y0, box_x1, box_y1), radius=18, outline=(255, 255, 255), width=1)
 
     def _get_font(path: str, size: int):
         if path and Path(path).exists():
@@ -1168,27 +1191,27 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
                         continue
         return ImageFont.load_default()
 
-    font_big = _get_font(str(FONT_PATH), 22)    # 文案（与竖屏同字号）
-    font_small = _get_font(str(FONT_PATH), 20)  # 日期/地点（与竖屏同字号）
-    text_width = canvas_w - 2 * padding_x
+    font_big = _get_font(str(FONT_PATH), 22)    # 文案
+    font_small = _get_font(str(FONT_PATH), 18)  # 日期/地点（原 20 调小，给双行文案留行距）
+    text_width = box_w - 2 * (padding_x - box_x0)  # 卡片内可用文字宽
 
     side_text = item.get("side") or ""
     text_fill = (0, 0, 0)
     stroke_w = 0.3
 
-    # 文案：最多两行
-    y = text_area_top
+    # 文案：最多两行，从卡片顶 +12px 起（留出顶部高光边空间），行高 28
+    y = box_y0 + 12
     if side_text:
         lines = wrap_text_chinese(draw, side_text, font_big, text_width, max_lines=2)
         for line in lines:
             draw.text((padding_x, y), line, font=font_big, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
-            y += 24
+            y += 28
 
-    # 日期 + 地点：底部第二行
+    # 日期 + 地点：锚在卡片底描边上方 10px（draw y，文字底≈y+15，距 box_y1 留 10px 安全距）
     date_display = format_date_display(item.get("date", ""))
     loc_display = format_location(item.get("lat"), item.get("lon"), item.get("city") or "")
 
-    second_line_y = text_area_top + 44
+    second_line_y = box_y1 - 25  # box_y1=canvas_h-14；-25 使文字底≈box_y1-10，留 10px 距描边
     draw.text((padding_x, second_line_y), date_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
 
     loc_w = draw.textlength(loc_display, font=font_small)
