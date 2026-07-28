@@ -22,6 +22,9 @@ import asyncio
 import argparse
 import sys
 import logging
+import subprocess
+import shutil
+import time
 from pathlib import Path
 
 try:
@@ -57,6 +60,10 @@ if not BIN_OUTPUT_DIR.is_absolute():
 
 # 目标设备 MAC（填写后跳过扫描，推荐）
 EPD_DEVICE_MAC = str(getattr(cfg, "EPD_DEVICE_MAC", "") or "").strip()
+
+# BLE 重试配置
+BLE_MAX_RETRIES = int(getattr(cfg, "EPD_BLE_MAX_RETRIES", 3) or 3)
+BLE_RETRY_DELAY = float(getattr(cfg, "EPD_BLE_RETRY_DELAY", 5.0) or 5.0)
 
 # BLE 分块大小（字节）：每次 write 的 data 部分（不含命令头 2 字节）
 # 默认 238 = MTU 244 - 2(ATT header) - 4(L2CAP) = 238
@@ -141,6 +148,73 @@ def inktime_to_fourcolor_packed(raw: bytes) -> bytes:
     return bytes(out)
 
 
+def bluetoothctl_disconnect_all() -> bool:
+    """用 bluetoothctl 断开所有活跃 BLE 连接。
+
+    比 reset_adapter 更轻量：只断连，不重启 HCI。
+    用于首次连接前的预清理，清除可能残留的半连接状态。
+    """
+    btctl = shutil.which("bluetoothctl") or "/usr/bin/bluetoothctl"
+    try:
+        result = subprocess.run(
+            [btctl, "disconnect"],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout.strip()
+        if "not connected" in output.lower() or output == "":
+            log.info("蓝牙预清理：无活跃连接")
+        else:
+            log.info(f"蓝牙预清理：{output}")
+        return True
+    except Exception as e:
+        log.warning(f"bluetoothctl disconnect 失败（非致命）: {e}")
+        return False
+
+
+def reset_ble_adapter() -> bool:
+    """重启蓝牙适配器（hci0），清除 BlueZ 残留连接状态。
+
+    这是解决 BlueZ BLE 连接超时的关键手段：
+    蓝色协议栈可能在设备端保持半连接状态，导致后续连接超时。
+    重启适配器会强制断开所有连接并重置 HCI 控制器。
+    """
+    hci = "hci0"
+    hciconfig = shutil.which("hciconfig") or "/usr/bin/hciconfig"
+
+    # 检查 hci0 是否存在
+    try:
+        result = subprocess.run(
+            [hciconfig, hci],
+            capture_output=True, text=True, timeout=5
+        )
+        if hci not in result.stdout:
+            log.warning(f"未找到蓝牙适配器 {hci}，跳过 adapter reset")
+            return False
+    except Exception as e:
+        log.warning(f"检查蓝牙适配器失败: {e}")
+        return False
+
+    log.info(f"正在重启蓝牙适配器 {hci}...")
+    try:
+        # DOWN
+        subprocess.run(
+            [hciconfig, hci, "down"],
+            capture_output=True, timeout=5
+        )
+        time.sleep(1)
+        # UP
+        subprocess.run(
+            [hciconfig, hci, "up"],
+            capture_output=True, timeout=5
+        )
+        time.sleep(2)
+        log.info(f"✅ 蓝牙适配器 {hci} 已重启")
+        return True
+    except Exception as e:
+        log.warning(f"重启蓝牙适配器失败: {e}")
+        return False
+
+
 # ── BLE 扫描 ──────────────────────────────────────────
 async def find_epd_device(target_mac: str = "", timeout: float = 10.0) -> str:
     """扫描附近 EPD-nRF5 设备，返回 MAC 地址。"""
@@ -177,11 +251,24 @@ async def push_image(device_addr: str, packed: bytes) -> None:
     """连接 nRF5 设备并将 packed 图像数据分块传输，完成后发送刷新指令。"""
     log.info(f"正在连接设备：{device_addr} ...")
 
-    async with BleakClient(device_addr, timeout=20.0) as client:
+    # 先扫描获取device对象，再用device对象连接（比直接用地址字符串更可靠）
+    device = await BleakScanner.find_device_by_address(device_addr, timeout=15)
+    if not device:
+        raise RuntimeError(f"BLE 扫描未找到设备 {device_addr}")
+
+    log.info(f"已扫描到设备：{device.name}，正在连接...")
+    async with BleakClient(device, timeout=30.0) as client:
         if not client.is_connected:
             raise RuntimeError("BLE 连接失败，请检查设备状态")
 
         log.info("已连接！开始初始化屏幕...")
+
+        # 强制触发 Service Discovery（修复 BlueZ 服务发现未完成就写的问题）
+        try:
+            await client.get_services()
+            log.info("Service Discovery 完成")
+        except Exception as e:
+            log.warning(f"Service Discovery 失败：{e}，继续尝试...")
 
         # 获取协商的 MTU：BlueZ 后端需调用 _acquire_mtu() 才能读到真实值
         try:
@@ -195,9 +282,12 @@ async def push_image(device_addr: str, packed: bytes) -> None:
             safe_chunk = 1
         log.info(f"BLE MTU：{negotiated_mtu}，安全分块大小：{safe_chunk}（配置值 {CHUNK_SIZE}）")
 
+        # 等待设备就绪
+        await asyncio.sleep(1.0)
+
         # Step 1：INIT
         await client.write_gatt_char(EPD_CHAR_UUID, bytes([CMD_INIT]), response=True)
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.5)
 
         # Step 2：分块传输图像数据
         total   = len(packed)
@@ -236,7 +326,7 @@ async def push_image(device_addr: str, packed: bytes) -> None:
 
 
 # ── 主流程 ────────────────────────────────────────────
-async def main(photo_idx: int, device_mac: str) -> None:
+async def main(photo_idx: int, device_mac: str, force_retry: bool = False) -> None:
     # 1. 加载 .bin 文件
     bin_path = BIN_OUTPUT_DIR / f"photo_{photo_idx}.bin"
     if not bin_path.exists():
@@ -267,8 +357,49 @@ async def main(photo_idx: int, device_mac: str) -> None:
         log.error("  3. 在 config.py 中设置 EPD_DEVICE_MAC 以跳过扫描")
         sys.exit(1)
 
-    # 4. 推送
-    await push_image(mac, packed)
+    # 3.5 预清理：断开残留连接 + 重置适配器（首次连接前主动执行）
+    #     解决"扫描到但连接超时"的 BLE 栈死锁问题
+    log.info("蓝牙预清理：断开残留连接 + 重置适配器...")
+    bluetoothctl_disconnect_all()
+    reset_ble_adapter()
+    await asyncio.sleep(2)
+
+    # 4. 推送（递增重试延迟：8s → 15s → 25s，给 BlueZ 栈更多恢复时间）
+    for attempt in range(1, BLE_MAX_RETRIES + 1):
+        try:
+            await push_image(mac, packed)
+            break  # 成功，退出重试循环
+        except (TimeoutError, asyncio.TimeoutError, OSError, RuntimeError) as e:
+            if attempt >= BLE_MAX_RETRIES:
+                log.error(f"❌ 推送失败（已重试 {BLE_MAX_RETRIES} 次）: {e}")
+                raise
+            # 递增延迟：attempt=1→8s, attempt=2→15s, attempt=3→25s
+            delay = min(8 + 7 * (attempt - 1), 25)
+            log.warning(f"⚠️ 推送失败（第 {attempt}/{BLE_MAX_RETRIES} 次）: {e}")
+            log.info(f"等待 {delay}s 后重试（含 adapter reset）...")
+            # 重置蓝牙适配器清除残留状态
+            reset_ble_adapter()
+            await asyncio.sleep(delay)
+            log.info(f"🔄 第 {attempt + 1} 次尝试...")
+        except Exception as e:
+            # 捕获 BleakGATTProtocolError 等 BLE 协议错误
+            error_str = str(e)
+            if "UNLIKELY_ERROR" in error_str or "GATT Protocol Error" in error_str:
+                log.error(f"❌ BLE 协议错误 (UNLIKELY_ERROR): 设备 BLE 栈可能卡死")
+                log.error("🔧 解决方案：用手机浏览器打开 epd-reset.html 重置设备 BLE 状态")
+                log.error("   文件位置：/mnt/nas/Hermes_ws/epd-reset.html")
+                log.error("   或直接访问：http://<NAS_IP>:8765/epd-reset.html")
+                if attempt >= BLE_MAX_RETRIES:
+                    raise
+                delay = min(15 + 10 * (attempt - 1), 35)
+                log.info(f"等待 {delay}s 后重试...")
+                reset_ble_adapter()
+                await asyncio.sleep(delay)
+            else:
+                log.error(f"❌ 未知错误: {e}")
+                if attempt >= BLE_MAX_RETRIES:
+                    raise
+                await asyncio.sleep(10)
 
     # 5. 标记为已展示（防重复）
     path_file = BIN_OUTPUT_DIR / f"photo_{photo_idx}.path.txt"
@@ -296,8 +427,12 @@ def cli() -> None:
         metavar="MAC",
         help="BLE 设备 MAC 地址（留空则自动扫描 NRF_EPD_* 设备）",
     )
+    parser.add_argument(
+        "--retry", action="store_true", default=False,
+        help="强制重试（即使已重试过，调试用）",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.idx, args.device))
+    asyncio.run(main(args.idx, args.device, args.retry))
 
 
 if __name__ == "__main__":
