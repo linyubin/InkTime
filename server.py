@@ -2292,6 +2292,19 @@ def esp_preview(key: str):
     return _send_static_file(p)
 
 
+@app.get("/static/inktime/<key>/time")
+def esp_time(key: str):
+    """服务器授时：返回当前 Unix epoch（纯数字字符串）。
+
+    供 ESP32 在公网 NTP 失败时回退使用——设备每天都要连本 server 拉照片，
+    顺带从这里拿准确时间，避免 NTP 失败导致 sleepUntilNextSchedule 算错下次唤醒。
+    复用与其他 ESP32 接口相同的 <key> 鉴权。
+    """
+    if key != DOWNLOAD_KEY:
+        abort(404)
+    return str(int(time.time()))
+
+
 @app.post("/static/inktime/<key>/shutdown")
 def esp_shutdown(key: str):
     """供 inktime_daily.sh 在检测到 ESP32 拉取后优雅关闭 server。"""

@@ -152,6 +152,8 @@ static void pushLog(String* logBuf, const String& line);
 static void applyServoForOrientation(const Config &cfg, const String &orientation, String* logBuf);
 // 渲染阶段辅助函数的前置声明（定义在文件后半部，handleServo 在它们之前调用）
 static String buildPhotoUrl(const Config &cfg, const String &suffix);
+static String buildServerTimeUrl(const Config &cfg);
+static bool fetchServerTime(const Config &cfg, struct tm &outLocal);
 static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrientation, String* logBuf);
 static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
                                        unsigned char* BlackImage, String* logBuf);
@@ -1342,7 +1344,11 @@ bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
 }
 
 // ============================================================
-//  NTP 时间同步
+//  时间同步（NTP 优先，失败回退服务器授时）
+//
+//  公网 NTP（pool.ntp.org 等）易因路由器/运营商抖动失败；
+//  失败后回退从本 server 的 /time 接口拉 epoch（局域网授时，更可靠）。
+//  两层都失败才返回 false（调用方会重试一次，仍失败则 hasTime=false）。
 // ============================================================
 bool syncTime(const Config &cfg, struct tm &outLocal) {
   DBG_PRINTLN("[TIME] NTP 同步...");
@@ -1362,7 +1368,13 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
     delay(500);
   }
 
-  DBG_PRINTLN("[TIME] NTP 同步失败");
+  DBG_PRINTLN("[TIME] NTP 同步失败，尝试服务器授时...");
+  // 回退：从局域网 server 拉取准确时间
+  if (fetchServerTime(cfg, outLocal)) {
+    return true;  // 服务器授时成功
+  }
+
+  DBG_PRINTLN("[TIME] NTP 与服务器授时均失败");
   return false;
 }
 
@@ -1393,6 +1405,69 @@ static String buildPhotoUrl(const Config &cfg, const String &suffix) {
     return hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
   }
   return "http://" + hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
+}
+
+// 构建服务器授时 URL：/static/inktime/<key>/time
+// 与 DAILY_PHOTO_PATH_PREFIX 同前缀，但末尾是 /time 而非 photo_*
+// DAILY_PHOTO_PATH_PREFIX = "/static/inktime/andyhome0203/photo_"
+// 授时接口              = "/static/inktime/andyhome0203/time"
+// 去掉末尾 "photo_"（6 字符）拼上 "time" 即可。
+static String buildServerTimeUrl(const Config &cfg) {
+  String hp = cfg.backend_hostport;
+  hp.trim();
+  String base = hp.startsWith("http://") || hp.startsWith("https://")
+                ? hp : ("http://" + hp);
+  String prefix = String(DAILY_PHOTO_PATH_PREFIX);
+  prefix.remove(prefix.length() - 6);  // 去掉末尾 "photo_"
+  return base + prefix + String("time");
+}
+
+// 从服务器 /time 接口拉取 Unix epoch，用 settimeofday() 设系统时钟。
+// 作为公网 NTP 失败时的回退授时源——设备本就要连本 server 拉照片，
+// 局域网授时比公网 NTP 更可靠（不依赖外网）。
+// 成功返回 true，outLocal 填入本地时间。
+static bool fetchServerTime(const Config &cfg, struct tm &outLocal) {
+  String url = buildServerTimeUrl(cfg);
+  DBG_PRINTF("[TIME] 服务器授时 GET %s\n", url.c_str());
+
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(8000);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    DBG_PRINTF("[TIME] 服务器授时 HTTP 失败 code=%d\n", code);
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+  body.trim();
+
+  time_t epoch = (time_t)body.toInt();
+  if (epoch <= 1700000000) {  // 2023 年之前的值视为非法
+    DBG_PRINTF("[TIME] 服务器授时返回非法 epoch: %s\n", body.c_str());
+    return false;
+  }
+
+  // 用 settimeofday 直接设系统时钟（UTC），再应用时区偏移
+  struct timeval tv;
+  tv.tv_sec = epoch;
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+  // 重应用时区（settimeofday 会保留 tz 设置，但显式重设更稳妥）
+  long offsetSec = (long)cfg.tz_offset_hours * 3600;
+  configTime(offsetSec, 0, nullptr);  // 不带 NTP server，仅设 tz
+
+  if (!getLocalTime(&outLocal, 2000)) {
+    DBG_PRINTLN("[TIME] 服务器授时后 getLocalTime 仍失败");
+    return false;
+  }
+
+  char buf[64];
+  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &outLocal);
+  DBG_PRINTF("[TIME] 服务器授时成功: %s\n", buf);
+  saveLastTimeEpoch(epoch);
+  return true;
 }
 
 // ============================================================

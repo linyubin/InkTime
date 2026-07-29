@@ -1,0 +1,20 @@
+[Unit]
+Description=InkTime photo server (ESP32 fetch + 授时)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=andy
+WorkingDirectory=/home/andy/inktime
+# server.py 常驻：提供 ESP32 拉照片的 HTTP 接口 + /time 服务器授时
+# 取代原来 inktime_daily.sh 里临时起/停 server 的逻辑
+ExecStart=/home/andy/inktime/venv/bin/python3 /home/andy/inktime/server.py
+Restart=on-failure
+RestartSec=5
+# 日志输出到独立文件（与 render.log 区分，避免混淆 cron 渲染记录）
+StandardOutput=append:/home/andy/inktime/logs/server.log
+StandardError=append:/home/andy/inktime/logs/server.log
+
+[Install]
+WantedBy=multi-user.target
