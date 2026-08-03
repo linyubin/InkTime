@@ -640,7 +640,12 @@ def format_location(lat, lon, city: str) -> str:
         return ""
 
 
-def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: int, subjects_json: str) -> tuple[int, int]:
+def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: int, subjects_json: str, bottom_reserve: int = 0) -> tuple[int, int]:
+    """
+    bottom_reserve: 画布底部需避让（如文字卡片区）的像素数，主体应尽量落在该区之上。
+                    算法通过把“有效窗口高度”收缩为 img_area_h - bottom_reserve 来评估
+                    主体覆盖率，从而主动把主体上移、避开底部遮挡。默认 0（竖屏向后兼容）。
+    """
     default_left = max(0, (draw_w - img_area_w) // 2)
     default_top  = max(0, (draw_h - img_area_h) // 2)
 
@@ -706,42 +711,63 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
             
         center_x = max(0, draw_w - img_area_w) / 2.0
         center_y = max(0, draw_h - img_area_h) / 2.0
-        
-        best_score = -1.0
-        best_left = default_left
-        best_top = default_top
-        
+
+        # ====== 第一阶段：硬约束——绝不切人（方案 A）======
+        # 原始算法用 cov**2 平方惩罚来"排斥切人"，但在"上方多人 vs 下方一人"
+        # 这类人数不平衡的场景下，多保几个人的总收益会压过切掉一人的惩罚，
+        # 导致算法选择牺牲边缘主体（切头/切腿），与"绝不切头"的设计意图相悖。
+        #
+        # 修复：先把每个候选窗口"完整框入了几个主体(fully_covered_count)"算出来，
+        # 只在【能完整框入最多主体的那一组窗口】里再走打分。
+        # 即：若存在能让全部主体 100% 装下的窗口，绝不考虑任何切人的窗口；
+        #     若最多只能装下 k 个，则在"装下 k 个"的窗口里择优。
+        # 这是一条硬性优先级，凌驾于加权打分之上。
+        #
+        # bottom_reserve（底部文字避让）：评估主体是否被完整框入时，窗口的有效下边界
+        # 从 y+img_area_h 收缩为 y+img_area_h-bottom_reserve。物理窗口仍填满画布，
+        # 但算法会主动把主体上移到文字区之上，避免被底部毛玻璃卡片遮挡。
+        eff_bottom_margin = bottom_reserve  # 主体应避开的底部高度
+        candidates = []  # 每项: (x, y, fully_covered_count, score)
         for x in x_steps:
             for y in y_steps:
                 wx1, wx2 = x, x + img_area_w
                 wy1, wy2 = y, y + img_area_h
-                
+                # 主体评估用到的“有效下边界”（避开底部文字区）
+                wy_eff2 = wy2 - eff_bottom_margin
+
                 score = 0.0
+                fully_covered = 0
                 for s in valid_subs:
                     ix1 = max(wx1, s["x1"])
                     ix2 = min(wx2, s["x2"])
+                    # y 方向用“有效下边界”评估：主体延伸进底部文字区算作被遮挡
                     iy1 = max(wy1, s["y1"])
-                    iy2 = min(wy2, s["y2"])
-                    
+                    iy2 = min(wy_eff2, s["y2"])
+
                     if ix1 < ix2 and iy1 < iy2:
                         iarea = (ix2 - ix1) * (iy2 - iy1)
                         cov = iarea / s["area"] if s["area"] > 0 else 0
                         # 核心逻辑：平方惩罚 (cov ** 2)
                         # 如果切掉了一半(cov=0.5)，得分会变成 0.25 倍，从而遭到极大的排斥！
-                        # 算法会宁可放弃一个小目标，也优先保证将大目标100%完整框入，绝不切头。
                         score += s["weight"] * (cov ** 2)
-                
+                        if cov >= 0.999:  # 该主体被窗口 100% 完整框入
+                            fully_covered += 1
+
                 # 中心偏置：得分相同时，优先选择最靠近中心的构图
                 dist_x = abs(x - center_x) / (center_x + 1)
                 dist_y = abs(y - center_y) / (center_y + 1)
                 bias = 0.001 * (2 - dist_x - dist_y)
                 score += bias
-                
-                if score > best_score:
-                    best_score = score
-                    best_left = x
-                    best_top = y
-                    
+
+                candidates.append((x, y, fully_covered, score))
+
+        # 只保留 fully_covered_count 最高的那组候选，再按 score 选最优。
+        max_fully = max(c[2] for c in candidates)
+        best_left, best_top, _, _ = max(
+            ((x, y, fc, sc) for x, y, fc, sc in candidates if fc == max_fully),
+            key=lambda c: c[3],
+        )
+
         return int(best_left), int(best_top)
     except Exception as e:
         print(f"[WARN] compute_crop_window error: {e}")
@@ -819,15 +845,17 @@ def compute_render_orientation(img_w: int, img_h: int) -> str:
     return "portrait"
 
 
-def render_image(item: Dict[str, Any]) -> Image.Image:
+def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image.Image:
     """
-    根据选中的 item 渲染一张 480x800 的 RGB 图像（竖屏）：
+    根据选中的 item 渲染一张 RGB 图像（竖屏 480x800 或横屏 800x480）。
     - 上方图片：占 [0, CANVAS_HEIGHT - TEXT_AREA_HEIGHT)
     - 底部 TEXT_AREA_HEIGHT 像素为文字区：第一行 side 文案（最多两行），第二行日期 + 地点
-    """
-    canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
 
+    force_orientation:
+      - "auto"（默认）：按 compute_render_orientation(img_w, img_h) 自动判定，与 main() 一致。
+      - "portrait"：强制走竖屏管线（横版照片也会渲染成竖屏）。
+      - "landscape"：强制走横屏管线（竖版照片也会渲染成横屏）。
+    """
     # ---------- 加载原图并按 EXIF 方向纠正 ----------
     img = _resolve_and_load_image(item)
 
@@ -835,12 +863,19 @@ def render_image(item: Dict[str, Any]) -> Image.Image:
     if img_w == 0 or img_h == 0:
         raise RuntimeError(f"图片尺寸非法: {img.size}")
 
-    # ---------- 横屏路由（EXIF 修正后判定） ----------
-    # 此处 img_w/img_h 是 EXIF transpose 之后的真实像素朝向，是唯一可信来源。
-    # 用 compute_render_orientation 与 main() 共用同一份决策，保证 sidecar 与实际渲染一致。
-    if compute_render_orientation(img_w, img_h) == "landscape":
+    # ---------- 朝向路由 ----------
+    # force_orientation 优先；auto 时按 EXIF 修正后的真实像素朝向自动判定。
+    orient = force_orientation
+    if orient not in ("portrait", "landscape"):
+        # auto 或非法值：用 compute_render_orientation 与 main() 共用同一份决策。
+        orient = compute_render_orientation(img_w, img_h)
+
+    if orient == "landscape":
         # 把已经 EXIF 修正过的 PIL 图直接交给横屏管线，避免重复打开/transpose。
         return render_image_landscape(item, img)
+
+    canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
 
     # ---------- 照片区域 ----------
     img_area_w = CANVAS_WIDTH
@@ -1060,6 +1095,9 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     # ---------- 横屏铺满裁剪（cover-crop） ----------
     img_area_w = canvas_w
     img_area_h = canvas_h
+    # 底部文字卡片高度：既是卡片绘制高度，也是缩放/裁切阶段的“主体避让区”。
+    # 提前定义以便缩放与裁切共同遵守，避免主体（如坐在水里的小孩）被毛玻璃卡片遮挡。
+    text_area_height = 110
 
     scale = max(canvas_w / img_w, canvas_h / img_h)
 
@@ -1093,11 +1131,18 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
                 sub_h = (group_max_y - group_min_y) * img_h
 
                 max_scale_w = img_area_w / sub_w if sub_w > 0 else scale
-                max_scale_h = img_area_h / sub_h if sub_h > 0 else scale
+                # 高度方向用“有效画面高”（扣除底部文字区）来约束：
+                # 让主体群缩放后尽量装进文字区以上的空间，避免被毛玻璃卡片压住。
+                max_scale_h = (img_area_h - text_area_height) / sub_h if sub_h > 0 else scale
                 max_safe_scale = min(max_scale_w, max_scale_h)
 
-                # 横屏 β-紧：宽度优先（短宽画布靠横向填满），高度允许裁剪。
-                min_scale = max(canvas_w / img_w, canvas_h / img_h)
+                # 横屏缩放下限：允许缩小（毛玻璃回填）以装下主体、避开文字区，
+                # 但横向留白不得超过画布宽的 LANDSCAPE_MAX_LETTERBOX_RATIO（默认 15%）。
+                # 超过这个比例则停止缩小，转而由下游 compute_crop_window 裁切非主体边缘
+                # （宁可裁掉少量腿部，也不要满屏白边影响观感）。
+                # 推导：canvas_w - img_w*scale <= ratio*canvas_w  =>  scale >= (1-ratio)*canvas_w/img_w
+                max_letterbox_ratio = float(getattr(cfg, "LANDSCAPE_MAX_LETTERBOX_RATIO", 0.15))
+                min_scale = (1.0 - max_letterbox_ratio) * canvas_w / img_w
 
                 if scale > max_safe_scale:
                     scale = max(max_safe_scale, min_scale)
@@ -1110,7 +1155,9 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
 
     # 复用竖屏的主体感知裁剪窗口算法（函数本身几何不敏感）。
-    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str)
+    # 传入底部文字卡片高度作为避让区，避免主体被毛玻璃卡片遮挡（如坐在水里的孩子）。
+    # text_area_height 已在上方缩放段前定义，此处复用。
+    left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str, bottom_reserve=text_area_height)
 
     # 越界兜底（与竖屏一致）：scale 缩小导致填不满时回到原点裁切。
     crop_left = left if draw_w >= img_area_w else 0
@@ -1120,10 +1167,29 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
 
     img_cropped = img_resized.crop((crop_left, crop_top, crop_right, crop_bottom))
 
-    # 横屏画布矮宽，照片基本都能填满；不做竖屏的 letterbox 毛玻璃回退（β-紧）。
-    pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
+    # 居中 Letterboxing：缩小装下主体后若没填满画布，用高斯模糊的扩大版背景回填
+    # （与竖屏 render_image 完全同款视觉，保证两套管线风格一致）。
     paste_x = (img_area_w - draw_w) // 2 if draw_w < img_area_w else 0
     paste_y = (img_area_h - draw_h) // 2 if draw_h < img_area_h else 0
+
+    if draw_w < img_area_w or draw_h < img_area_h:
+        from PIL import ImageFilter
+        # 1. 用 Fill 比例（cover）把原图铺满整个画布作为背景
+        bg_scale = max(img_area_w / img_w, img_area_h / img_h)
+        bg_w = int(img_w * bg_scale)
+        bg_h = int(img_h * bg_scale)
+        bg_resized = img.resize((bg_w, bg_h), Image.LANCZOS)
+
+        bg_left = max(0, (bg_w - img_area_w) // 2)
+        bg_top = max(0, (bg_h - img_area_h) // 2)
+        bg_cropped = bg_resized.crop((bg_left, bg_top, bg_left + img_area_w, bg_top + img_area_h))
+
+        # 2. 高斯模糊 + 半透明白蒙版（浅色毛玻璃，规避 4 色抖动的密集黑点）
+        bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(radius=45))
+        white_overlay = Image.new("RGBA", bg_blurred.size, (255, 255, 255, 180))
+        pic_area = Image.alpha_composite(bg_blurred.convert("RGBA"), white_overlay).convert("RGB")
+    else:
+        pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
     pic_area.paste(img_cropped, (paste_x, paste_y))
 
     canvas.paste(pic_area, (0, 0))
@@ -1140,7 +1206,7 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     #   4) 文字 Y 坐标：日期行锚在卡片底描边上方（second_line_y = box_y1-25），
     #      文字底距卡片底边留 10px 安全距，避免文字压在卡片边上；
     #      同时解决原 bug 版日期底溢出画布的问题。
-    text_area_height = 110
+    # 注：text_area_height 已在上方裁切前定义（兼作主体避让区高度），此处复用。
     padding_x = 28
     text_area_top = canvas_h - text_area_height  # 卡片逻辑顶
 
@@ -1286,6 +1352,150 @@ def apply_four_color_dither(img: Image.Image) -> Image.Image:
                 next_err_b[i] = 0.0
 
     return img
+
+
+def apply_atkinson_dither(img: Image.Image) -> Image.Image:
+    """
+    Atkinson 误差扩散抖动，量化到四色（黑/白/红/黄）。
+    误差的 1/8 扩散给 6 个邻居（右、右右、下、右下、左下、下下），
+    剩余 1/4 误差被丢弃，因而整体对比度高、中调偏亮，细节柔和、噪点少，
+    是早期 Mac/Apple 经典算法，墨水屏常用。
+    与 apply_four_color_dither 同样的双行缓冲结构，只是扩散核不同。
+    """
+    img = img.convert("RGB")
+    w, h = img.size
+    pixels = img.load()
+
+    err_r = [0.0] * w
+    err_g = [0.0] * w
+    err_b = [0.0] * w
+    # Atkinson 误差会同时落到“下一行”和“下下行”，需要两份后续缓冲
+    next_err_r = [0.0] * w
+    next_err_g = [0.0] * w
+    next_err_b = [0.0] * w
+    next2_err_r = [0.0] * w
+    next2_err_g = [0.0] * w
+    next2_err_b = [0.0] * w
+
+    def _add(buf_r, buf_g, buf_b, x, er, eg, eb):
+        if 0 <= x < w:
+            buf_r[x] += er
+            buf_g[x] += eg
+            buf_b[x] += eb
+
+    for y in range(h):
+        for x in range(w):
+            r, g, b = pixels[x, y]
+            r = max(0.0, min(255.0, r + err_r[x]))
+            g = max(0.0, min(255.0, g + err_g[x]))
+            b = max(0.0, min(255.0, b + err_b[x]))
+
+            idx, pr, pg, pb = nearest_palette_color(r, g, b)
+            pixels[x, y] = (pr, pg, pb)
+
+            # Atkinson：误差的 1/8 扩散到 6 个位置
+            er = (r - pr) * (1.0 / 8.0)
+            eg = (g - pg) * (1.0 / 8.0)
+            eb = (b - pb) * (1.0 / 8.0)
+
+            #         *   →   (x+1)    (x+2)
+            #   (x-1↓) (x↓)   (x+1↓)
+            #           (x↓↓↓)
+            _add(err_r, err_g, err_b, x + 1, er, eg, eb)
+            _add(err_r, err_g, err_b, x + 2, er, eg, eb)
+            _add(next_err_r, next_err_g, next_err_b, x - 1, er, eg, eb)
+            _add(next_err_r, next_err_g, next_err_b, x, er, eg, eb)
+            _add(next_err_r, next_err_g, next_err_b, x + 1, er, eg, eb)
+            _add(next2_err_r, next2_err_g, next2_err_b, x, er, eg, eb)
+
+        # 行切换：err ← next_err ← next2_err ← 0
+        if y + 1 < h:
+            for i in range(w):
+                err_r[i] = next_err_r[i]
+                err_g[i] = next_err_g[i]
+                err_b[i] = next_err_b[i]
+                next_err_r[i] = next2_err_r[i]
+                next_err_g[i] = next2_err_g[i]
+                next_err_b[i] = next2_err_b[i]
+                next2_err_r[i] = 0.0
+                next2_err_g[i] = 0.0
+                next2_err_b[i] = 0.0
+
+    return img
+
+
+# 4×4 Bayer 有序抖动矩阵（阈值 0..15），经典 Bayer pattern。
+_BAYER_4X4 = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5],
+]
+
+
+def apply_bayer_dither(img: Image.Image) -> Image.Image:
+    """
+    4×4 Bayer 有序抖动，量化到四色（黑/白/红/黄）。
+    用固定阈值矩阵给每个像素叠加一个与位置相关的偏移，再做最近色量化。
+    产物是规则的点阵图案，没有误差扩散带来的噪点，网格感明显、速度快。
+    """
+    img = img.convert("RGB")
+    w, h = img.size
+    pixels = img.load()
+
+    # 亮度阈值幅度：约 ±32，足以在四色之间产生稳定网点
+    amp = 32.0
+
+    for y in range(h):
+        row = _BAYER_4X4[y % 4]
+        for x in range(w):
+            r, g, b = pixels[x, y]
+            # Bayer 值 0..15 映射到 [-amp, +amp]
+            offset = (row[x % 4] / 15.0 - 0.5) * 2.0 * amp
+            r = max(0.0, min(255.0, r + offset))
+            g = max(0.0, min(255.0, g + offset))
+            b = max(0.0, min(255.0, b + offset))
+
+            idx, pr, pg, pb = nearest_palette_color(r, g, b)
+            pixels[x, y] = (pr, pg, pb)
+
+    return img
+
+
+def apply_no_dither(img: Image.Image) -> Image.Image:
+    """
+    无抖动：每个像素直接吸附到最近的四色调色板色（最近色量化）。
+    不扩散任何误差，色块边界分明、渐变带断裂，用于观察纯调色板映射效果。
+    """
+    img = img.convert("RGB")
+    w, h = img.size
+    pixels = img.load()
+
+    for y in range(h):
+        for x in range(w):
+            r, g, b = pixels[x, y]
+            idx, pr, pg, pb = nearest_palette_color(r, g, b)
+            pixels[x, y] = (pr, pg, pb)
+
+    return img
+
+
+def apply_dither(img: Image.Image, algo: str = "floyd_steinberg") -> Image.Image:
+    """
+    抖动算法分发器。algo 取值：
+      - "floyd_steinberg"（默认）：Floyd–Steinberg 四色误差扩散
+      - "atkinson"：Atkinson 六邻误差扩散
+      - "bayer"：4×4 有序抖动
+      - "none"：最近色直接量化，不扩散误差
+    未知值回退到 floyd_steinberg。
+    """
+    if algo == "atkinson":
+        return apply_atkinson_dither(img)
+    if algo == "bayer":
+        return apply_bayer_dither(img)
+    if algo == "none":
+        return apply_no_dither(img)
+    return apply_four_color_dither(img)
 
 
 def image_to_palette_bin(img: Image.Image, orientation: str = "portrait") -> bytes:

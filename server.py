@@ -227,14 +227,94 @@ def _send_static_file(p: Path) -> Response:
     return send_file(p, as_attachment=False)
 
 
+def _to_local_path(path_str: str) -> Path:
+    """
+    把数据库里的 path（可能是 Windows UNC 路径）转换成本机可访问的 Path。
+    依次尝试：
+      1. 原样使用（同平台写入的库）
+      2. config.PATH_MAP 前缀替换（跨平台迁移场景，与 render_daily_photo 对齐）
+      3. 用 IMAGE_DIR 的末级目录名做后缀重连兜底
+    找不到则返回原样解析的 Path（交由调用方判定）。
+    """
+    raw = str(path_str)
+    p = Path(raw).expanduser()
+
+    image_dir_resolved = IMAGE_DIR.resolve()
+
+    # 1) 原样命中
+    try:
+        if p.resolve().relative_to(image_dir_resolved):
+            return p
+    except Exception:
+        pass
+
+    # 2) PATH_MAP 前缀替换
+    path_map = getattr(cfg, "PATH_MAP", {}) or {}
+    for old_prefix, new_prefix in path_map.items():
+        if raw.startswith(old_prefix):
+            mapped = Path(raw.replace(old_prefix, new_prefix).replace("\\", "/"))
+            try:
+                if mapped.resolve().relative_to(image_dir_resolved):
+                    return mapped
+            except Exception:
+                continue
+
+    # 3) base_name 后缀重连兜底
+    base_name = image_dir_resolved.name
+    norm_raw = raw.replace("\\", "/")
+    pattern = f"/{base_name}/"
+    if pattern in norm_raw:
+        suffix = norm_raw.split(pattern, 1)[1]
+        guessed = (image_dir_resolved / suffix).resolve()
+        try:
+            if guessed.relative_to(image_dir_resolved):
+                return guessed
+        except Exception:
+            pass
+
+    return p
+
+
+def _to_db_path(path_str: str) -> str:
+    """
+    把"本机可访问的路径"反推成数据库 photo_scores.path 里实际存储的格式。
+    用于 SQL 查询：调用方手里可能是本地路径（如 /sim 从 /images/ 反解出来），
+    也可能本来就是 DB 原值；两者都要能命中 DB。
+    做法：取相对 IMAGE_DIR 的部分，用 PATH_MAP 的反向前缀（DB->本地）重新拼成 DB 形式。
+    若无法映射，返回原值（同平台写入的库可原样匹配）。
+    """
+    raw = str(path_str)
+    try:
+        p = Path(raw).expanduser().resolve()
+        rel = p.relative_to(IMAGE_DIR.resolve())
+        rel_str = str(rel).replace("\\", "/")
+    except Exception:
+        return raw
+
+    # PATH_MAP: {DB前缀: 本地前缀}，反推时把本地前缀替换成 DB 前缀
+    path_map = getattr(cfg, "PATH_MAP", {}) or {}
+    for db_prefix, local_prefix in path_map.items():
+        local_prefix_norm = local_prefix.replace("\\", "/").rstrip("/")
+        db_prefix_norm = db_prefix.replace("\\", "/").rstrip("/")
+        # 检查 IMAGE_DIR 是否恰好落在某个 local_prefix 下（本机挂载点 == PATH_MAP 目标）
+        image_dir_norm = str(IMAGE_DIR.resolve()).replace("\\", "/").rstrip("/")
+        if image_dir_norm == local_prefix_norm or image_dir_norm.startswith(local_prefix_norm + "/"):
+            # 把 IMAGE_DIR 部分替换成对应的 DB 前缀，再拼上相对部分
+            # 但 DB 路径用的分隔符保留 PATH_MAP key 的风格（通常是反斜杠）
+            return db_prefix.rstrip("\\/") + "\\" + rel_str.replace("/", "\\") if "\\" in db_prefix else db_prefix_norm + "/" + rel_str
+
+    # 兜底：直接返回本地路径原值
+    return raw
+
+
 def _make_image_url(path_str: str) -> str:
     """
     把数据库里的本地图片路径转换成 HTTP 可访问的 /images/... 路径。
     要求图片在 IMAGE_DIR 目录下；不在则返回空，避免 file:// 污染与 canvas 跨域。
     """
     try:
-        p = Path(path_str).expanduser().resolve()
-        rel = p.relative_to(IMAGE_DIR.resolve())
+        p = _to_local_path(path_str)
+        rel = p.resolve().relative_to(IMAGE_DIR.resolve())
         return "/images/" + str(rel).replace("\\", "/")
     except Exception:
         return ""
@@ -419,7 +499,8 @@ def load_sim_rows_for_dates(dates: list[str]):
 def get_photo_meta_by_path(abs_path: str):
     """
     从 DB 找到渲染需要的字段：date/side/lat/lon/city。
-    abs_path 必须是数据库里 photo_scores.path 的原值（通常是绝对路径）。
+    abs_path 可以是数据库里 photo_scores.path 的原值（UNC 路径等），
+    也可以是本机可访问的本地路径（会被 _to_db_path 反推成 DB 格式）。
     """
     if not abs_path:
         return None
@@ -427,24 +508,34 @@ def get_photo_meta_by_path(abs_path: str):
     if not DB_PATH.exists():
         return None
 
+    # 候选 key：DB 原值 + 本地路径反推的 DB 格式（跨平台场景）
+    candidates = [abs_path]
+    db_path_guess = _to_db_path(abs_path)
+    if db_path_guess and db_path_guess != abs_path:
+        candidates.append(db_path_guess)
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    row = c.execute(
-        """
-        SELECT path,
-               exif_json,
-               side_caption,
-               memory_score,
-               exif_gps_lat,
-               exif_gps_lon,
-               exif_city,
-               subjects_json
-        FROM photo_scores
-        WHERE path = ? COLLATE NOCASE
-        LIMIT 1
-        """,
-        (abs_path,),
-    ).fetchone()
+    row = None
+    for key in candidates:
+        row = c.execute(
+            """
+            SELECT path,
+                   exif_json,
+                   side_caption,
+                   memory_score,
+                   exif_gps_lat,
+                   exif_gps_lon,
+                   exif_city,
+                   subjects_json
+            FROM photo_scores
+            WHERE path = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+        if row:
+            break
     conn.close()
 
     if not row:
@@ -709,6 +800,13 @@ def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str 
       border-radius: 10px;
       outline: none;
     }}
+    /* 下拉 <option> 在原生下拉框里不继承半透明背景，会退化成系统白底；
+       若文字色仍是浅色就会白底白字看不见。这里强制给 option 一个不透明、
+       高对比的配色（深底浅字），保证未选中项清晰可读。 */
+    .controls select option{{
+      color: #fff;
+      background: #1b1d22;
+    }}
     .controls select:focus, .controls input:focus{{
       border-color: rgba(138,180,255,0.7);
       box-shadow: 0 0 0 3px rgba(138,180,255,0.16);
@@ -900,6 +998,7 @@ def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str 
         <input type="text" id="pathExcInput" placeholder="关键词..." value="{html.escape(path_exc)}">
       </label>
       <button type="button" id="applyPathBtn">应用</button>
+      <button type="button" id="todayBtn">今天</button>
       <button type="button" id="randomDateBtn">随机一天</button>
       <button type="button" id="homeBtn">回到首页</button>
     </div>
@@ -935,6 +1034,7 @@ def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str 
       const statusLine = document.getElementById('statusLine');
       const randomBtn = document.getElementById('randomDateBtn');
       const homeBtn = document.getElementById('homeBtn');
+      const todayBtn = document.getElementById('todayBtn');
 
       const currentPage = {page};
       const totalPages = {total_pages};
@@ -1011,6 +1111,16 @@ def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str 
       function goHome() {{
         const params = getParams();
         navigateTo(buildReviewUrl('', params.sort || 'memory', 1, '', ''));
+      }}
+
+      function goToday() {{
+        // 用浏览器本地日期算 MM-DD，匹配 md 过滤（历史上所有年份的“今天”）
+        const now = new Date();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const md = mm + '-' + dd;
+        const params = getParams();
+        navigateTo(buildReviewUrl(md, params.sort || 'memory', 1, params.path_inc, params.path_exc));
       }}
 
       async function pickRandomDate() {{
@@ -1090,6 +1200,7 @@ def build_html(rows, page: int, page_size: int, total_count: int, path_inc: str 
       if (sortSelect) sortSelect.addEventListener('change', onSortChange);
       if (randomBtn) randomBtn.addEventListener('click', pickRandomDate);
       if (homeBtn) homeBtn.addEventListener('click', goHome);
+      if (todayBtn) todayBtn.addEventListener('click', goToday);
 
       const applyPathBtn = document.getElementById('applyPathBtn');
       if (applyPathBtn) applyPathBtn.addEventListener('click', onPathApply);
@@ -1291,6 +1402,32 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
     }}
     .controls button:active {{
       transform: translateY(1px);
+    }}
+    .controls button.active {{
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0b0c10;
+      font-weight: 600;
+    }}
+    .controls .seg {{
+      display:inline-flex;
+      align-items:center;
+      gap: 6px;
+      padding: 4px;
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+    }}
+    .controls .seg-label {{
+      font-size: 12px;
+      color: var(--muted);
+      margin-right: 2px;
+      white-space: nowrap;
+    }}
+    .controls .seg button {{
+      padding: 5px 10px;
+      font-size: 12px;
+      border-radius: 8px;
     }}
 
     .status {{
@@ -1580,7 +1717,7 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
     <a class="back" href="/review">← 返回 Review</a>
     <h1>墨水屏渲染效果预览</h1>
     <div class="subtitle">
-      屏幕尺寸：480 x 800&nbsp;&nbsp;
+      屏幕尺寸：竖屏 480×800 / 横屏 800×480（按朝向自适应）&nbsp;&nbsp;
       <span style="display:inline-flex; gap:6px; vertical-align:middle;">
         <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#000;border:1px solid rgba(255,255,255,0.70);"></span>
         <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#fff;border:1px solid rgba(255,255,255,0.45);"></span>
@@ -1590,6 +1727,19 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
     </div>
 
     <div class="controls">
+      <span class="seg">
+        <span class="seg-label">朝向</span>
+        <button type="button" data-orient="auto" class="orientBtn active">自动</button>
+        <button type="button" data-orient="portrait" class="orientBtn">竖屏</button>
+        <button type="button" data-orient="landscape" class="orientBtn">横屏</button>
+      </span>
+      <span class="seg">
+        <span class="seg-label">抖动</span>
+        <button type="button" data-dither="floyd_steinberg" class="ditherBtn active">Floyd-Steinberg</button>
+        <button type="button" data-dither="atkinson" class="ditherBtn">Atkinson</button>
+        <button type="button" data-dither="bayer" class="ditherBtn">Bayer有序</button>
+        <button type="button" data-dither="none" class="ditherBtn">无抖动</button>
+      </span>
       <button type="button" id="rerollBtn">同一天换一张</button>
     </div>
 
@@ -1696,6 +1846,14 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
 
     let currentDate = null;
     let currentPhoto = null;
+
+    // 朝向 / 抖动选择状态，用 localStorage 持久化（key 带 inktime 前缀避免冲突）
+    let currentOrient = (function() {{
+      try {{ return localStorage.getItem('inktime_sim_orient') || 'auto'; }} catch (e) {{ return 'auto'; }}
+    }})();
+    let currentDither = (function() {{
+      try {{ return localStorage.getItem('inktime_sim_dither') || 'floyd_steinberg'; }} catch (e) {{ return 'floyd_steinberg'; }}
+    }})();
 
     function formatLocation(lat, lon, city) {{
       const c = (city || '').trim();
@@ -1931,23 +2089,26 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
 
       statusLine.textContent = ''; // 正常情况不显示废话
 
+      // 占位：先按竖屏尺寸清白，加载完成后按真实朝向重设 canvas
       canvas.width = 480;
       canvas.height = 800;
-
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       const img = new Image();
       img.onload = function() {{
-          canvas.width = 480;
-          canvas.height = 800;
+          // 按渲染图真实尺寸自适应 canvas：竖屏图→480×800，横屏图→800×480，无拉伸
+          canvas.width = img.naturalWidth || 480;
+          canvas.height = img.naturalHeight || 800;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, 0, 0, 480, 800);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         }};
       img.onerror = function() {{
         statusLine.textContent = '图片加载失败：' + photo.path;
       }};
-      img.src = '/sim_render?img=' + encodeURIComponent(photo.path);
+      img.src = '/sim_render?img=' + encodeURIComponent(photo.path)
+              + '&orient=' + encodeURIComponent(currentOrient)
+              + '&dither=' + encodeURIComponent(currentDither);
     }}
 
     function pickPhotoFromDate(date) {{
@@ -2035,6 +2196,37 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
     }}
 
     document.getElementById('rerollBtn').addEventListener('click', onRerollSameDay);
+
+    // 朝向切换按钮
+    document.querySelectorAll('.orientBtn').forEach(function(btn) {{
+      // 回填 localStorage 里记忆的选择，点亮对应按钮
+      if (btn.dataset.orient === currentOrient) {{
+        document.querySelectorAll('.orientBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }}
+      btn.addEventListener('click', function() {{
+        document.querySelectorAll('.orientBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentOrient = btn.dataset.orient;
+        try {{ localStorage.setItem('inktime_sim_orient', currentOrient); }} catch (e) {{}}
+        if (currentPhoto) drawPreview(currentPhoto);
+      }});
+    }});
+
+    // 抖动切换按钮
+    document.querySelectorAll('.ditherBtn').forEach(function(btn) {{
+      if (btn.dataset.dither === currentDither) {{
+        document.querySelectorAll('.ditherBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }}
+      btn.addEventListener('click', function() {{
+        document.querySelectorAll('.ditherBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentDither = btn.dataset.dither;
+        try {{ localStorage.setItem('inktime_sim_dither', currentDither); }} catch (e) {{}}
+        if (currentPhoto) drawPreview(currentPhoto);
+      }});
+    }});
 
     // 默认进入：如果从 review 点进来，则显示该照片；否则提示用户从 review 进入
     const initPhoto = findSelectedPhoto();
@@ -2129,8 +2321,10 @@ def sim():
                 sim_rows = load_sim_rows_for_dates(dates)
 
             # 关键：无论 base_date 是否由正则产生，SQL 可能都查不到它（如果 JSON 里的 datetime 是空的）
-            # 所以我们必须确保 selected_img 对应的这行数据一定在 sim_rows 里
-            if not any(str(r[0]).lower() == str(p).lower() for r in sim_rows):
+            # 所以我们必须确保 selected_img 对应的这行数据一定在 sim_rows 里。
+            # 注意 p 是本地路径，DB 里存的可能是 UNC 路径，比较时要用 DB 格式归一化。
+            db_p = _to_db_path(str(p))
+            if not any(_to_db_path(str(r[0])).lower() == db_p.lower() for r in sim_rows):
                 conn = sqlite3.connect(DB_PATH)
                 c = conn.cursor()
                 row = c.execute("""
@@ -2140,7 +2334,7 @@ def sim():
                     FROM photo_scores
                     WHERE path = ? COLLATE NOCASE
                     LIMIT 1
-                """, (str(p),)).fetchone()
+                """, (db_p,)).fetchone()
                 conn.close()
                 if row:
                     sim_rows.insert(0, row)
@@ -2189,9 +2383,19 @@ def sim_render():
             "subjects_json": "",
         }
 
+    # 朝向覆盖：auto / portrait / landscape，默认 auto（按照片宽高比自动判定）
+    orient = (request.args.get("orient", "auto") or "auto").strip().lower()
+    if orient not in ("auto", "portrait", "landscape"):
+        orient = "auto"
+
+    # 抖动算法：floyd_steinberg / atkinson / bayer / none，默认 floyd_steinberg
+    dither = (request.args.get("dither", "floyd_steinberg") or "floyd_steinberg").strip().lower()
+    if dither not in ("floyd_steinberg", "atkinson", "bayer", "none"):
+        dither = "floyd_steinberg"
+
     try:
-        img = rdp.render_image(meta)
-        img_dithered = rdp.apply_four_color_dither(img)
+        img = rdp.render_image(meta, force_orientation=orient)
+        img_dithered = rdp.apply_dither(img, dither)
 
         bio = BytesIO()
         img_dithered.save(bio, format="PNG")
