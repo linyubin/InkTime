@@ -1031,6 +1031,22 @@ static float parseServoArg(const String &name, float fallback) {
   return v.toFloat();
 }
 
+// 把多行纯文本日志转成 HTML（换行→<br>，转义 <>&），
+// 供 /servo、/servo_sync 等返回 innerHTML 的接口共用
+static String logToHtml(const String &log) {
+  String out;
+  out.reserve(log.length() + 64);
+  for (size_t i = 0; i < log.length(); ++i) {
+    char c = log[i];
+    if      (c == '\n') out += F("<br>");
+    else if (c == '<')  out += F("&lt;");
+    else if (c == '>')  out += F("&gt;");
+    else if (c == '&')  out += F("&amp;");
+    else                out += c;
+  }
+  return out;
+}
+
 // 标定页 HTML（显示当前已保存值 + 表单 + 测试/保存按钮）
 static String buildServoPage(const Config &cfg) {
   String html = htmlHead(F("相框标定 · InkTime"), "calib");
@@ -1069,6 +1085,27 @@ static String buildServoPage(const Config &cfg) {
   html += F("</div>");
   html += F("<button class='btn-save' onclick=\"document.getElementById('f').submit()\">💾 保存标定</button>");
 
+  // ── 舵机位置校正（断电/卡死/人手拨动后，物理位置与记录不符时用）──
+  html += F("<hr style='margin:24px 0;border:none;border-top:1px solid #e8eaed'>");
+  html += F("<h3 style='margin-bottom:4px'>🧭 当前位置校正</h3>");
+  html += F("<p style='font-size:12px;color:#888;margin:0 0 6px'>记录的舵机朝向：<b>");
+  html += (cfg.last_orientation.length() ? cfg.last_orientation : String("(空·首次开机)"));
+  html += F("</b></p>");
+  html += F("<p style='font-size:12px;color:#888;margin:0 0 12px'>");
+  html += F("若舵机实际朝向与上面记录不符（如断电、结构卡死或人手拨动过），");
+  html += F("目视选择舵机<b>当前真实</b>朝向后点校正：固件会刷新记录并重新拉取 photo_0，");
+  html += F("舵机按需转到正确角度。</p>");
+  html += F("<div class='group'><label>舵机当前真实朝向</label>");
+  html += F("<select id='actual_ori'>");
+  // 默认选中当前记录值，让"记录与实际不符"一眼可见
+  html += F("<option value='portrait'");  if (cfg.last_orientation != "landscape") html += F(" selected");
+  html += F(">竖屏 (portrait)</option>");
+  html += F("<option value='landscape'"); if (cfg.last_orientation == "landscape") html += F(" selected");
+  html += F(">横屏 (landscape)</option>");
+  html += F("</select></div>");
+  html += F("<button class='btn-save' style='background:linear-gradient(135deg,#f59e0b,#b45309)' ");
+  html += F("onclick=\"syncPos()\">🧭 校正并重新渲染</button>");
+
   html += F("<a href='/' class='btn btn-secondary' style='margin-top:10px'>← 返回首页</a>");
   html += F("<a href='/servo_test' class='btn btn-secondary' style='margin-top:10px'>→ 简单舵机测试</a>");
 
@@ -1084,6 +1121,14 @@ static String buildServoPage(const Config &cfg) {
   html += F("var u='/servo?test='+o+'&'+q;");
   html += F("document.getElementById('log').style.display='block';");
   html += F("document.getElementById('log').textContent='正在执行：'+o+' ...（含下载标定卡+转舵机+刷屏，约 15-20 秒）';");
+  html += F("fetch(u).then(r=>r.text()).then(t=>{document.getElementById('log').innerHTML=t;});");
+  html += F("}");
+  html += F("function syncPos(){");
+  html += F("var a=document.getElementById('actual_ori').value;");
+  html += F("if(!confirm('确认舵机当前真实朝向是「'+(a==='portrait'?'竖屏':'横屏')+'」？\\n将刷新记录并重新拉取 photo_0，约 15-20 秒。'))return;");
+  html += F("var u='/servo_sync?actual='+a;");
+  html += F("document.getElementById('log').style.display='block';");
+  html += F("document.getElementById('log').textContent='正在校正 → '+a+'，并重新拉取 photo_0 ...（约 15-20 秒）';");
   html += F("fetch(u).then(r=>r.text()).then(t=>{document.getElementById('log').innerHTML=t;});");
   html += F("}");
   html += F("</script>");
@@ -1127,6 +1172,12 @@ void handleServo() {
   log += String("[舵机] 转 → ") + target + "° @ " + trial.servo_speed + "°/s\n";
   bool servOk = servo_rotate_to(target, trial.servo_speed, 3000);
   log += servOk ? "[舵机] 到位 ✅\n" : "[舵机] 超时（已 detach）\n";
+  // 同步逻辑朝向状态：测试转过哪一边，last_orientation 就记哪一边，
+  // 避免"测了横屏→人手拨回竖屏→状态仍卡在横屏→下次刷照片误判同朝向跳过"。
+  if (servOk) {
+    saveLastOrientation(ori);
+    g_cfg.last_orientation = ori;   // 同步内存，本会话内后续 /fetch 立刻生效
+  }
 
   // 2. 分配 EPD framebuffer（96KB，ESP32-L 可分配；不要 384KB 中转 buffer）
   size_t epd_array_size = (size_t)EPD_WIDTH * EPD_HEIGHT / 4;  // 96,000 bytes
@@ -1149,17 +1200,7 @@ void handleServo() {
   }
 
   // 返回日志（fetch 回调里 innerHTML 显示）
-  String escaped;
-  escaped.reserve(log.length() + 64);
-  for (size_t i = 0; i < log.length(); ++i) {
-    char c = log[i];
-    if      (c == '\n') escaped += F("<br>");
-    else if (c == '<')  escaped += F("&lt;");
-    else if (c == '>')  escaped += F("&gt;");
-    else if (c == '&')  escaped += F("&amp;");
-    else                escaped += c;
-  }
-  server.send(200, "text/html; charset=utf-8", escaped);
+  server.send(200, "text/html; charset=utf-8", logToHtml(log));
 }
 
 // POST /servo_save —— 写入 4 字段 + servo_calibrated=true
@@ -1187,6 +1228,42 @@ void handleServoSave() {
   html += F("</div>");
   html += htmlFoot();
   server.send(200, "text/html; charset=utf-8", html);
+}
+
+// GET /servo_sync?actual=portrait|landscape —— 位置校正
+//   用途：断电/卡死/人手拨动后，舵机物理位置可能与 NVS 记录的 last_orientation 不符。
+//   用户目视确认舵机当前真实朝向，选 portrait/landscape 提交：
+//     1. 把 last_orientation 直接置为该值（不转舵机）；
+//     2. 立即重新拉取 photo_0 渲染——applyServoForOrientation 会用新的 last_orientation
+//        与 photo_0.json 的 orientation 对比，该跳就跳、该转就转，自愈到一致状态。
+//   若此时设备离线，photo_0 拉取会失败，但 last_orientation 校正仍已落盘，下次刷新自愈。
+void handleServoSync() {
+  g_requestHappened = true;
+  String actual = server.arg("actual");
+  DBG_PRINTF("[HTTP] GET /servo_sync actual=%s\n", actual.c_str());
+
+  String log;
+  if (actual != "portrait" && actual != "landscape") {
+    log += "[校正] actual 参数非法（需 portrait|landscape），已中止\n";
+    server.send(400, "text/html; charset=utf-8", logToHtml(log));
+    return;
+  }
+
+  log += "[校正] 舵机物理位置 → " + actual + "\n";
+  if (actual == g_cfg.last_orientation) {
+    log += "[校正] 与记录一致（" + actual + "），无需修正 last_orientation\n";
+  } else {
+    log += "[校正] 记录原为 " + (g_cfg.last_orientation.length() ? g_cfg.last_orientation : String("(空)"))
+         + "，已修正为 " + actual + "\n";
+    saveLastOrientation(actual);
+    g_cfg.last_orientation = actual;   // 同步内存，本次重新渲染立刻生效
+  }
+
+  log += "[校正] 重新拉取 photo_0 ...\n";
+  bool ok = downloadAndRenderDailyPhoto(g_cfg, 0, &log);
+  log += ok ? "[校正] 渲染完成 ✅\n" : "[校正] 渲染失败 ❌（last_orientation 校正仍已保存，下次刷新自愈）\n";
+
+  server.send(200, "text/html; charset=utf-8", logToHtml(log));
 }
 
 // ============================================================
@@ -1291,6 +1368,7 @@ void startConfigPortal() {
   server.on("/fetch",     HTTP_GET,  handleFetch);
   server.on("/servo",     HTTP_GET,  handleServo);
   server.on("/servo_save",HTTP_POST, handleServoSave);
+  server.on("/servo_sync",HTTP_GET,  handleServoSync);
   server.begin();
 
   uint32_t enterMs = millis();
@@ -2217,6 +2295,7 @@ void setup() {
     server.on("/servo_test",HTTP_GET,  handleServoTest);
     server.on("/servo",     HTTP_GET,  handleServo);
     server.on("/servo_save", HTTP_POST, handleServoSave);
+    server.on("/servo_sync", HTTP_GET,  handleServoSync);
     server.begin();
 
     uint32_t bootMs = millis();
