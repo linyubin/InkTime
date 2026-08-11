@@ -52,6 +52,8 @@ SCORE_MEMORY_WEIGHT  = float(getattr(cfg, "SCORE_MEMORY_WEIGHT",  0.7))
 HIGH_SCORE_THRESHOLD = float(getattr(cfg, "HIGH_SCORE_THRESHOLD", 87.0))
 RESHOW_AFTER_DAYS    = int(getattr(cfg, "RESHOW_AFTER_DAYS",   180))
 RECENCY_PENALTY      = float(getattr(cfg, "RECENCY_PENALTY",    0.5))
+SCORE_WEIGHT_POWER   = float(getattr(cfg, "SCORE_WEIGHT_POWER", 8.0) or 8.0)
+BURST_DEDUP_WINDOW_SEC = int(getattr(cfg, "BURST_DEDUP_WINDOW_SEC", 60) or 0)
 PATH_MAP             = getattr(cfg, "PATH_MAP",             {})
 
 # 墨水屏尺寸
@@ -103,6 +105,25 @@ def extract_date_from_exif(exif_json: Optional[str], filepath: str = "") -> str:
     return ""
 
 
+def _parse_exif_datetime(s: Optional[str]) -> Optional[dt.datetime]:
+    """把 EXIF DateTimeOriginal 字符串解析成 datetime。
+
+    库里常见两种格式：
+      - "2024:08:11 11:59:07"  （EXIF 标准，冒号分隔）
+      - "2024-08-11 11:59:07"  （部分工具写出）
+    解析失败或入参为空返回 None（调用方按"时间未知"处理，不参与连拍去重）。
+    """
+    if not s:
+        return None
+    s = str(s).strip()
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return dt.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def load_sim_rows() -> List[Dict[str, Any]]:
     """
     加载 InkTime 用的核心字段：
@@ -133,7 +154,8 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                subjects_json,
                width,
                height,
-               orientation
+               orientation,
+               exif_datetime
         FROM photo_scores
         WHERE exif_json IS NOT NULL
         """
@@ -141,7 +163,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     conn.close()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json, width, height, orientation_raw in rows:
+    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json, width, height, orientation_raw, exif_dt in rows:
         date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
@@ -168,6 +190,9 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "type_raw": type_str or "",
             "used_at":  used_at or None,
             "subjects_json": subjects_json or "",
+            # 秒级拍摄时间（来自 exif_datetime），仅供连拍去重使用；
+            # 解析失败为 None，按"时间未知"处理（不参与去重合并，避免误杀）。
+            "shot_dt": _parse_exif_datetime(exif_dt),
             # 注意：DB 里的 width/height 是 pre-EXIF-transpose 填充的，
             # 对带 EXIF 旋转标记的照片不可信——此处仅作粗略统计/排序参考。
             # 真正用于渲染决策的朝向，由 render_image 内 ImageOps.exif_transpose
@@ -304,6 +329,83 @@ def compute_final_score(item: dict) -> float:
     if beauty is None:
         return wm
     return wm * SCORE_MEMORY_WEIGHT + beauty * (1.0 - SCORE_MEMORY_WEIGHT)
+
+
+def dedup_bursts(candidates: List[Dict[str, Any]], window_sec: int) -> List[Dict[str, Any]]:
+    """连拍去重：拍摄时间（shot_dt）相邻 ≤ window_sec 秒的照片视为同一组连拍，
+    组内只保留 _final_score 最高的一张。
+
+    规则：
+    - 按 shot_dt 升序排序；相邻两张差 ≤ 窗口则归为同组（传递合并：A-B、B-C 都 ≤
+      窗口则 A/B/C 同组，即使 A-C 间隔 > 窗口）。
+    - shot_dt 为 None（时间未知）的照片不参与合并，单独保留，避免误杀。
+    - 返回顺序：按 _final_score 从高到低（与 candidates 原顺序约定一致）。
+    """
+    if window_sec <= 0 or not candidates:
+        return list(candidates)
+
+    threshold = dt.timedelta(seconds=window_sec)
+    # 把时间未知的照片单独拎出来，直接保留
+    known = [p for p in candidates if p.get("shot_dt") is not None]
+    unknown = [p for p in candidates if p.get("shot_dt") is None]
+    known.sort(key=lambda p: p["shot_dt"])
+
+    kept: List[Dict[str, Any]] = []
+    group: List[Dict[str, Any]] = []
+    for p in known:
+        if group and (p["shot_dt"] - group[-1]["shot_dt"]) <= threshold:
+            group.append(p)  # 与当前组最后一张相邻，并入同组
+        else:
+            # 上一组结束，保留组内 final 最高
+            if group:
+                kept.append(max(group, key=lambda x: x.get("_final_score", 0.0)))
+            group = [p]
+    if group:
+        kept.append(max(group, key=lambda x: x.get("_final_score", 0.0)))
+
+    result = kept + unknown
+    result.sort(key=lambda x: x.get("_final_score", 0.0), reverse=True)
+    return result
+
+
+def weighted_sample_without_replacement(
+    items: List[Dict[str, Any]], k: int, power: float
+) -> List[Dict[str, Any]]:
+    """按 _final_score 的幂次做无放回加权抽样。
+
+    weight_i = items[i]["_final_score"] ** power
+    每轮按当前剩余项的权重归一化后抽 1 张，抽出后从池中移除、重新归一化，直到 k 张。
+    这样既保证不重复，又让高分照片在每一轮都被加权（而非一次性加权）。
+
+    - power == 0：退化为均匀无放回抽样（等价于 random.sample）。
+    - _final_score 缺失或 ≤ 0 的项权重按一个极小正数参与，避免 0 权重永远抽不到
+      或负分（理论上 final 不会为负，这里仅做防御）。
+    """
+    import random
+
+    if k <= 0:
+        return []
+    if k >= len(items):
+        return list(items)
+
+    # 均匀分支：与原 random.sample 行为一致
+    if power == 0:
+        return random.sample(items, k)
+
+    pool = list(items)
+    chosen: List[Dict[str, Any]] = []
+    while len(chosen) < k and pool:
+        weights = []
+        for it in pool:
+            fs = it.get("_final_score", 0.0)
+            w = fs ** power if fs > 0 else 1e-6
+            weights.append(max(w, 1e-9))
+        total = sum(weights)
+        # random.choices 返回单元素列表；按权重抽 1 张
+        pick = random.choices(pool, weights=weights, k=1)[0]
+        chosen.append(pick)
+        pool.remove(pick)
+    return chosen
 
 
 def mark_photo_used(path: str) -> None:
@@ -478,23 +580,30 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
             p["_final_score"] = compute_final_score(p)
         candidates.sort(key=lambda x: x["_final_score"], reverse=True)
 
+        pre_dedup_count = len(candidates)
+        # 连拍去重：拍摄时间相邻 ≤ BURST_DEDUP_WINDOW_SEC 秒的视为同组连拍，
+        # 组内只保留 final 最高的一张，避免一天连拍占多席
+        if BURST_DEDUP_WINDOW_SEC > 0:
+            candidates = dedup_bursts(candidates, BURST_DEDUP_WINDOW_SEC)
+        dedup_removed = pre_dedup_count - len(candidates)
+
         # 精英分级选片：
-        # 第一步：从 final_score >= HIGH_SCORE_THRESHOLD 的精英中随机抽取
+        # 第一步：从 final_score >= HIGH_SCORE_THRESHOLD 的精英中按分数加权抽取
         elite = [p for p in candidates if p["_final_score"] >= HIGH_SCORE_THRESHOLD]
         if len(elite) >= count:
-            # 精英超过上限，随机选 count 张
-            chosen_list = random.sample(elite, count)
+            # 精英超过上限：按 final^SCORE_WEIGHT_POWER 加权无放回抽样
+            chosen_list = weighted_sample_without_replacement(elite, count, SCORE_WEIGHT_POWER)
             selection_mode = "elite_random"
         elif elite:
             # 有精英但未达上限，只渲染精英，不补齐
             chosen_list = list(elite)
             selection_mode = "elite_only"
         else:
-            # 无精英，从 Top-(count*2) 的池中随机抽取（保底多样性）
+            # 无精英，从 Top-(count*2) 的池中加权抽取（保底多样性）
             pool_size = min(len(candidates), max(count * 2, count + 3))
             pool = candidates[:pool_size]
             if len(pool) >= count:
-                chosen_list = random.sample(pool, count)
+                chosen_list = weighted_sample_without_replacement(pool, count, SCORE_WEIGHT_POWER)
             else:
                 chosen_list = list(pool)
                 # 候选不足 count 张，按 final_score 从当日剩余照片补齐
@@ -514,6 +623,8 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
             "day_offset": -offset,
             "candidate_count": len(candidates),
             "elite_count": len(elite),
+            "post_dedup_elite_count": len(elite),
+            "dedup_removed": dedup_removed,
             "total_count_md": len(arr),
             "threshold": MEMORY_THRESHOLD,
             "high_score_threshold": HIGH_SCORE_THRESHOLD,
@@ -1569,6 +1680,9 @@ def main():
     print("[INFO] 使用兜底全局最大:", info["fallback_global_max"])
     print("[INFO] 选片模式:", info.get("selection_mode", "N/A"))
     print("[INFO] 精英候选数(>=高分阈值):", info.get("elite_count", "N/A"))
+    dedup_rm = info.get("dedup_removed", 0)
+    if dedup_rm:
+        print(f"[INFO] 连拍去重合并: {dedup_rm} 张 (窗口={BURST_DEDUP_WINDOW_SEC}s, 权重幂次={SCORE_WEIGHT_POWER})")
 
     if not photos:
         raise SystemExit("选片结果为空。")

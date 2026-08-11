@@ -60,6 +60,17 @@ SCORE_BEAUTY_WEIGHT: float = 0.15
 # final_score 超过此阈值的照片，从 Top-N 随机选 1 张；否则取得分最高的 1 张
 HIGH_SCORE_THRESHOLD: float = 87.0
 
+# 精英池加权抽样：weight = final^SCORE_WEIGHT_POWER
+# 精英数足够时按此权重做无放回抽样，让高分照片更易入选。
+# 0.0 = 均匀随机（等价于原 random.sample）；8.0 = 适中（高分约 2.7× 更易中，低分精英仍有机会）。
+# 取值参考：4.0=温和，8.0=适中，12.0=强（高分几乎稳定入选）。
+SCORE_WEIGHT_POWER: float = 8.0
+
+# 连拍去重：拍摄时间间隔（秒）≤ 此值的照片视为同一组连拍，组内只保留 final_score
+# 最高的一张进入抽样池，避免一天 5 张全是同一分钟连拍。0 = 关闭去重。
+# 60 秒只合并真正的机内连拍（3~30 秒间隔）；要连同摆拍组一起合并可用 300 秒。
+BURST_DEDUP_WINDOW_SEC: int = 60
+
 # 防重复展示：展示过的照片在多少天内再次进入候选时会被降权
 RESHOW_AFTER_DAYS: int = 180
 # 近期展示过的照片的 final_score 乘数（0~1，越小惩罚越重）
