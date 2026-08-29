@@ -20,6 +20,7 @@ try:
 except ImportError:
     pass
 import config as cfg
+from common import normalize_type_to_list, parse_datetime_from_filename
 import shutil
 
 _yolo_model = None
@@ -394,7 +395,7 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 # 生成一句话文案
-def generate_side_caption(image_path: Path) -> str | None:
+def generate_side_caption(image_path: Path, img_b64: str | None = None) -> str | None:
     system_prompt = (
         "你是一位为「电子相框」撰写旁白短句的中文文案助手。\n"
         "你的目标不是描述画面，而是为画面补上一点“画外之意”。\n\n"
@@ -419,7 +420,8 @@ def generate_side_caption(image_path: Path) -> str | None:
     )
     user_prompt = "请基于这张照片，生成一句符合规则的中文文案。"
     try:
-        img_b64 = encode_image_to_b64(image_path)
+        if img_b64 is None:
+            img_b64 = encode_image_to_b64(image_path)
     except Exception:
         return None
 
@@ -623,52 +625,6 @@ def read_gps_with_exiftool(path: Path):
         }
     except (ValueError, TypeError):
         return None
-
-
-def parse_datetime_from_filename(filename: str) -> str | None:
-    """从文件名解析可能的拍摄时间（支持 13位毫秒时间戳、10位秒级时间戳、14位 YYYYMMDDHHMMSS 格式及 8位 YYYYMMDD 格式）"""
-    # 1. 尝试匹配 13 位毫秒级 Unix 时间戳 (例如 mmexport1723116376342.jpg 或 wx_camera_1759214528755)
-    ms_match = re.search(r'(?:^|[^0-9])(1\d{12})(?:[^0-9]|$)', filename)
-    if ms_match:
-        try:
-            ts = int(ms_match.group(1)) / 1000.0
-            dt = datetime.datetime.fromtimestamp(ts)
-            return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 2. 尝试匹配 14 位 YYYYMMDDHHMMSS 格式 (例如 QQ图片20230702183242.jpg)
-    dt14_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{12})(?:[^0-9]|$)', filename)
-    if dt14_match:
-        try:
-            s = dt14_match.group(1)
-            dt = datetime.datetime.strptime(s, "%Y%m%d%H%M%S")
-            return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 3. 尝试匹配 10 位秒级 Unix 时间戳 (例如 1723116376)
-    s_match = re.search(r'(?:^|[^0-9])(1\d{9})(?:[^0-9]|$)', filename)
-    if s_match:
-        try:
-            ts = int(s_match.group(1))
-            if 946684800 <= ts <= 2147483647:
-                dt = datetime.datetime.fromtimestamp(ts)
-                return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 4. 尝试匹配 8 位 YYYYMMDD 格式 (例如 20230702)
-    dt8_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{6})(?:[^0-9]|$)', filename)
-    if dt8_match:
-        try:
-            s = dt8_match.group(1)
-            dt = datetime.datetime.strptime(s, "%Y%m%d")
-            return dt.strftime("%Y:%m:%d 00:00:00")
-        except Exception:
-            pass
-
-    return None
 
 
 def read_exif(path: Path) -> dict:
@@ -876,9 +832,11 @@ def get_city_resolver():
     return resolve
 
 
-def call_vlm(image_path: Path) -> dict:
+def call_vlm(image_path: Path, img_b64: str | None = None) -> dict:
     try:
-        img_b64 = encode_image_to_b64(image_path)
+        # 支持外部传入已编码的 b64（主循环里与侧栏文案共用一次编码，省一遍读盘+缩放+重编码）
+        if img_b64 is None:
+            img_b64 = encode_image_to_b64(image_path)
     except Exception as e:
         raise RuntimeError(f"读取图片失败：{e}")
 
@@ -1040,43 +998,6 @@ def extract_json_from_text(text: str) -> str:
         return text[start:end+1]
     return text
 
-def normalize_type_to_list(type_val) -> str:
-    """将各种格式的 type 字段标准化为 JSON list 字符串，如 ["人物", "旅行"]。"""
-    import ast as _ast
-    import json
-    import re
-    if type_val is None or str(type_val).strip() == "":
-        return "[]"
-    s = str(type_val).strip()
-    # 尝试解析为合法 JSON list
-    try:
-        parsed = json.loads(s)
-        if isinstance(parsed, list):
-            result = [str(t).strip() for t in parsed if str(t).strip()]
-            return json.dumps(result, ensure_ascii=False)
-    except Exception:
-        pass
-    # 处理 Python list 字面量
-    if s.startswith("[") and s.endswith("]"):
-        try:
-            parsed = _ast.literal_eval(s)
-            if isinstance(parsed, list):
-                result = [str(t).strip() for t in parsed if str(t).strip()]
-                return json.dumps(result, ensure_ascii=False)
-        except Exception:
-            pass
-    # 处理斜杠分隔
-    if "/" in s:
-        parts = [p.strip() for p in s.split("/") if p.strip()]
-        return json.dumps(parts, ensure_ascii=False)
-    # 处理中英文逗号分隔
-    if "," in s or "，" in s:
-        parts = re.split(r"[,，]\s*", s)
-        parts = [p.strip().strip("\'\" ") for p in parts if p.strip().strip("\'\" ")]
-        return json.dumps(parts, ensure_ascii=False)
-    # 单个值
-    return json.dumps([s], ensure_ascii=False)
-
 def main():
     filelist_path = ROOT_DIR / "filelist.txt"
 
@@ -1180,14 +1101,22 @@ def main():
 
     cur = conn.cursor()
     start_time = time.time()
+    since_commit = 0
+    COMMIT_EVERY = 50  # 批量提交：避免 3 万张逐行 fsync
 
     for idx, path in enumerate(target_paths, start=1):
         t_photo_start = time.perf_counter()
         sep = "=" * 60
         print("\n" + sep)
         print(f"[{idx}/{len(target_paths)}] 处理: {path}")
+        # 同一张图只编码一次，VLM 评分与侧栏文案两个请求复用
         try:
-            result, exif_info = call_vlm(path)
+            img_b64 = encode_image_to_b64(path)
+        except Exception as e:
+            print(f"[WARN] 图片读取/编码失败，跳过: {e}")
+            continue
+        try:
+            result, exif_info = call_vlm(path, img_b64=img_b64)
         except Exception as e:
             print(f"[WARN] 调用模型失败: {e}")
             continue
@@ -1206,7 +1135,7 @@ def main():
             beauty_score = 0.0
         reason = str(result.get("reason", "")).strip()
 
-        side_caption = generate_side_caption(path)
+        side_caption = generate_side_caption(path, img_b64=img_b64)
         t_after_side = time.perf_counter()
         side_cost = t_after_side - t_after_vlm
 
@@ -1313,7 +1242,10 @@ def main():
                 subjects_json_str,
             ),
         )
-        conn.commit()
+        since_commit += 1
+        if since_commit >= COMMIT_EVERY:
+            conn.commit()
+            since_commit = 0
         t_photo_end = time.perf_counter()
         total_cost = t_photo_end - t_photo_start
         # pretty timing summary
@@ -1340,6 +1272,8 @@ def main():
 
         print(f"[进度] {bar} {progress*100:5.1f}%  {processed_now}/{total}  本张耗时 {total_cost:4.1f}s  预计剩余 {eta} ")
 
+    if since_commit:
+        conn.commit()
     conn.close()
     print("\n[完成] 本批次处理完成。")
 

@@ -4,52 +4,9 @@ import re
 import datetime
 import json
 from pathlib import Path
+from common import parse_datetime_from_filename
 
 DB_PATH = Path("photos.db")
-
-def parse_datetime_from_filename(filename: str) -> str | None:
-    # 1. 尝试匹配 13 位毫秒级 Unix 时间戳 (例如 mmexport1723116376342.jpg 或 wx_camera_1759214528755)
-    ms_match = re.search(r'(?:^|[^0-9])(1\d{12})(?:[^0-9]|$)', filename)
-    if ms_match:
-        try:
-            ts = int(ms_match.group(1)) / 1000.0
-            dt = datetime.datetime.fromtimestamp(ts)
-            return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 2. 尝试匹配 14 位 YYYYMMDDHHMMSS 格式 (例如 QQ图片20230702183242.jpg)
-    dt14_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{12})(?:[^0-9]|$)', filename)
-    if dt14_match:
-        try:
-            s = dt14_match.group(1)
-            dt = datetime.datetime.strptime(s, "%Y%m%d%H%M%S")
-            return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 3. 尝试匹配 10 位秒级 Unix 时间戳 (例如 1723116376)
-    s_match = re.search(r'(?:^|[^0-9])(1\d{9})(?:[^0-9]|$)', filename)
-    if s_match:
-        try:
-            ts = int(s_match.group(1))
-            if 946684800 <= ts <= 2147483647:
-                dt = datetime.datetime.fromtimestamp(ts)
-                return dt.strftime("%Y:%m:%d %H:%M:%S")
-        except Exception:
-            pass
-
-    # 4. 尝试匹配 8 位 YYYYMMDD 格式 (例如 20230702)
-    dt8_match = re.search(r'(?:^|[^0-9])((?:20|19)\d{6})(?:[^0-9]|$)', filename)
-    if dt8_match:
-        try:
-            s = dt8_match.group(1)
-            dt = datetime.datetime.strptime(s, "%Y%m%d")
-            return dt.strftime("%Y:%m:%d 00:00:00")
-        except Exception:
-            pass
-
-    return None
 
 def main():
     if not DB_PATH.exists():

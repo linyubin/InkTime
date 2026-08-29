@@ -166,6 +166,14 @@ ENABLE_FRAME_ROTATION = False
 LANDSCAPE_CANVAS_WIDTH  = 800
 LANDSCAPE_CANVAS_HEIGHT = 480
 
+# ── 相框遮挡（3:2 可视区）───────────────────────────────
+# 相框在 800×480 面板前方加遮挡，把 800px 长边两端各遮掉 FRAME_MASK_INSET_PX，
+# 可视区变为 3:2（720×480）：横屏左右各遮 40、竖屏（舵机转 90°后）上下各遮 40。
+# 渲染时文字卡片自动避开遮挡区：竖屏文字卡整体上移、横屏文字卡左右收窄，
+# 照片本体铺满画布不受影响（被遮部分当作出血裁掉）。
+# 0 = 无遮挡（默认，恢复原始全屏布局）。
+FRAME_MASK_INSET_PX = 0
+
 
 # ═══ ⑦ 投递：ESP32 拉取 / BLE 推送 ════════════════════
 # （inktime_daily.sh 读取能力开关；server.py / push_to_epd_ble.py 读取各自参数）

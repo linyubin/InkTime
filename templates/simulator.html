@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>墨水屏渲染效果预览</title>
+  <style>
+    :root {
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --line: rgba(255,255,255,0.14);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.48);
+      --accent: #8ab4ff;
+      --accent2: #9cffd6;
+      --shadow: 0 18px 60px rgba(0,0,0,0.45);
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    body {
+      margin:0; padding:0;
+      font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1120px;
+      margin: 22px auto 42px;
+      padding: 0 16px;
+    }
+    a.back {
+      display:inline-block;
+      margin-bottom: 10px;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 8px;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 14px;
+      line-height: 1.45;
+    }
+    .controls {
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      box-shadow: var(--shadow2);
+      backdrop-filter: blur(10px);
+    }
+    .controls button {
+      padding: 7px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text);
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      transition: transform .08s ease, background .15s ease, border-color .15s ease, opacity .15s ease;
+    }
+    .controls button:hover {
+      background: rgba(255,255,255,0.14);
+      border-color: rgba(255,255,255,0.26);
+    }
+    .controls button:active {
+      transform: translateY(1px);
+    }
+    .controls button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0b0c10;
+      font-weight: 600;
+    }
+    .controls .seg {
+      display:inline-flex;
+      align-items:center;
+      gap: 6px;
+      padding: 4px;
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+    }
+    .controls .seg-label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-right: 2px;
+      white-space: nowrap;
+    }
+    .controls .seg button {
+      padding: 5px 10px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
+
+    .status {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 6px 0 10px;
+      min-height: 16px;
+    }
+
+    .preview-wrap {
+      display:flex;
+      flex-wrap:wrap;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    .canvas-box {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      box-shadow: var(--shadow2);
+      backdrop-filter: blur(10px);
+    }
+    .canvas-box h2 {
+      font-size: 13px;
+      margin: 0 0 8px;
+      color: rgba(255,255,255,0.78);
+    }
+    #previewCanvas {
+      display:block;
+      background:#fff;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px;
+    }
+
+    .meta-box {
+      flex: 1;
+      min-width: 320px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      box-shadow: var(--shadow2);
+      backdrop-filter: blur(10px);
+      font-size: 16px;
+      line-height: 1.75;
+    }
+    .meta-title {
+      font-size: 13px;
+      color: rgba(255,255,255,0.78);
+      margin: 0 0 10px;
+    }
+    .kpi {
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+    }
+    .kpi .cell {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .kpi .label {
+      font-size: 11px;
+      color: var(--muted2);
+      margin-bottom: 4px;
+    }
+    .kpi .value {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+      word-break: break-word;
+    }
+    .kpi .value.accent {
+      color: var(--accent2);
+    }
+
+    .field {
+      display:flex;
+      gap: 10px;
+      margin-bottom: 8px;
+      line-height: 1.45;
+      font-size: 12px;
+    }
+    .field .label {
+      width: 92px;
+      flex: 0 0 92px;
+      color: var(--muted2);
+    }
+    .field .value {
+      flex: 1;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.80);
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .section {
+      padding-top: 10px;
+      margin-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }
+    .section:first-of-type {
+      padding-top: 0;
+      margin-top: 0;
+      border-top: none;
+    }
+    .section-title {
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.78);
+      margin: 0 0 8px;
+      letter-spacing: .2px;
+    }
+
+    .chips {
+      display:flex;
+      flex-wrap:wrap;
+      gap: 8px;
+      margin: 12px 0 14px;
+    }
+    .chip {
+      display:inline-flex;
+      align-items:center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.92);
+      user-select: none;
+    }
+    .chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.7);
+      flex: 0 0 8px;
+    }
+
+    .big-text {
+      font-size: 13px;
+      line-height: 1.55;
+      color: rgba(255,255,255,0.92);
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    details.fold {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-top: 18px;
+      font-size: 14px;
+    }
+    details.fold > summary {
+      cursor: pointer;
+      list-style: none;
+      outline: none;
+      color: rgba(255,255,255,0.86);
+      font-size: 12px;
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    details.fold > summary::-webkit-details-marker { display: none; }
+    .fold-hint {
+      color: rgba(255,255,255,0.55);
+      font-size: 11px;
+    }
+
+    .kv-grid {
+      display:grid;
+      grid-template-columns: 92px 1fr;
+      gap: 8px 10px;
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .kv-k {
+      color: rgba(255,255,255,0.52);
+    }
+    .kv-v {
+      color: rgba(255,255,255,0.92);
+      word-break: break-word;
+    }
+
+    .hero-text {
+      font-size: 26px;
+      line-height: 1.7;
+      font-weight: 650;
+      margin-bottom: 18px;
+      color: rgba(255,255,255,0.98);
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .sub-text {
+      font-size: 17px;
+      line-height: 1.8;
+      color: rgba(255,255,255,0.90);
+      margin: 14px 0 18px;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .score-bars {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin: 18px 0 20px;
+    }
+
+    .score-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: rgba(255,255,255,0.75);
+    }
+
+    .score-track {
+      position: relative;
+      flex: 1;
+      height: 10px;
+      background: rgba(255,255,255,0.12);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .score-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 0%;
+      border-radius: 999px;
+    }
+
+    .score-fill.memory { background: linear-gradient(90deg, #6fd6ff, #9cffd6); }
+    .score-fill.beauty { background: linear-gradient(90deg, #ffd36f, #ff9f6f); }
+
+    .score-num {
+      width: 44px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255,255,255,0.9);
+    }
+
+    #fieldReason {
+      font-size: 16px;
+      line-height: 1.8;
+      margin-top: 6px;
+    }
+
+    @media (max-width: 560px) {
+      .kpi { grid-template-columns: 1fr; }
+      .meta-box { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a class="back" href="/review">← 返回 Review</a>
+    <h1>墨水屏渲染效果预览</h1>
+    <div class="subtitle">
+      屏幕尺寸：竖屏 480×800 / 横屏 800×480（按朝向自适应）&nbsp;&nbsp;
+      <span style="display:inline-flex; gap:6px; vertical-align:middle;">
+        <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#000;border:1px solid rgba(255,255,255,0.70);"></span>
+        <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#fff;border:1px solid rgba(255,255,255,0.45);"></span>
+        <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#c80000;border:1px solid rgba(255,255,255,0.18);"></span>
+        <span style="width:10px;height:10px;box-sizing:border-box;border-radius:50%;background:#e0b400;border:1px solid rgba(255,255,255,0.18);"></span>
+      </span>
+    </div>
+
+    <div class="controls">
+      <span class="seg">
+        <span class="seg-label">朝向</span>
+        <button type="button" data-orient="auto" class="orientBtn active">自动</button>
+        <button type="button" data-orient="portrait" class="orientBtn">竖屏</button>
+        <button type="button" data-orient="landscape" class="orientBtn">横屏</button>
+      </span>
+      <span class="seg">
+        <span class="seg-label">抖动</span>
+        <button type="button" data-dither="floyd_steinberg" class="ditherBtn active">Floyd-Steinberg</button>
+        <button type="button" data-dither="atkinson" class="ditherBtn">Atkinson</button>
+        <button type="button" data-dither="bayer" class="ditherBtn">Bayer有序</button>
+        <button type="button" data-dither="none" class="ditherBtn">无抖动</button>
+      </span>
+      <button type="button" id="rerollBtn">同一天换一张</button>
+    </div>
+
+    <div class="status" id="statusLine"></div>
+
+    <div class="preview-wrap">
+      <div class="canvas-box">
+        <canvas id="previewCanvas" width="480" height="800"></canvas>
+      </div>
+
+      <div class="meta-box">
+        <div class="hero-text" id="kpiSide"></div>
+
+        <div class="chips" id="fieldType"></div>
+
+        <div class="sub-text" id="fieldCaption"></div>
+
+        <div class="score-bars">
+          <div class="score-row">
+            <div>回忆度</div>
+            <div class="score-track">
+              <div class="score-fill memory" id="barMemory"></div>
+            </div>
+            <div class="score-num" id="numMemory"></div>
+          </div>
+          <div class="score-row">
+            <div>美观度</div>
+            <div class="score-track">
+              <div class="score-fill beauty" id="barBeauty"></div>
+            </div>
+            <div class="score-num" id="numBeauty"></div>
+          </div>
+        </div>
+
+        <div class="sub-text" id="fieldReason"></div>
+
+        <details class="fold">
+          <summary>
+            <span>更多信息</span>
+            <span class="fold-hint">EXIF / 路径 / 调试</span>
+          </summary>
+
+          <div class="kv-grid">
+            <div class="kv-k">日期</div><div class="kv-v" id="kpiDate"></div>
+            <div class="kv-k">地点</div><div class="kv-v" id="kpiLocation"></div>
+            <div class="kv-k">图片URL</div><div class="kv-v" id="fieldPath"></div>
+            <div class="kv-k">原始路径</div><div class="kv-v" id="fieldOrigPath"></div>
+            <div class="kv-k">分辨率</div><div class="kv-v" id="fieldRes"></div>
+            <div class="kv-k">方向</div><div class="kv-v" id="fieldOrientation"></div>
+            <div class="kv-k">已上屏</div><div class="kv-v" id="fieldUsedAt"></div>
+            <div class="kv-k">EXIF摘要</div><div class="kv-v" id="fieldExifSummary"></div>
+          </div>
+
+          <details class="fold" style="margin-top:10px;">
+            <summary>
+              <span>EXIF JSON</span>
+              <span class="fold-hint">调试</span>
+            </summary>
+            <div class="mono" id="fieldExifJson"></div>
+          </details>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const PHOTOS = {{ data_json | safe }};
+    const SELECTED_IMG = {{ selected_json | safe }};
+
+    const byDate = new Map();
+    for (const p of PHOTOS) {
+      if (!p.date) continue;
+      if (!byDate.has(p.date)) byDate.set(p.date, []);
+      byDate.get(p.date).push(p);
+    }
+    for (const [d, arr] of byDate.entries()) {
+      arr.sort((a, b) => ((b.memory ?? -1) - (a.memory ?? -1)));
+    }
+
+    const canvas = document.getElementById('previewCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusLine = document.getElementById('statusLine');
+
+    const kpiDate = document.getElementById('kpiDate');
+    const kpiLocation = document.getElementById('kpiLocation');
+    const kpiSide = document.getElementById('kpiSide');
+
+    const fieldPath = document.getElementById('fieldPath');
+    const fieldOrigPath = document.getElementById('fieldOrigPath');
+    const fieldType = document.getElementById('fieldType');
+    const fieldCaption = document.getElementById('fieldCaption');
+    const fieldReason = document.getElementById('fieldReason');
+    const fieldRes = document.getElementById('fieldRes');
+    const fieldOrientation = document.getElementById('fieldOrientation');
+    const fieldUsedAt = document.getElementById('fieldUsedAt');
+    const fieldExifSummary = document.getElementById('fieldExifSummary');
+    const fieldExifJson = document.getElementById('fieldExifJson');
+
+    // 评分条
+    const barMemory = document.getElementById('barMemory');
+    const barBeauty = document.getElementById('barBeauty');
+    const numMemory = document.getElementById('numMemory');
+    const numBeauty = document.getElementById('numBeauty');
+
+    let currentDate = null;
+    let currentPhoto = null;
+
+    // 朝向 / 抖动选择状态，用 localStorage 持久化（key 带 inktime 前缀避免冲突）
+    let currentOrient = (function() {
+      try { return localStorage.getItem('inktime_sim_orient') || 'auto'; } catch (e) { return 'auto'; }
+    })();
+    let currentDither = (function() {
+      try { return localStorage.getItem('inktime_sim_dither') || 'floyd_steinberg'; } catch (e) { return 'floyd_steinberg'; }
+    })();
+
+    function formatLocation(lat, lon, city) {
+      const c = (city || '').trim();
+      if (c.length > 0) return c;
+      if (lat == null || lon == null) return '';
+      try {
+        return Number(lat).toFixed(5) + ', ' + Number(lon).toFixed(5);
+      } catch (e) {
+        return String(lat) + ', ' + String(lon);
+      }
+    }
+
+    function formatDateDisplay(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length < 3) return dateStr;
+      const y = parts[0];
+      const m = String(parseInt(parts[1], 10));
+      const d = String(parseInt(parts[2], 10));
+      return y + '.' + m + '.' + d;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function hashToHue(str) {
+      // 简单稳定 hash -> 0..359
+      let h = 0;
+      const s = String(str || '');
+      for (let i = 0; i < s.length; i++) {
+        h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      }
+      return h % 360;
+    }
+
+    function renderTags(tags) {
+      if (!Array.isArray(tags) || tags.length === 0) return '';
+      let htmlOut = '';
+      for (const t of tags) {
+        if (!t) continue;
+        const hue = hashToHue(t);
+        const bg = 'hsla(' + hue + ', 90%, 55%, 0.14)';
+        const bd = 'hsla(' + hue + ', 90%, 55%, 0.30)';
+        const dot = 'hsl(' + hue + ', 90%, 62%)';
+        htmlOut += '<span class="chip" style="background:' + bg + '; border-color:' + bd + ';">'
+          + '<span class="chip-dot" style="background:' + dot + ';"></span>'
+          + escapeHtml(t)
+          + '</span>';
+      }
+      return htmlOut;
+    }
+
+    function safeText(v) {
+      if (v === null || v === undefined) return '';
+      return String(v);
+    }
+
+    function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+      if (!text) return;
+      const words = text.split(/\s+/);
+      let line = '';
+      let lineCount = 0;
+      for (let n = 0; n < words.length; n++) {
+        const testLine = line ? (line + ' ' + words[n]) : words[n];
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && n > 0) {
+          ctx.fillText(line, x, y);
+          line = words[n];
+          y += lineHeight;
+          lineCount++;
+          if (lineCount >= maxLines) break;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line && lineCount < maxLines) ctx.fillText(line, x, y);
+    }
+
+    function applyFourColorDither() {
+      const w = canvas.width, h = canvas.height;
+      let imgData;
+      try {
+        imgData = ctx.getImageData(0, 0, w, h);
+      } catch (e) {
+        statusLine.textContent = '无法从画布读取像素（跨域或图片未走 /images）：' + e;
+        return;
+      }
+      const data = imgData.data;
+
+      const palette = [
+        { r: 0, g: 0, b: 0 },
+        { r: 255, g: 255, b: 255 },
+        { r: 200, g: 0, b: 0 },
+        { r: 220, g: 180, b: 0 }
+      ];
+
+      const errR = new Float32Array(w);
+      const errG = new Float32Array(w);
+      const errB = new Float32Array(w);
+      const nextErrR = new Float32Array(w);
+      const nextErrG = new Float32Array(w);
+      const nextErrB = new Float32Array(w);
+
+      function nearestColor(r, g, b) {
+        let bestIndex = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < palette.length; i++) {
+          const pr = palette[i].r, pg = palette[i].g, pb = palette[i].b;
+          const dr = r - pr, dg = g - pg, db = b - pb;
+          const dist = dr*dr + dg*dg + db*db;
+          if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+        }
+        return palette[bestIndex];
+      }
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = (y * w + x) * 4;
+
+          let r = data[idx] + errR[x];
+          let g = data[idx + 1] + errG[x];
+          let b = data[idx + 2] + errB[x];
+
+          r = r < 0 ? 0 : (r > 255 ? 255 : r);
+          g = g < 0 ? 0 : (g > 255 ? 255 : g);
+          b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+          const nc = nearestColor(r, g, b);
+
+          data[idx] = nc.r;
+          data[idx + 1] = nc.g;
+          data[idx + 2] = nc.b;
+
+          const er = r - nc.r, eg = g - nc.g, eb = b - nc.b;
+
+          if (x + 1 < w) {
+            errR[x + 1] += er * (7 / 16);
+            errG[x + 1] += eg * (7 / 16);
+            errB[x + 1] += eb * (7 / 16);
+          }
+          if (y + 1 < h) {
+            if (x > 0) {
+              nextErrR[x - 1] += er * (3 / 16);
+              nextErrG[x - 1] += eg * (3 / 16);
+              nextErrB[x - 1] += eb * (3 / 16);
+            }
+            nextErrR[x] += er * (5 / 16);
+            nextErrG[x] += eg * (5 / 16);
+            nextErrB[x] += eb * (5 / 16);
+            if (x + 1 < w) {
+              nextErrR[x + 1] += er * (1 / 16);
+              nextErrG[x + 1] += eg * (1 / 16);
+              nextErrB[x + 1] += eb * (1 / 16);
+            }
+          }
+        }
+
+        if (y + 1 < h) {
+          for (let i = 0; i < w; i++) {
+            errR[i] = nextErrR[i]; errG[i] = nextErrG[i]; errB[i] = nextErrB[i];
+            nextErrR[i] = 0; nextErrG[i] = 0; nextErrB[i] = 0;
+          }
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    function updateMeta(photo) {
+      if (!photo) {
+        kpiDate.textContent = '';
+        kpiLocation.textContent = '';
+        kpiSide.textContent = '';
+
+        fieldPath.textContent = '';
+        fieldOrigPath.textContent = '';
+        fieldType.innerHTML = '';
+        fieldCaption.textContent = '';
+        fieldReason.textContent = '';
+        fieldRes.textContent = '';
+        fieldOrientation.textContent = '';
+        fieldUsedAt.textContent = '';
+        fieldExifSummary.textContent = '';
+        fieldExifJson.textContent = '';
+        // 清空评分条
+        barMemory.style.width = '0%';
+        barBeauty.style.width = '0%';
+        numMemory.textContent = '';
+        numBeauty.textContent = '';
+        return;
+      }
+
+      // 填充 meta-box 新结构
+      kpiSide.textContent = photo.side ? '「' + safeText(photo.side) + '」' : '';
+      fieldType.innerHTML = renderTags(photo.type);
+      fieldCaption.textContent = safeText(photo.caption);
+
+      // 评分条
+      const m = photo.memory != null ? Math.max(0, Math.min(100, photo.memory)) : 0;
+      const b = photo.beauty != null ? Math.max(0, Math.min(100, photo.beauty)) : 0;
+      barMemory.style.width = m + '%';
+      barBeauty.style.width = b + '%';
+      numMemory.textContent = m ? m.toFixed(1) : '';
+      numBeauty.textContent = b ? b.toFixed(1) : '';
+
+      fieldReason.textContent = photo.reason ? '评分理由：' + safeText(photo.reason) : '';
+
+      // 更多信息区
+      const loc = formatLocation(photo.lat, photo.lon, photo.city);
+      kpiDate.textContent = safeText(photo.date);
+      kpiLocation.textContent = safeText(loc);
+      fieldPath.textContent = safeText(photo.path);
+      fieldOrigPath.textContent = safeText(photo.orig_path || '');
+      const res = (safeText(photo.width) || safeText(photo.height)) ? (safeText(photo.width) + ' x ' + safeText(photo.height)) : '';
+      fieldRes.textContent = res;
+      fieldOrientation.textContent = safeText(photo.orientation);
+      fieldUsedAt.textContent = safeText(photo.used_at);
+      fieldExifSummary.textContent = safeText(photo.exif_summary);
+      fieldExifJson.textContent = safeText(photo.exif_json);
+    }
+
+    function drawPreview(photo) {
+      if (!photo) {
+        statusLine.textContent = '未指定照片。请从 /review 点击某张照片进入模拟器。';
+        return;
+      }
+
+      statusLine.textContent = ''; // 正常情况不显示废话
+
+      // 占位：先按竖屏尺寸清白，加载完成后按真实朝向重设 canvas
+      canvas.width = 480;
+      canvas.height = 800;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const img = new Image();
+      img.onload = function() {
+          // 按渲染图真实尺寸自适应 canvas：竖屏图→480×800，横屏图→800×480，无拉伸
+          canvas.width = img.naturalWidth || 480;
+          canvas.height = img.naturalHeight || 800;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        };
+      img.onerror = function() {
+        statusLine.textContent = '图片加载失败：' + photo.path;
+      };
+      img.src = '/sim_render?img=' + encodeURIComponent(photo.path)
+              + '&orient=' + encodeURIComponent(currentOrient)
+              + '&dither=' + encodeURIComponent(currentDither);
+    }
+
+    function pickPhotoFromDate(date) {
+      const arr = byDate.get(date) || [];
+      if (!arr.length) return null;
+
+      const THRESHOLD = {{ memory_threshold }};
+      const candidates = arr.filter(p => p.memory != null && p.memory > THRESHOLD);
+      if (candidates.length > 0) {
+        const idx = Math.floor(Math.random() * candidates.length);
+        return { photo: candidates[idx], dateUsed: date };
+      }
+
+      // 兜底：当天随便挑
+      const idx = Math.floor(Math.random() * arr.length);
+      return { photo: arr[idx], dateUsed: date, fallbackNoThreshold: true };
+    }
+
+    function getPreviousDateStr(dateStr) {
+      if (!dateStr) return null;
+      const parts = dateStr.split('-');
+      if (parts.length < 3) return null;
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      const d = parseInt(parts[2], 10);
+      if (!y || !m || !d) return null;
+      const dt = new Date(y, m - 1, d);
+      dt.setDate(dt.getDate() - 1);
+      const yy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      return yy + '-' + mm + '-' + dd;
+    }
+
+    function pickPhotoWithLookback(baseDate) {
+      if (!baseDate) return null;
+      let date = baseDate;
+      const MAX_LOOKBACK = 30;
+
+      for (let i = 0; i < MAX_LOOKBACK; i++) {
+        const picked = pickPhotoFromDate(date);
+        if (picked && picked.photo) return picked;
+        const prev = getPreviousDateStr(date);
+        if (!prev) break;
+        date = prev;
+      }
+
+      // 最终兜底：目标日期没找到 map，啥也不干
+      return null;
+    }
+
+    function findSelectedPhoto() {
+      if (!SELECTED_IMG) return null;
+      for (const p of PHOTOS) {
+        if (p.path === SELECTED_IMG) return p;
+      }
+      return null;
+    }
+
+    function onRerollSameDay() {
+      if (!currentDate) {
+        statusLine.textContent = '请从 /review 点击某张照片进入模拟器。';
+        return;
+      }
+
+      const pick = pickPhotoWithLookback(currentDate);
+      if (!pick || !pick.photo) {
+        statusLine.textContent = '该日期及向前 30 天内没有可用照片。';
+        return;
+      }
+
+      // 如果刚好又抽到自己，尝试再抽几次
+      let tries = 0;
+      let chosen = pick;
+      while (tries < 6 && chosen && chosen.photo && currentPhoto && chosen.photo.path === currentPhoto.path) {
+        const again = pickPhotoWithLookback(currentDate);
+        if (!again || !again.photo) break;
+        chosen = again;
+        tries++;
+      }
+
+      currentPhoto = chosen.photo;
+      updateMeta(currentPhoto);
+      drawPreview(currentPhoto);
+    }
+
+    document.getElementById('rerollBtn').addEventListener('click', onRerollSameDay);
+
+    // 朝向切换按钮
+    document.querySelectorAll('.orientBtn').forEach(function(btn) {
+      // 回填 localStorage 里记忆的选择，点亮对应按钮
+      if (btn.dataset.orient === currentOrient) {
+        document.querySelectorAll('.orientBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.orientBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentOrient = btn.dataset.orient;
+        try { localStorage.setItem('inktime_sim_orient', currentOrient); } catch (e) {}
+        if (currentPhoto) drawPreview(currentPhoto);
+      });
+    });
+
+    // 抖动切换按钮
+    document.querySelectorAll('.ditherBtn').forEach(function(btn) {
+      if (btn.dataset.dither === currentDither) {
+        document.querySelectorAll('.ditherBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.ditherBtn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentDither = btn.dataset.dither;
+        try { localStorage.setItem('inktime_sim_dither', currentDither); } catch (e) {}
+        if (currentPhoto) drawPreview(currentPhoto);
+      });
+    });
+
+    // 默认进入：如果从 review 点进来，则显示该照片；否则提示用户从 review 进入
+    const initPhoto = findSelectedPhoto();
+    if (!initPhoto) {
+      updateMeta(null);
+      drawPreview(null);
+    } else {
+      currentDate = initPhoto.date;
+      currentPhoto = initPhoto;
+      updateMeta(currentPhoto);
+      drawPreview(currentPhoto);
+    }
+  </script>
+</body>
+</html>

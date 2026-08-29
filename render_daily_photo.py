@@ -7,7 +7,7 @@
 - 按 InkTime 模拟器的布局渲染到 480x800
 - 用 LXGWHeartSerifMN.ttf 把文案 / 日期 / 地点都画到图上
 - 转成四色墨水屏（黑/白/红/黄）图像，并保存为 BIN（1 字节 1 像素，行优先）
-- 同时导出 latest.h 头文件数组，给 ESP32 直接 include
+- 生成 sidecar json 标注每张 .bin 的朝向与画布尺寸
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import os
 from typing import List, Dict, Any, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import config as cfg
+from common import extract_date_from_exif
 
 
 TODAY = dt.date.today()
@@ -63,47 +64,13 @@ CANVAS_HEIGHT = 800
 # 底部文字区域高度
 TEXT_AREA_HEIGHT = 120
 
+# 相框遮挡：800px 长边两端各被相框遮掉的像素数（3:2 可视区 720×480 对应 40）。
+# 横屏时左右各遮 inset、竖屏时上下各遮 inset（面板随舵机转 90°，遮挡跟着长边走）。
+# 文字卡片据此避开遮挡区：竖屏整体上移 inset、横屏左右各收窄 inset；0 = 无遮挡原布局。
+FRAME_MASK_INSET_PX = int(getattr(cfg, "FRAME_MASK_INSET_PX", 0) or 0)
+
 
 # ========== DB 与 EXIF 处理 ==========
-
-def extract_date_from_exif(exif_json: Optional[str], filepath: str = "") -> str:
-    """
-    从 EXIF JSON 中提取拍摄日期，返回 YYYY-MM-DD 格式，失败则返回空字符串。
-    逻辑与 review_web.py 中保持一致。
-    """
-    date_str = ""
-    if exif_json:
-        try:
-            data = json.loads(exif_json)
-            dt_str = data.get("datetime")
-            if dt_str:
-                date_part = str(dt_str).split()[0]
-                parts = date_part.replace(":", "-").split("-")
-                if len(parts) >= 3:
-                    date_str = f"{parts[0]}-{parts[1]}-{parts[2]}"
-        except Exception:
-            pass
-            
-    if date_str and len(date_str) == 10:
-        return date_str
-        
-    if filepath:
-        clean_path = filepath.replace('\\', '/')
-        # 1. YYYY-MM-DD 或 YYYY_MM_DD 或 YYYY.MM.DD
-        m1 = re.search(r'(20\d{2}|19\d{2})[-_ \.](0[1-9]|1[0-2])[-_ \.](0[1-9]|[12]\d|3[01])', clean_path)
-        if m1:
-            return f"{m1.group(1)}-{m1.group(2)}-{m1.group(3)}"
-        # 2. YYYYMMDD (如 20231225)
-        m2 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9]|$)', clean_path)
-        if m2:
-            return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
-        # 3. YYYYMM (如 201607)
-        m3 = re.search(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(?:[^0-9]|$)', clean_path)
-        if m3:
-            return f"{m3.group(1)}-{m3.group(2)}-01"
-            
-    return ""
-
 
 def _parse_exif_datetime(s: Optional[str]) -> Optional[dt.datetime]:
     """把 EXIF DateTimeOriginal 字符串解析成 datetime。
@@ -443,96 +410,6 @@ def day_of_year_to_md(day: int) -> str:
     return f"{base.month:02d}-{base.day:02d}"
 
 
-def choose_photo_for_today(items: List[Dict[str, Any]], today: dt.date) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    选片规则（按月日）：
-    - 以 today 的月日为目标，例如 12 月 2 日 -> "12-02"
-    - 在所有年份该月日的照片中，找 memory > MEMORY_THRESHOLD 的候选，随机选一张
-    - 如果该月日没有任何 > 阈值的，则往前一天（月日）继续找（12-01, 11-30, ...），最多回溯 365 天
-    - 如果整个 365 天都没有任何 > 阈值的照片，则在全局中选 memory 最大的一张作为兜底
-    """
-
-    if not items:
-        raise RuntimeError("没有任何可用照片")
-
-    # 按 md 分组
-    by_md: Dict[str, List[Dict[str, Any]]] = {}
-    for it in items:
-        md = it["md"]
-        by_md.setdefault(md, []).append(it)
-
-    # 每组内按 memory 从高到低排序
-    for arr in by_md.values():
-        arr.sort(key=lambda x: x.get("memory", -1.0), reverse=True)
-
-    target_md = f"{today.month:02d}-{today.day:02d}"
-    target_doy = md_to_day_of_year(target_md)
-    if target_doy is None:
-        raise RuntimeError(f"无法解析今天的月日: {target_md}")
-
-    import random
-
-    for offset in range(0, 365):
-        doy = target_doy - offset
-        if doy <= 0:
-            doy += 365
-        md = day_of_year_to_md(doy)
-
-        arr = by_md.get(md, [])
-        if not arr:
-            continue
-        candidates = [p for p in arr if p.get("memory", -1.0) > MEMORY_THRESHOLD]
-        if not candidates:
-            continue
-
-        # 计算 final_score 并排序
-        for p in candidates:
-            p["_final_score"] = compute_final_score(p)
-        candidates.sort(key=lambda x: x["_final_score"], reverse=True)
-
-        # 精英随机（>= 阈值取 Top-3 随机）or 确定性最优
-        elite = [p for p in candidates if p["_final_score"] >= HIGH_SCORE_THRESHOLD]
-        if elite:
-            chosen = random.choice(elite[:3])
-            selection_mode = "elite_top3_random"
-        else:
-            chosen = candidates[0]
-            selection_mode = "deterministic_top1"
-
-        info = {
-            "target_md": target_md,
-            "used_md": md,
-            "day_offset": -offset,
-            "candidate_count": len(candidates),
-            "elite_count": len(elite),
-            "total_count_md": len(arr),
-            "threshold": MEMORY_THRESHOLD,
-            "high_score_threshold": HIGH_SCORE_THRESHOLD,
-            "selection_mode": selection_mode,
-            "final_score": chosen["_final_score"],
-            "fallback_global_max": False,
-        }
-        return chosen, info
-
-    # 兜底：全局 final_score 最高的照片
-    for p in items:
-        p["_final_score"] = compute_final_score(p)
-    global_best = max(items, key=lambda x: x["_final_score"])
-    info = {
-        "target_md": target_md,
-        "used_md": global_best["md"],
-        "day_offset": None,
-        "candidate_count": 1,
-        "elite_count": 0,
-        "total_count_md": len(by_md.get(global_best["md"], [])),
-        "threshold": MEMORY_THRESHOLD,
-        "high_score_threshold": HIGH_SCORE_THRESHOLD,
-        "selection_mode": "fallback_global",
-        "final_score": global_best["_final_score"],
-        "fallback_global_max": True,
-
-    }
-    return global_best, info
 
 def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: int = 5) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
@@ -676,6 +553,91 @@ def nearest_palette_color(r: float, g: float, b: float) -> Tuple[int, int, int, 
             best_idx = i
     pr, pg, pb = PALETTE[best_idx]
     return best_idx, pr, pg, pb
+
+
+# ========== 自适应伽马补偿（2026-08-25，详见 config.py GAMMA_* 注释）==========
+
+# 亮度→调色板色块映射的决策阈值（与 nearest_palette_color 的 RGB 距离行为近似）：
+# 亮度 >WHITE_LUM_HIGH 的像素抖动后必为白；<BLACK_LUM_LOW 必为黑；中间为红/黄混合。
+WHITE_LUM_HIGH = 232.0
+BLACK_LUM_LOW = 46.0
+
+
+def _gamma_lut(gamma: float) -> List[int]:
+    return [min(255, int(255.0 * ((i / 255.0) ** gamma) + 0.5)) for i in range(256)] * 3
+
+
+def _predicted_white_ratio(hist: List[int], gamma: float) -> float:
+    """预测 gamma LUT 后抖动图像的白格占比。
+    误差扩散抖动近似保持平均亮度：mean_lum ≈ 255*white + 0*black + mid_lum*color。
+    实测红+黄格合计通常 <8%，作为小修正项而非主项（2026-08-25 回测教训：
+    早期版本把全部非白像素按中间亮度计，系统性低估白格 25-50%）。
+    """
+    lut = _gamma_lut(gamma)[:256]
+    total = sum(hist) or 1
+    mean_lum = sum(lut[v] * n for v, n in enumerate(hist)) / total
+    # 红黄格平均亮度（红:黄 ≈ 1:2 混合），占比小且相对稳定
+    mid_lum = (82.0 + 179.0 * 2) / 3.0
+    color_frac = 0.07  # 经验值：红黄合计约 7%
+    # mean_lum = 255*white + mid_lum*color + 0*black, black = 1 - white - color
+    return max(0.0, min(1.0, (mean_lum - mid_lum * color_frac) / 255.0))
+
+
+def choose_gamma(img: Image.Image) -> Tuple[float, str]:
+    """根据照片亮度直方图自动选择伽马档位。
+    返回 (gamma, 说明)。img 为 RGB 渲染成品图（照片+文案区，已粘贴到画布）。
+    预测式：不实际跑抖动，用直方图均值模型二分求解，成本 O(256×迭代次数)。
+    """
+    mode = getattr(cfg, "GAMMA_MODE", 1.0)
+    if isinstance(mode, (int, float)):
+        return float(mode), "fixed"
+    target = getattr(cfg, "GAMMA_TARGET_WHITE_RATIO", 0.45)
+    g_min = getattr(cfg, "GAMMA_MIN", 0.60)
+    g_max = getattr(cfg, "GAMMA_MAX", 1.00)
+
+    gray = img.convert("L")
+    hist = gray.histogram()  # 256 bins
+    # 二分：gamma 越小越亮 → white_ratio 单调递增
+    lo, hi = g_min, g_max
+    for _ in range(24):
+        mid = (lo + hi) / 2.0
+        if _predicted_white_ratio(hist, mid) > target:
+            lo = mid  # 已经够亮，减小提亮（gamma 调大）
+        else:
+            hi = mid  # 不够亮，继续提亮（gamma 调小）
+    gamma = round((lo + hi) / 2.0, 3)
+    predicted = _predicted_white_ratio(hist, gamma)
+    return gamma, f"auto(target={target:.0%} pred={predicted:.0%})"
+
+
+def apply_gamma(img: Image.Image, gamma: float) -> Image.Image:
+    if gamma >= 0.999:
+        return img
+    return img.point(_gamma_lut(gamma))
+
+
+def measure_dither_ratios(img: Image.Image) -> Dict[str, float]:
+    """抖动后实测四色占比，用于日志与 GAMMA_TARGET 校验闭环。"""
+    if img.mode == "P":
+        # quantize_four_color 的产物：像素值即 PALETTE 索引，histogram O(1) 读出
+        h = img.histogram()
+        n = sum(h) or 1
+        if sum(h[:len(PALETTE)]) == sum(h):
+            return {"white": h[1] / n, "black": h[0] / n,
+                    "red": h[2] / n, "yellow": h[3] / n}
+    px = list(img.convert("RGB").getdata())
+    n = len(px) or 1
+    white = black = red = yellow = 0
+    for r, g, b in px:
+        if r > 240 and g > 240 and b > 240:
+            white += 1
+        elif r < 40 and g < 40 and b < 40:
+            black += 1
+        elif r > 150 and g < 90 and b < 90:
+            red += 1
+        elif r > 180 and g > 130 and b < 110:
+            yellow += 1
+    return {"white": white / n, "black": black / n, "red": red / n, "yellow": yellow / n}
 
 
 def wrap_text_chinese(draw: ImageDraw.ImageDraw,
@@ -983,7 +945,9 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
 
     if orient == "landscape":
         # 把已经 EXIF 修正过的 PIL 图直接交给横屏管线，避免重复打开/transpose。
-        return render_image_landscape(item, img)
+        canvas = render_image_landscape(item, img)
+        canvas.info["render_orientation"] = "landscape"
+        return canvas
 
     canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
@@ -1095,15 +1059,19 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
     canvas.paste(pic_area, (0, 0))
 
     # ---------- 底部文字区域 (毛玻璃圆角矩形) ----------
+    # 相框遮挡：竖屏可视底边在 CANVAS_HEIGHT - FRAME_MASK_INSET_PX，底部 inset 像素会被
+    # 相框遮住。文字区整体以可视底边为锚上移（卡片/文案/日期的内部间距保持不变；
+    # inset=0 时 visible_bottom == CANVAS_HEIGHT，与原全屏布局完全一致）。
+    visible_bottom = CANVAS_HEIGHT - FRAME_MASK_INSET_PX
     padding_x = 24
-    text_area_top = CANVAS_HEIGHT - TEXT_AREA_HEIGHT + 15
+    text_area_top = visible_bottom - TEXT_AREA_HEIGHT + 15
     text_width = CANVAS_WIDTH - 2 * padding_x
 
     # 1. 定义毛玻璃区域的坐标 (缩小边缘距离，让圆角矩形更大)
     box_x0 = 10
     box_y0 = text_area_top - 10
     box_x1 = CANVAS_WIDTH - 10
-    box_y1 = CANVAS_HEIGHT - 10
+    box_y1 = visible_bottom - 10
     box_w = box_x1 - box_x0
     box_h = box_y1 - box_y0
 
@@ -1173,6 +1141,7 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
         loc_x = padding_x
     draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
 
+    canvas.info["render_orientation"] = orient
     return canvas
 
 
@@ -1318,12 +1287,15 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     #      文字底距卡片底边留 10px 安全距，避免文字压在卡片边上；
     #      同时解决原 bug 版日期底溢出画布的问题。
     # 注：text_area_height 已在上方裁切前定义（兼作主体避让区高度），此处复用。
-    padding_x = 28
+    # 相框遮挡：横屏可视区左右各被相框遮掉 FRAME_MASK_INSET_PX 像素（800→720）。
+    # 文字卡片左右各内缩 inset（保持原本 14px 边距不变），日期/地点文案随之收进可视区；
+    # inset=0 时与原全屏布局完全一致。
+    padding_x = 28 + FRAME_MASK_INSET_PX  # 卡片内文字左边距（box_x0 再往右 14px）
     text_area_top = canvas_h - text_area_height  # 卡片逻辑顶
 
-    box_x0 = 14
+    box_x0 = 14 + FRAME_MASK_INSET_PX
     box_y0 = text_area_top - 4
-    box_x1 = canvas_w - 14
+    box_x1 = canvas_w - 14 - FRAME_MASK_INSET_PX
     box_y1 = canvas_h - 14  # 不贴底，留 14px 边，四角圆角完整
     box_w = box_x1 - box_x0
     box_h = box_y1 - box_y0
@@ -1400,69 +1372,39 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     return canvas
 
 
+# 调色板 P 模式图像缓存：quantize(palette=...) 需要一张 P 图作为调色板来源。
+_PALETTE_P_IMAGE: Optional[Image.Image] = None
+
+
+def _palette_image() -> Image.Image:
+    global _PALETTE_P_IMAGE
+    if _PALETTE_P_IMAGE is None:
+        pal = Image.new("P", (16, 1))
+        flat: List[int] = []
+        for color in PALETTE:
+            flat.extend(color)
+        flat.extend([0] * (768 - len(flat)))
+        pal.putpalette(flat)
+        _PALETTE_P_IMAGE = pal
+    return _PALETTE_P_IMAGE
+
+
+def quantize_four_color(img: Image.Image) -> Image.Image:
+    """
+    用 PIL 内置的 C 实现做 Floyd–Steinberg 抖动，量化到 PALETTE 四色。
+    返回 P 模式图像：像素值即 PALETTE 索引（0=黑 1=白 2=红 3=黄），
+    tobytes() 直接就是 1 字节/像素的 BIN 数据。
+    相比旧的纯 Python 逐像素实现（480x800 实测 ~3.2s），C 路径 ~0.03s。
+    """
+    return img.convert("RGB").quantize(palette=_palette_image(),
+                                       dither=Image.Dither.FLOYDSTEINBERG)
+
+
 def apply_four_color_dither(img: Image.Image) -> Image.Image:
     """
-    对图像做 Floyd–Steinberg 抖动，量化到四种颜色（黑/白/红/黄）。
+    对图像做 Floyd–Steinberg 抖动，量化到四种颜色（黑/白/红/黄），返回 RGB 图。
     """
-    img = img.convert("RGB")
-    w, h = img.size
-    pixels = img.load()
-
-    err_r = [0.0] * w
-    err_g = [0.0] * w
-    err_b = [0.0] * w
-    next_err_r = [0.0] * w
-    next_err_g = [0.0] * w
-    next_err_b = [0.0] * w
-
-    for y in range(h):
-        for x in range(w):
-            r, g, b = pixels[x, y]
-            r = max(0.0, min(255.0, r + err_r[x]))
-            g = max(0.0, min(255.0, g + err_g[x]))
-            b = max(0.0, min(255.0, b + err_b[x]))
-
-            idx, pr, pg, pb = nearest_palette_color(r, g, b)
-
-            # 写回量化后的颜色
-            pixels[x, y] = (pr, pg, pb)
-
-            # 误差
-            er = r - pr
-            eg = g - pg
-            eb = b - pb
-
-            # Floyd–Steinberg:
-            #        *   7/16
-            #   3/16 5/16 1/16
-            if x + 1 < w:
-                err_r[x + 1] += er * (7.0 / 16.0)
-                err_g[x + 1] += eg * (7.0 / 16.0)
-                err_b[x + 1] += eb * (7.0 / 16.0)
-            if y + 1 < h:
-                if x > 0:
-                    next_err_r[x - 1] += er * (3.0 / 16.0)
-                    next_err_g[x - 1] += eg * (3.0 / 16.0)
-                    next_err_b[x - 1] += eb * (3.0 / 16.0)
-                next_err_r[x] += er * (5.0 / 16.0)
-                next_err_g[x] += eg * (5.0 / 16.0)
-                next_err_b[x] += eb * (5.0 / 16.0)
-                if x + 1 < w:
-                    next_err_r[x + 1] += er * (1.0 / 16.0)
-                    next_err_g[x + 1] += eg * (1.0 / 16.0)
-                    next_err_b[x + 1] += eb * (1.0 / 16.0)
-
-        if y + 1 < h:
-            # 把 next_err_* 移到当前行，并清零 next_err_*
-            for i in range(w):
-                err_r[i] = next_err_r[i]
-                err_g[i] = next_err_g[i]
-                err_b[i] = next_err_b[i]
-                next_err_r[i] = 0.0
-                next_err_g[i] = 0.0
-                next_err_b[i] = 0.0
-
-    return img
+    return quantize_four_color(img).convert("RGB")
 
 
 def apply_atkinson_dither(img: Image.Image) -> Image.Image:
@@ -1626,40 +1568,28 @@ def image_to_palette_bin(img: Image.Image, orientation: str = "portrait") -> byt
         raise RuntimeError(f"图像尺寸错误：{img.size}，应为 {expected}")
 
     w, h = img.size  # 按图像实际宽高迭代，不再硬编码 CANVAS_WIDTH/CANVAS_HEIGHT
-    data = bytearray(w * h)
-    idx_map = {c: i for i, c in enumerate(PALETTE)}  # (r,g,b) -> index
+    expected_bytes = w * h
 
-    for y in range(h):
-        for x in range(w):
-            r, g, b = img.getpixel((x, y))
-            key = (int(r), int(g), int(b))
-            idx = idx_map.get(key)
-            if idx is None:
-                idx, _, _, _ = nearest_palette_color(r, g, b)
-            data[y * w + x] = idx
+    # 快路径：quantize_four_color 产出的 P 图，像素值即 PALETTE 索引，直接输出
+    if img.mode == "P":
+        idx_data = img.tobytes()
+        if len(idx_data) == expected_bytes and (max(idx_data) if idx_data else 0) < len(PALETTE):
+            return bytes(idx_data)
 
-    return bytes(data)
+    # 兜底：RGB 图（如 atkinson/bayer/none 的产物，颜色必为调色板色）逐像素映射
+    data = img.convert("RGB").tobytes()
+    idx_map = {bytes(c): i for i, c in enumerate(PALETTE)}
+    idx_map_get = idx_map.get
+    out = bytearray(expected_bytes)
+    for i in range(expected_bytes):
+        off = i * 3
+        key = data[off:off + 3]
+        idx = idx_map_get(key)
+        if idx is None:
+            idx, _, _, _ = nearest_palette_color(key[0], key[1], key[2])
+        out[i] = idx
 
-
-def write_h_array(bin_path: Path, h_path: Path, array_name: str = "daily_bin"):
-    """
-    把 BIN 转成 C 数组头文件 latest.h：
-    const unsigned int daily_bin_size = ...;
-    const uint8_t daily_bin[] = { 0x00, 0x01, ... };
-    """
-    data = bin_path.read_bytes()
-    with open(h_path, "w", encoding="utf-8") as f:
-        f.write("// Auto-generated from render_daily_photo.py\n")
-        f.write(f"// Size = {len(data)} bytes (480x800, 1 byte/pixel)\n\n")
-        f.write(f"const unsigned int {array_name}_size = {len(data)};\n")
-        f.write(f"const uint8_t {array_name}[] = {{\n    ")
-
-        for i, b in enumerate(data):
-            f.write(f"0x{b:02X}, ")
-            if (i + 1) % 16 == 0:
-                f.write("\n    ")
-
-        f.write("\n};\n")
+    return bytes(out)
 
 
 # ========== 主流程 ==========
@@ -1713,19 +1643,30 @@ def main():
         # 渲染成完整成品图（照片 + 文案 + 日期 + 地点）
         img = render_image(chosen)
 
-        # 朝向决策：与 render_image 内部走的是同一份 compute_render_orientation，
-        # 保证 sidecar json 写入的 orientation 与实际渲染的画布一致。
-        # 用同一张已加载、已 EXIF transpose 的源图来判定，避免重算路径解析。
-        try:
-            src_img = _resolve_and_load_image(chosen)
-            src_w, src_h = src_img.size
-            render_orientation = compute_render_orientation(src_w, src_h)
-        except Exception:
-            # 加载失败则保守按竖屏处理（render_image 若也失败会另行抛错）。
+        # 朝向决策：render_image 已把实际渲染朝向写入 canvas.info，不再为判定朝向
+        # 而第二次完整加载原图。
+        render_orientation = img.info.get("render_orientation")
+        if render_orientation not in ("portrait", "landscape"):
+            # 兜底：保守按竖屏处理（render_image 若失败会另行抛错）。
             render_orientation = "portrait"
 
-        # 抖动成四色墨水屏风格
-        img_dithered = apply_four_color_dither(img)
+        # 自适应伽马补偿：按成品图直方图选档（预测式），提亮后再抖动
+        gamma, g_mode = choose_gamma(img)
+        img_gamma = apply_gamma(img, gamma)
+        print(f"[GAMMA] {g_mode} | gamma={gamma:.3f}")
+
+        # 抖动成四色墨水屏风格（quantize C 实现，产物为 P 模式索引图）
+        img_dithered = quantize_four_color(img_gamma)
+
+        # 实测四色占比（闭环校验：预测 vs 实际）
+        ratios = measure_dither_ratios(img_dithered)
+        tol = getattr(cfg, "GAMMA_TARGET_TOLERANCE", 0.05)
+        target = getattr(cfg, "GAMMA_TARGET_WHITE_RATIO", 0.45)
+        warn = ""
+        if g_mode.startswith("auto") and abs(ratios["white"] - target) > tol:
+            warn = f" ⚠️偏离目标(±{tol:.0%})"
+        print(f"[GAMMA] 实测占比: white={ratios['white']:.1%} black={ratios['black']:.1%} "
+              f"red={ratios['red']:.1%} yellow={ratios['yellow']:.1%}{warn}")
 
         # 保存预览 PNG（已经是抖动后的效果），按索引区分
         preview_path = BIN_OUTPUT_DIR / f"preview_{idx}.png"
@@ -1738,12 +1679,6 @@ def main():
         with open(bin_path, "wb") as f:
             f.write(bin_data)
         print(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节, {render_orientation}）")
-
-        # 头文件数组：photo_0.h, photo_1.h，数组名区分开
-        h_path = BIN_OUTPUT_DIR / f"photo_{idx}.h"
-        array_name = f"daily_bin_{idx}"
-        write_h_array(bin_path, h_path, array_name=array_name)
-        print(f"[OK] 已生成头文件数组: {h_path}")
 
         # 记录展示历史改为由推送展示端执行，此处仅保存此图片的路径
         path_file = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
@@ -1768,20 +1703,15 @@ def main():
 
     # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
     first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
-    first_h = BIN_OUTPUT_DIR / "photo_0.h"
     first_preview = BIN_OUTPUT_DIR / "preview_0.png"
     first_path = BIN_OUTPUT_DIR / "photo_0.path.txt"
     latest_bin = BIN_OUTPUT_DIR / "latest.bin"
-    latest_h = BIN_OUTPUT_DIR / "latest.h"
     latest_preview = BIN_OUTPUT_DIR / "preview.png"
     latest_path = BIN_OUTPUT_DIR / "latest.path.txt"
 
     if first_bin.exists():
         shutil.copyfile(first_bin, latest_bin)
         print(f"[OK] 已更新 latest.bin -> {first_bin.name}")
-    if first_h.exists():
-        shutil.copyfile(first_h, latest_h)
-        print(f"[OK] 已更新 latest.h -> {first_h.name}")
     if first_preview.exists():
         shutil.copyfile(first_preview, latest_preview)
         print(f"[OK] 已更新 preview.png -> {first_preview.name}")

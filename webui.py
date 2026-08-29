@@ -7,6 +7,7 @@ import sqlite3
 import json
 from pathlib import Path
 import config as cfg
+from common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
 
 app = Flask(__name__)
@@ -14,13 +15,8 @@ app = Flask(__name__)
 # Config loading
 ROOT_DIR = Path(__file__).resolve().parent
 
-DB_PATH = Path(str(getattr(cfg, "DB_PATH", "./photos.db") or "./photos.db")).expanduser()
-if not DB_PATH.is_absolute():
-    DB_PATH = (ROOT_DIR / DB_PATH).resolve()
-
-IMAGE_DIR = Path(str(getattr(cfg, "IMAGE_DIR", "") or "")).expanduser()
-if not IMAGE_DIR.is_absolute():
-    IMAGE_DIR = (ROOT_DIR / IMAGE_DIR).resolve()
+DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
+IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
 
 # Using a distinct port for the webui manager
 WEBUI_HOST = str(getattr(cfg, "WEBUI_HOST", "0.0.0.0") or "0.0.0.0")
@@ -28,43 +24,6 @@ WEBUI_PORT = int(getattr(cfg, "WEBUI_PORT", 8766) or 8766)
 
 # Performance tuning: Precompute IMAGE_DIR string for fast image url prefix checking
 _IMAGE_DIR_FAST = str(IMAGE_DIR).replace("\\", "/")
-
-# Pre-compile regex for dating
-_RE_DATE1 = re.compile(r'(20\d{2}|19\d{2})[-_ \.](0[1-9]|1[0-2])[-_ \.](0[1-9]|[12]\d|3[01])')
-_RE_DATE2 = re.compile(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9]|$)')
-_RE_DATE3 = re.compile(r'(?:^|[^0-9])((?:20|19)\d{2})(0[1-9]|1[0-2])(?:[^0-9]|$)')
-
-
-def extract_date_from_exif(exif_json: str | None, filepath: str = "") -> str:
-    date_str = ""
-    if exif_json:
-        try:
-            data = json.loads(exif_json)
-            dtv = data.get("datetime")
-            if dtv:
-                date_part = str(dtv).split()[0]
-                parts = date_part.replace(":", "-").split("-")
-                if len(parts) >= 3:
-                    date_str = f"{parts[0]}-{parts[1]}-{parts[2]}"
-        except Exception:
-            pass
-
-    if date_str and len(date_str) == 10:
-        return date_str
-
-    if filepath:
-        clean_path = filepath.replace('\\', '/')
-        m1 = _RE_DATE1.search(clean_path)
-        if m1:
-            return f"{m1.group(1)}-{m1.group(2)}-{m1.group(3)}"
-        m2 = _RE_DATE2.search(clean_path)
-        if m2:
-            return f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
-        m3 = _RE_DATE3.search(clean_path)
-        if m3:
-            return f"{m3.group(1)}-{m3.group(2)}-01"
-
-    return ""
 
 
 def _make_image_url(path_str: str) -> str:
@@ -171,16 +130,8 @@ def api_photos_meta():
         if city:
             cities.add(city)
         if p_type:
-            try:
-                parsed = json.loads(p_type.replace("'", '"'))
-                if isinstance(parsed, list):
-                    for t in parsed:
-                        if t:
-                            types.add(t)
-                else:
-                    types.add(str(parsed))
-            except Exception:
-                types.add(p_type)
+            # 统一走 common 的脏 type 解析（与 server /sim 同一份实现）
+            types.update(parse_dirty_type(p_type))
 
     return jsonify({
         "dirs": sorted(dirs),

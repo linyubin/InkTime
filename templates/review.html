@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>InkTime照片数据库</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --card2: rgba(255,255,255,0.08);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.48);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --shadow: 0 18px 60px rgba(0,0,0,0.45);
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    body{
+      margin:0;
+      padding:0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{
+      max-width: 1320px;
+      margin: 26px auto 60px;
+      padding: 0 18px;
+    }
+    h1{
+      font-size: 22px;
+      margin: 0 0 8px;
+      letter-spacing: 0.2px;
+    }
+    .subtitle{
+      font-size: 13px;
+      color: var(--muted);
+      margin: 0 0 14px;
+      line-height: 1.35;
+    }
+
+    .controls{
+      display:flex;
+      flex-wrap:wrap;
+      gap: 10px;
+      align-items:center;
+      margin: 12px 0 14px;
+      font-size: 13px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      box-shadow: var(--shadow2);
+      backdrop-filter: blur(10px);
+    }
+    .controls label{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .controls select{
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      outline: none;
+    }
+    /* 下拉 <option> 在原生下拉框里不继承半透明背景，会退化成系统白底；
+       若文字色仍是浅色就会白底白字看不见。这里强制给 option 一个不透明、
+       高对比的配色（深底浅字），保证未选中项清晰可读。 */
+    .controls select option{
+      color: #fff;
+      background: #1b1d22;
+    }
+    .controls select:focus, .controls input:focus{
+      border-color: rgba(138,180,255,0.7);
+      box-shadow: 0 0 0 3px rgba(138,180,255,0.16);
+    }
+    .controls input{
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      outline: none;
+      width: 140px;
+    }
+    .controls button{
+      padding: 7px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text);
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+      transition: transform .08s ease, background .15s ease, border-color .15s ease, opacity .15s ease;
+    }
+    .controls button:hover{
+      background: rgba(255,255,255,0.14);
+      border-color: rgba(255,255,255,0.26);
+    }
+    .controls button:active{
+      transform: translateY(1px);
+    }
+    .controls button:disabled{
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .controls.pager{
+      background: rgba(255,255,255,0.05);
+    }
+
+    .status{
+      font-size: 12px;
+      color: var(--muted);
+      margin: 8px 0 12px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+    }
+    .item{
+      background: linear-gradient(180deg, var(--card) 0%, var(--card2) 100%);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow2);
+      display:flex;
+      flex-direction:column;
+      transition: transform .12s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .item:hover{
+      transform: translateY(-2px);
+      border-color: rgba(138,180,255,0.38);
+      box-shadow: var(--shadow);
+    }
+
+    .img-wrap{
+      width:100%;
+      background: rgba(0,0,0,0.55);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      max-height: 260px;
+      overflow:hidden;
+    }
+    .img-wrap img{
+      width:100%;
+      height:auto;
+      display:block;
+      object-fit: cover;
+      filter: saturate(1.04) contrast(1.02);
+    }
+    .img-link{ display:block; width:100%; }
+    .img-link:link, .img-link:visited{ text-decoration:none; }
+
+    .side-under{
+      padding: 10px 12px 0;
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.45;
+      word-break: break-word;
+      opacity: 0.92;
+    }
+
+    .meta{
+      padding: 10px 12px 12px;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .path{
+      font-size: 11px;
+      color: var(--muted2);
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    .type{
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .score{
+      font-size: 13px;
+      font-weight: 650;
+      margin-bottom: 6px;
+      color: var(--accent2);
+    }
+    .reason{
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      line-height: 1.45;
+    }
+    .exif{
+      font-size: 11px;
+      color: var(--muted2);
+      margin-bottom: 8px;
+      line-height: 1.45;
+    }
+    .extra{
+      font-size: 11px;
+      color: var(--muted2);
+      margin-bottom: 8px;
+      line-height: 1.45;
+    }
+    .caption{
+      margin-top: 6px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--text);
+    }
+
+    @media (max-width: 560px){
+      .container{ padding: 0 14px; }
+      .grid{ grid-template-columns: 1fr; }
+      .controls{ gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>InkTime照片数据库</h1>
+    <div class="subtitle">
+      数据库：{{ db_path }}{{ md_hint | safe }} · 当前页 {{ page }} · 本页 {{ item_count }} 张 · 总计 {{ total_count }} 张（每页 {{ page_size }} 张）
+    </div>
+
+    <div class="controls">
+      <label>
+        月份：
+        <select id="monthFilter">
+          <option value="">全部</option>
+          <option value="01">1 月</option><option value="02">2 月</option><option value="03">3 月</option>
+          <option value="04">4 月</option><option value="05">5 月</option><option value="06">6 月</option>
+          <option value="07">7 月</option><option value="08">8 月</option><option value="09">9 月</option>
+          <option value="10">10 月</option><option value="11">11 月</option><option value="12">12 月</option>
+        </select>
+      </label>
+      <label>
+        日期：
+        <select id="dayFilter">
+          <option value="">全部</option>
+          {% for i in range(1, 32) %}<option value="{{ '%02d' % i }}">{{ i }} 日</option>{% endfor %}
+        </select>
+      </label>
+      <label>
+        排序：
+        <select id="sortBy">
+          <option value="memory">按回忆度</option>
+          <option value="beauty">按美观度</option>
+          <option value="time_new">按时间（新→旧）</option>
+          <option value="time_old">按时间（旧→新）</option>
+        </select>
+      </label>
+      <label>
+        包含路径：
+        <input type="text" id="pathIncInput" placeholder="关键词..." value="{{ path_inc }}">
+      </label>
+      <label>
+        排除路径：
+        <input type="text" id="pathExcInput" placeholder="关键词..." value="{{ path_exc }}">
+      </label>
+      <button type="button" id="applyPathBtn">应用</button>
+      <button type="button" id="todayBtn">今天</button>
+      <button type="button" id="randomDateBtn">随机一天</button>
+      <button type="button" id="homeBtn">回到首页</button>
+    </div>
+
+    <div class="controls pager" style="justify-content: space-between;">
+      <div>
+        <button type="button" id="prevPageBtn">上一页</button>
+        <button type="button" id="nextPageBtn">下一页</button>
+      </div>
+      <div class="subtitle" style="margin:0;">第 <span id="pageNum">{{ page }}</span> 页 / 共 <span id="pageTotal">{{ total_pages }}</span> 页</div>
+    </div>
+
+    <div class="status" id="statusLine"></div>
+
+    <div class="grid">
+            {% for it in items %}
+        <div class="item"
+             data-date="{{ it.date | safe }}"
+             data-md="{{ it.md | safe }}"
+             data-memory="{{ it.memory_attr }}"
+             data-beauty="{{ it.beauty_attr }}">
+            <div class="img-wrap">
+                <a class="img-link" href="/sim?img={{ it.sim_q }}" title="打开该照片的模拟器" onclick="window.stop();">
+                    <img src="{{ it.thumb_uri | safe }}" loading="lazy">
+                </a>
+            </div>
+            {%- if it.side %}
+            <div class="side-under">{{ it.side | safe }}</div>
+            {%- endif %}
+            <div class="meta">
+                <div class="path">{{ it.path_esc | safe }}</div>
+                {%- if it.type %}
+                <div class="type">类型: {{ it.type | safe }}</div>
+                {%- endif %}
+                {%- if it.score %}
+                <div class="score">{{ it.score | safe }}</div>
+                {%- endif %}
+                {%- if it.reason %}
+                <div class="reason">理由: {{ it.reason | safe }}</div>
+                {%- endif %}
+                {%- if it.exif %}
+                <div class="exif">{{ it.exif | safe }}</div>
+                {%- endif %}
+                <div class="extra">
+                {%- for p in it.extra %}{{ p | safe }}{%- endfor %}
+                </div>
+                <div class="caption">{{ it.caption | safe }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="controls pager" style="justify-content: space-between; margin-top: 18px;">
+      <div>
+        <button type="button" id="prevPageBtnBottom">上一页</button>
+        <button type="button" id="nextPageBtnBottom">下一页</button>
+      </div>
+      <div class="subtitle" style="margin:0;">第 <span>{{ page }}</span> 页 / 共 <span>{{ total_pages }}</span> 页</div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const monthSelect = document.getElementById('monthFilter');
+      const daySelect = document.getElementById('dayFilter');
+      const sortSelect = document.getElementById('sortBy');
+      const statusLine = document.getElementById('statusLine');
+      const randomBtn = document.getElementById('randomDateBtn');
+      const homeBtn = document.getElementById('homeBtn');
+      const todayBtn = document.getElementById('todayBtn');
+
+      const currentPage = {{ page }};
+      const totalPages = {{ total_pages }};
+      const prevBtn = document.getElementById('prevPageBtn');
+      const nextBtn = document.getElementById('nextPageBtn');
+      const prevBtnBottom = document.getElementById('prevPageBtnBottom');
+      const nextBtnBottom = document.getElementById('nextPageBtnBottom');
+
+      // 任何跳转前先中断当前页面的图片/资源加载，避免请求排队导致“点击无响应”
+      function navigateTo(urlStr) {
+        try {
+          window.stop();
+        } catch (e) {
+          // ignore
+        }
+        window.location.href = urlStr;
+      }
+
+      function getParams() {
+        const url = new URL(window.location.href);
+        const md = (url.searchParams.get('md') || '').trim();
+        const sort = (url.searchParams.get('sort') || '').trim() || 'memory';
+        const page = parseInt(url.searchParams.get('page') || '1', 10) || 1;
+        const path_inc = (url.searchParams.get('path_inc') || '').trim();
+        const path_exc = (url.searchParams.get('path_exc') || '').trim();
+        return { url, md, sort, page, path_inc, path_exc };
+      }
+
+      function setSelectsFromUrl() {
+        const p = getParams();
+        // sort
+        if (sortSelect) sortSelect.value = p.sort;
+        // path inputs
+        const pathIncInput = document.getElementById('pathIncInput');
+        const pathExcInput = document.getElementById('pathExcInput');
+        if (pathIncInput) pathIncInput.value = p.path_inc;
+        if (pathExcInput) pathExcInput.value = p.path_exc;
+
+        // md -> month/day
+        if (p.md && p.md.length === 5 && p.md.indexOf('-') === 2) {
+          const parts = p.md.split('-');
+          if (parts.length === 2) {
+            if (monthSelect) monthSelect.value = parts[0];
+            if (daySelect) daySelect.value = parts[1];
+          }
+          if (statusLine) statusLine.textContent = '当前筛选：' + p.md + '（全库）';
+        } else {
+          if (monthSelect) monthSelect.value = '';
+          if (daySelect) daySelect.value = '';
+          if (statusLine) statusLine.textContent = '';
+        }
+      }
+
+      function buildReviewUrl(md, sort, page, path_inc, path_exc) {
+        const url = new URL(window.location.href);
+        url.pathname = '/review';
+        if (md && md.length === 5 && md.indexOf('-') === 2) url.searchParams.set('md', md);
+        else url.searchParams.delete('md');
+        if (sort) url.searchParams.set('sort', sort);
+        else url.searchParams.delete('sort');
+        if (path_inc) url.searchParams.set('path_inc', path_inc);
+        else url.searchParams.delete('path_inc');
+        if (path_exc) url.searchParams.set('path_exc', path_exc);
+        else url.searchParams.delete('path_exc');
+        url.searchParams.set('page', String(page || 1));
+        return url.toString();
+      }
+
+      function goPage(p) {
+        const params = getParams();
+        navigateTo(buildReviewUrl(params.md, params.sort, p, params.path_inc, params.path_exc));
+      }
+
+      function goHome() {
+        const params = getParams();
+        navigateTo(buildReviewUrl('', params.sort || 'memory', 1, '', ''));
+      }
+
+      function goToday() {
+        // 用浏览器本地日期算 MM-DD，匹配 md 过滤（历史上所有年份的“今天”）
+        const now = new Date();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const md = mm + '-' + dd;
+        const params = getParams();
+        navigateTo(buildReviewUrl(md, params.sort || 'memory', 1, params.path_inc, params.path_exc));
+      }
+
+      async function pickRandomDate() {
+        // 从后端拿“真实存在的日期集合”，前端随机一个，然后让后端按 md 过滤
+        try {
+          // 先停止当前页面的图片加载，释放连接
+          try { window.stop(); } catch (e) {}
+          const resp = await fetch('/api/md_list');
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          const arr = Array.isArray(data) ? data : (Array.isArray(data.md_list) ? data.md_list : []);
+          if (!arr.length) {
+            if (statusLine) statusLine.textContent = '全库没有任何可用日期（exif datetime 缺失）。';
+            return;
+          }
+          const idx = Math.floor(Math.random() * arr.length);
+          const md = String(arr[idx] || '').trim();
+          const params = getParams();
+          navigateTo(buildReviewUrl(md, params.sort || 'memory', 1, params.path_inc, params.path_exc));
+        } catch (e) {
+          if (statusLine) statusLine.textContent = '随机失败：' + e;
+        }
+      }
+
+      function onMonthDayChange() {
+        const mVal = (monthSelect && monthSelect.value) ? monthSelect.value : '';
+        const dVal = (daySelect && daySelect.value) ? daySelect.value : '';
+        const sortBy = (sortSelect && sortSelect.value) ? sortSelect.value : 'memory';
+
+        if (!mVal && !dVal) {
+          const params = getParams();
+          navigateTo(buildReviewUrl('', sortBy, 1, params.path_inc, params.path_exc));
+          return;
+        }
+        if (mVal && dVal) {
+          const md = mVal + '-' + dVal;
+          const params = getParams();
+          navigateTo(buildReviewUrl(md, sortBy, 1, params.path_inc, params.path_exc));
+          return;
+        }
+        // 只选了一个，不跳转，避免生成无意义的 md
+      }
+
+      function onSortChange() {
+        const params = getParams();
+        const sortBy = (sortSelect && sortSelect.value) ? sortSelect.value : 'memory';
+        navigateTo(buildReviewUrl(params.md, sortBy, 1, params.path_inc, params.path_exc));
+      }
+
+      function onPathApply() {
+        const params = getParams();
+        const pathInc = document.getElementById('pathIncInput').value.trim();
+        const pathExc = document.getElementById('pathExcInput').value.trim();
+        navigateTo(buildReviewUrl(params.md, params.sort, 1, pathInc, pathExc));
+      }
+
+      // 分页按钮
+      if (prevBtn) {
+        prevBtn.disabled = currentPage <= 1;
+        prevBtn.addEventListener('click', () => goPage(Math.max(1, currentPage - 1)));
+      }
+      if (nextBtn) {
+        nextBtn.disabled = currentPage >= totalPages;
+        nextBtn.addEventListener('click', () => goPage(Math.min(totalPages, currentPage + 1)));
+      }
+      if (prevBtnBottom) {
+        prevBtnBottom.disabled = currentPage <= 1;
+        prevBtnBottom.addEventListener('click', () => goPage(Math.max(1, currentPage - 1)));
+      }
+      if (nextBtnBottom) {
+        nextBtnBottom.disabled = currentPage >= totalPages;
+        nextBtnBottom.addEventListener('click', () => goPage(Math.min(totalPages, currentPage + 1)));
+      }
+
+      if (monthSelect) monthSelect.addEventListener('change', onMonthDayChange);
+      if (daySelect) daySelect.addEventListener('change', onMonthDayChange);
+      if (sortSelect) sortSelect.addEventListener('change', onSortChange);
+      if (randomBtn) randomBtn.addEventListener('click', pickRandomDate);
+      if (homeBtn) homeBtn.addEventListener('click', goHome);
+      if (todayBtn) todayBtn.addEventListener('click', goToday);
+
+      const applyPathBtn = document.getElementById('applyPathBtn');
+      if (applyPathBtn) applyPathBtn.addEventListener('click', onPathApply);
+      const onEnter = (e) => { if (e.key === 'Enter') onPathApply(); };
+      if (document.getElementById('pathIncInput')) document.getElementById('pathIncInput').addEventListener('keydown', onEnter);
+      if (document.getElementById('pathExcInput')) document.getElementById('pathExcInput').addEventListener('keydown', onEnter);
+
+      // 兜底：用户在图片疯狂加载时点击任何链接/按钮，先 stop()，避免导航请求排队
+      document.addEventListener('click', function (ev) {
+        const t = ev.target;
+        if (!t) return;
+        const a = t.closest ? t.closest('a') : null;
+        const btn = t.closest ? t.closest('button') : null;
+        // 只要是链接或按钮点击，就先中断当前加载
+        if (a || btn) {
+          try { window.stop(); } catch (e) {}
+        }
+      }, true);
+
+      setSelectsFromUrl();
+    });
+  </script>
+</body>
+</html>
