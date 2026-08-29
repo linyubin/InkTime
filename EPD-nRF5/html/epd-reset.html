@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EPD-nRF5 BLE Reset</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; 
+         display: flex; flex-direction: column; align-items: center; padding: 20px; min-height: 100vh; }
+  h1 { color: #e94560; margin-bottom: 8px; font-size: 1.4em; }
+  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9em; }
+  .card { background: #16213e; border-radius: 12px; padding: 20px; width: 100%; max-width: 400px; margin-bottom: 16px; }
+  .card h2 { color: #0f3460; font-size: 1em; margin-bottom: 12px; color: #53a8b6; }
+  button { background: #e94560; color: white; border: none; border-radius: 8px; padding: 14px 28px;
+           font-size: 1em; cursor: pointer; width: 100%; margin-top: 8px; transition: opacity 0.2s; }
+  button:hover { opacity: 0.85; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  #log { background: #0a0a23; border-radius: 8px; padding: 12px; width: 100%; max-width: 400px;
+         font-family: monospace; font-size: 0.8em; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+  .ok { color: #4ecca3; } .err { color: #e94560; } .info { color: #53a8b6; }
+</style>
+</head>
+<body>
+<h1>🔄 EPD-nRF5 BLE Reset</h1>
+<p class="subtitle">手机浏览器重置墨水屏 BLE 状态</p>
+
+<div class="card">
+  <h2>操作</h2>
+  <button id="btnReset" onclick="doReset()">重置 BLE 连接</button>
+  <button id="btnDisconnect" onclick="doDisconnect()" style="margin-top:8px; background:#0f3460;">断开连接</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+const SERVICE_UUID = '62750001-d828-918d-fb46-b6c11c675aec';
+const CHAR_UUID    = '62750002-d828-918d-fb46-b6c11c675aec';
+let device = null;
+let server = null;
+
+const logEl = document.getElementById('log');
+function log(msg, cls='info') {
+  const t = new Date().toLocaleTimeString();
+  logEl.innerHTML += `<span class="${cls}">[${t}] ${msg}</span>\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function doReset() {
+  const btn = document.getElementById('btnReset');
+  btn.disabled = true;
+  try {
+    log('🔍 扫描 EPD-nRF5 设备...');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }],
+      optionalServices: [SERVICE_UUID]
+    });
+    log(`✅ 找到设备: ${device.name || device.id}`, 'ok');
+    
+    device.addEventListener('gattserverdisconnected', () => {
+      log('📱 设备已断开', 'info');
+    });
+
+    log('🔗 连接 GATT 服务器...');
+    server = await device.gatt.connect();
+    log('✅ 已连接！BLE 状态已重置', 'ok');
+
+    log('📋 获取服务和特征...');
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    const chars = await service.getCharacteristics();
+    log(`   发现 ${chars.length} 个特征`, 'ok');
+    
+    log('🎉 重置完成！Pi 现在应该可以推送了', 'ok');
+    log('   保持连接 3 秒后可安全断开...', 'info');
+    await new Promise(r => setTimeout(r, 3000));
+    
+  } catch (e) {
+    log(`❌ 错误: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function doDisconnect() {
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+    log('🔌 已主动断开', 'ok');
+  } else {
+    log('没有活跃连接', 'info');
+  }
+}
+</script>
+</body>
+</html>

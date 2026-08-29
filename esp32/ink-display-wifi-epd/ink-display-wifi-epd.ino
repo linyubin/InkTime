@@ -158,7 +158,6 @@ static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrienta
 static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
                                        unsigned char* BlackImage, String* logBuf);
 static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, const String &orientation);
-static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_t *outLen, String* logBuf);
 static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibName,
                                         const String &orientation,
                                         unsigned char* BlackImage, String* logBuf);
@@ -1422,18 +1421,25 @@ bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
 }
 
 // ============================================================
-//  时间同步（NTP 优先，失败回退服务器授时）
+//  时间同步（局域网服务器授时优先，失败回退公网 NTP）
 //
-//  公网 NTP（pool.ntp.org 等）易因路由器/运营商抖动失败；
-//  失败后回退从本 server 的 /time 接口拉 epoch（局域网授时，更可靠）。
-//  两层都失败才返回 false（调用方会重试一次，仍失败则 hasTime=false）。
+//  设备本来就要连本 server 拉照片，/time 授时（局域网）比公网 NTP
+//  （pool.ntp.org 等，易因路由器/运营商抖动失败）更快更可靠，
+//  因此先走 fetchServerTime；NTP 作为回退，重试从 30 次收紧到 5 次
+//  （原 30 次 × 500ms 最多白等 15s）。
+//  两层都失败才返回 false（调用方 setup() 的二次重试只调 fetchServerTime）。
 // ============================================================
 bool syncTime(const Config &cfg, struct tm &outLocal) {
-  DBG_PRINTLN("[TIME] NTP 同步...");
+  // 局域网服务器授时优先
+  if (fetchServerTime(cfg, outLocal)) {
+    return true;
+  }
+
+  DBG_PRINTLN("[TIME] 服务器授时失败，尝试公网 NTP 同步...");
   long offsetSec = (long)cfg.tz_offset_hours * 3600;
   configTime(offsetSec, 0, "pool.ntp.org", "time.nist.gov", "ntp.aliyun.com");
 
-  for (int i = 0; i < 30; ++i) {
+  for (int i = 0; i < 5; ++i) {
     if (getLocalTime(&outLocal)) {
       char buf[64];
       strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &outLocal);
@@ -1446,13 +1452,13 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
     delay(500);
   }
 
-  DBG_PRINTLN("[TIME] NTP 同步失败，尝试服务器授时...");
-  // 回退：从局域网 server 拉取准确时间
+  DBG_PRINTLN("[TIME] NTP 同步失败，再试一次服务器授时...");
+  // NTP 也失败 → 最后再给局域网授时一次机会（链路可能刚恢复）
   if (fetchServerTime(cfg, outLocal)) {
     return true;  // 服务器授时成功
   }
 
-  DBG_PRINTLN("[TIME] NTP 与服务器授时均失败");
+  DBG_PRINTLN("[TIME] 服务器授时与 NTP 均失败");
   return false;
 }
 
@@ -1490,14 +1496,19 @@ static String buildPhotoUrl(const Config &cfg, const String &suffix) {
 // DAILY_PHOTO_PATH_PREFIX = "/static/inktime/andyhome0203/photo_"
 // 授时接口              = "/static/inktime/andyhome0203/time"
 // 去掉末尾 "photo_"（6 字符）拼上 "time" 即可。
+// 前缀剥离逻辑抽成 pathPrefixBase()，与 calib 卡 URL 共用（原先重复 3 处）。
+static String pathPrefixBase() {
+  String prefix = String(DAILY_PHOTO_PATH_PREFIX);
+  prefix.remove(prefix.length() - 6);  // 去掉末尾 "photo_"
+  return prefix;
+}
+
 static String buildServerTimeUrl(const Config &cfg) {
   String hp = cfg.backend_hostport;
   hp.trim();
   String base = hp.startsWith("http://") || hp.startsWith("https://")
                 ? hp : ("http://" + hp);
-  String prefix = String(DAILY_PHOTO_PATH_PREFIX);
-  prefix.remove(prefix.length() - 6);  // 去掉末尾 "photo_"
-  return base + prefix + String("time");
+  return base + pathPrefixBase() + String("time");
 }
 
 // 从服务器 /time 接口拉取 Unix epoch，用 settimeofday() 设系统时钟。
@@ -1607,7 +1618,21 @@ static uint16_t computePaintRotate(const Config &cfg, const String &orientation)
 //  把字节流（HTTP stream 或内存 buffer）按朝向写入 Paint framebuffer
 //    orientation="portrait"  → 逻辑画布 480×800（currentX∈[0,480)）
 //    orientation="landscape" → 逻辑画布 800×480（currentX∈[0,800)）
-//  字节数都是 384000，颜色编码 0/1/2/3 不变
+//  字节数都是 384000，颜色编码 0/1/2/3 不变（1 字节/像素）
+//
+//  写入路径分两级（输出 framebuffer 逐字节一致）：
+//    1. 逐像素查表路径：256 项 LUT 替代原 4 路 switch，再 Paint_SetPixel。
+//       对任意 rotate 都正确，是保守回退路径。
+//    2. 直写快速路径：仅当 paintRotate==ROTATE_0（逻辑坐标==物理坐标）时，
+//       连续 4 个输入字节（同一 4 像素组）直接合成一个 framebuffer 字节写入。
+//       等价性依据：
+//         - ROTATE_0 下 Paint_SetPixel(x,y,c) 等于对 BlackImage[x/4 + y*200]
+//           的 bit[6-2*(x%4)] 起写 2bit 色值（4 像素/字节、行内从高到低打包）。
+//           该打包约定与 ap_bg.h 的解码（bit_shift=6-(x%4)*2）及 PIC_display
+//           的消费顺序（每字节先取 bit7:6）一致，已在真机验证。
+//         - 色值仍取与原 switch 相同的常量（经 LUT），不做任何重映射。
+//         - fbW=800 为 4 的倍数 → 绝对像素序号 p%4 == x%4，4 像素组不跨行。
+//       rotate 非零（竖屏 ROTATE_90/ROTATE_270、横屏翻转 ROTATE_180）时不启用。
 //
 //  返回码（供上层决定是否重试）：
 //    0 = 成功
@@ -1619,15 +1644,47 @@ static uint16_t computePaintRotate(const Config &cfg, const String &orientation)
 //    expectedLen  服务端声明的 Content-Length（权威）；<=0 或超过画布尺寸则退回 fbW*fbH
 //    stallMs      stream 模式下，available() 持续为空超过该值且未读够，判定链路中断
 //    overallMs    stream 模式整体超时兜底
+//    paintRotate  调用方传给 Paint_NewImage 的旋转值（决定是否启用直写路径）
+//    BlackImage   framebuffer 指针（直写路径需要；与 Paint_SelectImage 绑定的是同一块）
 // ============================================================
+// 256 项查表：.bin 字节值 → Paint 颜色常量。
+// 与原逐像素 switch 完全同语义：0→BLACK0, 1→WHITE0, 2→RED0, 3→YELLOW0，
+// 其余（>3）→WHITE0（原 switch default 分支）。惰性初始化一次。
+static const uint8_t* binColorLUT() {
+  static uint8_t lut[256];
+  static bool inited = false;
+  if (!inited) {
+    for (int i = 0; i < 256; ++i) lut[i] = WHITE0;
+    lut[0] = BLACK0; lut[1] = WHITE0; lut[2] = RED0; lut[3] = YELLOW0;
+    inited = true;
+  }
+  return lut;
+}
+
+// 逐像素路径：查表 + Paint_SetPixel + 游标推进（与旧实现逐字节等价）
+static inline void paintPixelFromBin(const uint8_t *lut, uint8_t binVal,
+                                     int &curX, int &curY, int fbW) {
+  Paint_SetPixel(curX, curY, lut[binVal]);
+  if (++curX >= fbW) { curX = 0; ++curY; }
+}
+
 static int streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t memLen,
                                const String &orientation, size_t expectedLen,
-                               uint32_t stallMs, uint32_t overallMs, String* logBuf) {
+                               uint32_t stallMs, uint32_t overallMs,
+                               uint16_t paintRotate, unsigned char* BlackImage,
+                               String* logBuf) {
   int fbW = (orientation == "landscape") ? FB_HEIGHT : FB_WIDTH;   // 横屏逻辑宽=800, 竖屏=480
   int fbH = (orientation == "landscape") ? FB_WIDTH  : FB_HEIGHT;  // 横屏逻辑高=480, 竖屏=800
   size_t targetBytes = (size_t)fbW * fbH;   // 384000
   // 以服务端 Content-Length 为准；未声明或异常则退回画布尺寸
   size_t want = (expectedLen > 0 && expectedLen <= targetBytes) ? expectedLen : targetBytes;
+
+  const uint8_t *lut = binColorLUT();
+
+  // 直写快速路径启用条件（保守，见函数头注释）
+  const int fbRowBytes = EPD_WIDTH / 4;   // framebuffer 每物理行字节数 = 200
+  bool directWrite = (paintRotate == ROTATE_0) && (fbW == EPD_WIDTH) &&
+                     (fbW % 4 == 0) && (BlackImage != nullptr);
 
   size_t totalRecv = 0;
   uint32_t start = millis();
@@ -1651,18 +1708,25 @@ static int streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t
         if (toRead > want - totalRecv) toRead = want - totalRecv;
         int r = stream->read(buf, toRead);
         if (r > 0) {
-          for (int i = 0; i < r; ++i) {
-            uint8_t colorVal;
-            switch (buf[i]) {
-              case 0:  colorVal = BLACK0;  break;
-              case 1:  colorVal = WHITE0;  break;
-              case 2:  colorVal = RED0;    break;
-              case 3:  colorVal = YELLOW0; break;
-              default: colorVal = WHITE0;  break;
+          size_t i = 0;
+          if (directWrite) {
+            // 头部：补齐到 4 像素组边界（x%4==0），保证组不跨行
+            while (i < (size_t)r && ((totalRecv + i) & 3) != 0) {
+              paintPixelFromBin(lut, buf[i++], curX, curY, fbW);
             }
-            Paint_SetPixel(curX, curY, colorVal);
-            curX++;
-            if (curX >= fbW) { curX = 0; curY++; }
+            // 4 像素一组直写：不越过本次读到的数据和 want（尾部不足一组走逐像素）
+            while (i + 4 <= (size_t)r && totalRecv + i + 4 <= want) {
+              size_t addr = (size_t)curX / 4 + (size_t)curY * fbRowBytes;
+              BlackImage[addr] = (uint8_t)((lut[buf[i]] << 6) | (lut[buf[i + 1]] << 4) |
+                                           (lut[buf[i + 2]] << 2) | lut[buf[i + 3]]);
+              curX += 4;
+              if (curX >= fbW) { curX = 0; ++curY; }
+              i += 4;
+            }
+          }
+          // 尾部（未对齐 / 不足一组 / 非直写模式）逐像素
+          while (i < (size_t)r) {
+            paintPixelFromBin(lut, buf[i++], curX, curY, fbW);
           }
           totalRecv += r;
           lastRecv = now;
@@ -1682,20 +1746,24 @@ static int streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t
   // 内存 buffer 模式（标定卡：forcedCalibBin）
   if (memBuf && memLen > 0) {
     size_t cap = (memLen < want) ? memLen : want;
-    for (size_t i = 0; i < cap; ++i) {
-      uint8_t colorVal;
-      switch (memBuf[i]) {
-        case 0:  colorVal = BLACK0;  break;
-        case 1:  colorVal = WHITE0;  break;
-        case 2:  colorVal = RED0;    break;
-        case 3:  colorVal = YELLOW0; break;
-        default: colorVal = WHITE0;  break;
+    size_t i = 0;
+    if (directWrite) {
+      while (i < cap && (i & 3) != 0) {
+        paintPixelFromBin(lut, memBuf[i++], curX, curY, fbW);
       }
-      Paint_SetPixel(curX, curY, colorVal);
-      curX++;
-      if (curX >= fbW) { curX = 0; curY++; }
-      totalRecv++;
+      while (i + 4 <= cap) {
+        size_t addr = (size_t)curX / 4 + (size_t)curY * fbRowBytes;
+        BlackImage[addr] = (uint8_t)((lut[memBuf[i]] << 6) | (lut[memBuf[i + 1]] << 4) |
+                                     (lut[memBuf[i + 2]] << 2) | lut[memBuf[i + 3]]);
+        curX += 4;
+        if (curX >= fbW) { curX = 0; ++curY; }
+        i += 4;
+      }
     }
+    while (i < cap) {
+      paintPixelFromBin(lut, memBuf[i++], curX, curY, fbW);
+    }
+    totalRecv = cap;
     if (totalRecv != want) {
       pushLog(logBuf, String("[拉取] 标定卡长度不足 ") + (int)totalRecv + "/" + (int)want);
       return 3;
@@ -1709,26 +1777,30 @@ static int streamToPaintHelper(WiFiClient *stream, const uint8_t *memBuf, size_t
 }
 
 // ============================================================
-//  fetch photo_N.bin 到 Paint framebuffer
-//    成功返回 true。Paint 已绑定到 BlackImage，调用方负责后续刷屏。
+//  公共重试循环：HTTP GET → streamToPaintHelper 写 framebuffer
+//
+//  fetchPhotoBinToFramebuffer 与 fetchCalibCardToFramebuffer 的外层重试
+//  逻辑逐字相同（仅 URL、日志前缀、HTTP 超时不同），抽成公共函数避免漂移。
+//  每次重试重建连接、清空 framebuffer 重写；最多 MAX_RETRY 次。
+//
+//    tag         日志前缀（"[拉取] " / "[标定] "）
+//    attemptCtx  首行日志的附加上下文（如 "idx=0 "，可为空串）
+//  返回 true=成功。
 // ============================================================
-static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
-                                       unsigned char* /*BlackImage*/, String* logBuf) {
-  String url = buildPhotoUrl(cfg, String(idx) + ".bin");
-  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
-
-  // WiFi 偶发抖断会导致 384KB 流式读取中途断开（少几百字节）。
-  // 每次重试重建连接、清空 framebuffer 重写；最多 MAX_RETRY 次。
+static bool fetchBinStreamWithRetry(const String &url, const char *tag, const String &attemptCtx,
+                                    uint32_t httpTimeoutMs, const String &orientation,
+                                    uint16_t paintRotate, unsigned char* BlackImage,
+                                    String* logBuf) {
   const int MAX_RETRY = 3;
   for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-    pushLog(logBuf, String("[拉取] idx=") + idx + " 尝试 " + attempt + "/" + MAX_RETRY + " | GET " + url);
+    pushLog(logBuf, String(tag) + attemptCtx + "尝试 " + attempt + "/" + MAX_RETRY + " | GET " + url);
 
     HTTPClient http;
     http.begin(url);
-    http.setTimeout(30000);
+    http.setTimeout(httpTimeoutMs);
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-      pushLog(logBuf, String("[拉取] HTTP 失败 code=") + code);
+      pushLog(logBuf, String(tag) + "HTTP 失败 code=" + code);
       http.end();
       if (attempt < MAX_RETRY) { delay(500); continue; }
       return false;
@@ -1737,20 +1809,37 @@ static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String 
     size_t contentLen = (size_t)http.getSize();   // Content-Length（0 表示服务端未声明）
     WiFiClient *stream = http.getStreamPtr();
     int rc = streamToPaintHelper(stream, nullptr, 0, orientation, contentLen,
-                                 5000 /*stallMs*/, 60000 /*overallMs*/, logBuf);
+                                 5000 /*stallMs*/, 60000 /*overallMs*/,
+                                 paintRotate, BlackImage, logBuf);
     http.end();
 
     if (rc == 0) return true;
     // rc==1 链路中断、rc==2 整体超时 → 均可重建连接重试
     if (attempt < MAX_RETRY) {
-      pushLog(logBuf, String("[拉取] 等待 500ms 后重试…"));
+      pushLog(logBuf, String(tag) + "等待 500ms 后重试…");
       delay(500);
       continue;
     }
-    pushLog(logBuf, String("[拉取] 已达最大重试次数，放弃"));
+    pushLog(logBuf, String(tag) + "已达最大重试次数，放弃");
     return false;
   }
   return false;
+}
+
+// ============================================================
+//  fetch photo_N.bin 到 Paint framebuffer
+//    成功返回 true。Paint 已绑定到 BlackImage，调用方负责后续刷屏。
+// ============================================================
+static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
+                                       unsigned char* BlackImage, String* logBuf) {
+  String url = buildPhotoUrl(cfg, String(idx) + ".bin");
+  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+
+  // WiFi 偶发抖断会导致 384KB 流式读取中途断开（少几百字节），
+  // 重试细节见 fetchBinStreamWithRetry（每次重建连接、清空 framebuffer 重写）。
+  return fetchBinStreamWithRetry(url, "[拉取] ", "idx=" + String(idx) + " ",
+                                 30000 /*httpTimeoutMs*/, orientation,
+                                 computePaintRotate(cfg, orientation), BlackImage, logBuf);
 }
 
 // ============================================================
@@ -1841,7 +1930,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
     // 标定卡字节数：竖屏 480*800=384000，横屏 800*480=384000（一致）
     // 内存模式：expectedLen=384000，stall/overall 对内存模式无意义，传 0
     int rc = streamToPaintHelper(nullptr, (const uint8_t*)forcedCalibBin, 384000, ori,
-                                 384000, 0, 0, logBuf);
+                                 384000, 0, 0, paintRotate, BlackImage, logBuf);
     if (rc != 0) {
       heap_caps_free(BlackImage);
       return false;
@@ -1903,12 +1992,13 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
 //    BlackImage = 调用方已分配的 EPD framebuffer（EPD_WIDTH*EPD_HEIGHT/4 字节）
 //
 //  与照片 .bin 完全同构：384000 字节、1byte/像素、颜色编码 0/1/2/3。
-//  因此复用 fetchPhotoBinToFramebuffer 的全套健壮读取逻辑：
+//  因此复用照片下载的全套健壮读取逻辑：
 //    HTTPClient + streamToPaintHelper 流模式（含 stall/整体超时、重试），
-//    直接把 HTTP 流逐字节写进 96KB framebuffer。
+//    重试循环抽在公共的 fetchBinStreamWithRetry 中，
+//    直接把 HTTP 流写进 96KB framebuffer。
 //
-//  不再经过 384KB 中转 buffer（旧 fetchCalibCard 的方式），后者在
-//  ESP32-L 无 PSRAM 的设备上 heap_caps_malloc(384000) 必然失败。
+//  不经过 384KB 中转 buffer——那在 ESP32-L 无 PSRAM 的设备上
+//  heap_caps_malloc(384000) 必然失败。
 //
 //  返回 true=成功（已写入 framebuffer，调用方负责刷屏）；false=失败。
 // ============================================================
@@ -1916,8 +2006,7 @@ static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibNa
                                         const String &orientation,
                                         unsigned char* BlackImage, String* logBuf) {
   // URL 构造：DAILY_PHOTO_PATH_PREFIX 去掉末尾 "photo_" 得到 calib 基路径
-  String base = String(DAILY_PHOTO_PATH_PREFIX);
-  base.remove(base.length() - String("photo_").length());   // → "/static/inktime/<key>/"
+  String base = pathPrefixBase();   // → "/static/inktime/<key>/"
   String hp = cfg.backend_hostport;
   hp.trim();
   String url = (hp.startsWith("http") ? hp : ("http://" + hp)) + base + calibName;
@@ -1932,117 +2021,9 @@ static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibNa
   Paint_SelectImage(BlackImage);
   Paint_Clear(WHITE0);
 
-  const int MAX_RETRY = 3;
-  for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-    pushLog(logBuf, String("[标定] 尝试 ") + attempt + "/" + MAX_RETRY + " | GET " + url);
-
-    HTTPClient http;
-    http.begin(url);
-    http.setTimeout(15000);
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-      pushLog(logBuf, String("[标定] HTTP 失败 code=") + code);
-      http.end();
-      if (attempt < MAX_RETRY) { delay(500); continue; }
-      return false;
-    }
-
-    size_t contentLen = (size_t)http.getSize();
-    WiFiClient *stream = http.getStreamPtr();
-    int rc = streamToPaintHelper(stream, nullptr, 0, orientation, contentLen,
-                                 5000 /*stallMs*/, 60000 /*overallMs*/, logBuf);
-    http.end();
-
-    if (rc == 0) return true;
-    if (attempt < MAX_RETRY) {
-      pushLog(logBuf, String("[标定] 等待 500ms 后重试…"));
-      delay(500);
-      continue;
-    }
-    pushLog(logBuf, String("[标定] 已达最大重试次数，放弃"));
-    return false;
-  }
-  return false;
-}
-
-// ============================================================
-//  fetch 标定卡到内存 buffer（标定台用，需 PSRAM；ESP32-L 标定页不调用此函数）
-//    calibName = "calib_p.bin" 或 "calib_l.bin"
-//    成功返回 malloc 的 buffer（调用方负责 free），*outLen 写入长度
-//    失败返回 nullptr
-// ============================================================
-static uint8_t* fetchCalibCard(const Config &cfg, const String &calibName, size_t *outLen, String* logBuf) {
-  // 标定卡 URL 路径与 .bin 同目录但前缀不含 "photo_"：
-  //   /static/inktime/<key>/calib_p.bin  / calib_l.bin
-  // DAILY_PHOTO_PATH_PREFIX = "/static/inktime/<key>/photo_"，去掉末尾 "photo_" 即得 calib 基路径
-  String base = String(DAILY_PHOTO_PATH_PREFIX);
-  base.remove(base.length() - String("photo_").length());   // → "/static/inktime/<key>/"
-  String hp = cfg.backend_hostport;
-  hp.trim();
-  String url = (hp.startsWith("http") ? hp : ("http://" + hp)) + base + calibName;
-
-  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
-  pushLog(logBuf, String("[标定] GET ") + url);
-
-  HTTPClient http;
-  http.begin(url);
-  http.setTimeout(15000);
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    pushLog(logBuf, String("[标定] HTTP 失败 code=") + code);
-    http.end();
-    return nullptr;
-  }
-
-  // 流式读取到 malloc buffer，绝不经过 Arduino String。
-  // 原因：标定卡是 384000 字节纯二进制（每字节 0/1/2/3 颜色索引，含大量 0x00），
-  // http.getString() 返回的 String 对大二进制不可靠（易返回空或被 0x00 截断），
-  // 表现为 [标定] 空响应。改用 Content-Length 预分配 + WiFiClient 流式读取，
-  // 与照片 .bin 的下载路径保持一致。
-  size_t expected = (size_t)http.getSize();   // Content-Length（0 表示未声明）
-  if (expected == 0) expected = (size_t)FB_WIDTH * FB_HEIGHT;  // 384000
-  uint8_t *buf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_8BIT);
-  if (!buf) {
-    pushLog(logBuf, String("[标定] 内存分配失败 ") + (int)expected);
-    http.end();
-    return nullptr;
-  }
-
-  WiFiClient *stream = http.getStreamPtr();
-  size_t total = 0;
-  uint32_t startMs = millis();
-  const uint32_t STALL_MS = 5000, OVERALL_MS = 30000;
-  uint32_t lastRecv = millis();
-  while (total < expected) {
-    uint32_t now = millis();
-    if (now - startMs > OVERALL_MS) {
-      pushLog(logBuf, String("[标定] 整体超时，已收 ") + (int)total + "/" + (int)expected);
-      heap_caps_free(buf);
-      http.end();
-      return nullptr;
-    }
-    size_t avail = stream->available();
-    if (avail) {
-      size_t toRead = avail;
-      if (toRead > expected - total) toRead = expected - total;
-      int r = stream->read(buf + total, toRead);
-      if (r > 0) { total += r; lastRecv = now; }
-    } else {
-      if (now - lastRecv > STALL_MS) {
-        pushLog(logBuf, String("[标定] 链路中断，已收 ") + (int)total + "/" + (int)expected);
-        heap_caps_free(buf);
-        http.end();
-        return nullptr;
-      }
-      delay(1);
-    }
-  }
-  http.end();
-
-  if (total == 0) { pushLog(logBuf, "[标定] 空响应"); heap_caps_free(buf); return nullptr; }
-  *outLen = total;
-  pushLog(logBuf, String("[标定] 收到 ") + (int)total + " bytes");
-  return buf;
+  return fetchBinStreamWithRetry(url, "[标定] ", "",
+                                 15000 /*httpTimeoutMs*/, orientation,
+                                 paintRotate, BlackImage, logBuf);
 }
 
 // ============================================================
@@ -2095,12 +2076,21 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
   Paint_Clear(WHITE0);
 
   // 1. 绘制附件图片作为背景
+  //    ap_bg_data 本就是 2bpp 打包格式（480×800 逻辑画布，每字节 4 像素、
+  //    行内从高到低排列，即 bit_shift=6-(x%4)*2，与原逐像素解码一致）。
+  //    注意：本屏 rotate 为 ROTATE_90/ROTATE_270（竖屏），逻辑行映射为物理列，
+  //    不能按行 memcpy 直写 framebuffer（会把背景整体旋转 90°），仍逐像素
+  //    Paint_SetPixel；仅把每像素的 byte_idx 乘加/移位计算降为每字节一次，
+  //    写入序列（坐标与颜色值）与原实现完全一致。
   for (int y = 0; y < FB_HEIGHT; ++y) {
-    for (int x = 0; x < FB_WIDTH; ++x) {
-      int byte_idx = (x / 4) + y * (FB_WIDTH / 4);
-      int bit_shift = 6 - (x % 4) * 2;
-      uint8_t colorVal = (ap_bg_data[byte_idx] >> bit_shift) & 0x03;
-      Paint_SetPixel(x, y, colorVal);
+    const uint8_t* row = &ap_bg_data[(size_t)y * (FB_WIDTH / 4)];
+    for (int gx = 0; gx < FB_WIDTH / 4; ++gx) {
+      uint8_t packed = row[gx];
+      int x = gx * 4;
+      Paint_SetPixel(x + 0, y, (packed >> 6) & 0x03);
+      Paint_SetPixel(x + 1, y, (packed >> 4) & 0x03);
+      Paint_SetPixel(x + 2, y, (packed >> 2) & 0x03);
+      Paint_SetPixel(x + 3, y, packed & 0x03);
     }
   }
 
@@ -2253,9 +2243,17 @@ void setup() {
     // startConfigPortal() 不返回
   }
 
-  // 8. 连接 WiFi
+  // 8. 连接 WiFi（最多 3 次尝试，线性退避；全失败才进 AP 配网门户）
   DBG_PRINTLN("[BOOT] 尝试连接 WiFi...");
-  if (!connectWiFi(g_cfg)) {
+  bool wifiOk = false;
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    if (connectWiFi(g_cfg)) { wifiOk = true; break; }
+    if (attempt < 3) {
+      DBG_PRINTF("[BOOT] WiFi 第 %d 次尝试失败，退避 %ds 后重试...\n", attempt, attempt);
+      delay(1000 * attempt);   // 退避 1s / 2s，等路由器/ DHCP 恢复
+    }
+  }
+  if (!wifiOk) {
     DBG_PRINTLN("[BOOT] WiFi 连接失败 → AP 配网模式");
     showNetworkInfoScreen(true, false);
     startConfigPortal();
@@ -2313,9 +2311,9 @@ void setup() {
 
   // 11. 计算下次唤醒时间，进入 Deep Sleep
   if (!hasTime) {
-    // 重试一次 NTP 同步
+    // 二次重试：只再调局域网服务器授时（不再全量重跑 syncTime 的 NTP 流程）
     struct tm tmp;
-    if (syncTime(g_cfg, tmp)) {
+    if (fetchServerTime(g_cfg, tmp)) {
       sleepUntilNextSchedule(g_cfg, true, tmp);
     } else {
       sleepUntilNextSchedule(g_cfg, false, timeinfo);
