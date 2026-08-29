@@ -41,4 +41,4 @@ old/
 scripts/sync_db_to_pi.py
 /ref
 *.pdf
-/.zcode/
+/.zcode//.cache/

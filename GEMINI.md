@@ -64,5 +64,5 @@ pip install -r requirements.txt
 ## 关键目录说明
 - `esp32/pcb/`: 包含硬件原理图、BOM 和 PCB 制板文件 (Gerber)。
 - `data/`: 存放离线地理位置索引 `world_cities_zh.csv`。
-- `scripts/`: 包含自动化运行脚本，如 `daily_render.sh`。
+- `scripts/`: 包含自动化运行脚本，如 `inktime_daily.sh`。
 - `output/`: 存放生成的墨水屏 `.bin` 渲染文件。

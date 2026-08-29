@@ -25,7 +25,7 @@ echo "[InkTime] 注册墨水屏每日更新任务 (Cron): ${SCHEDULE}"
 
 # 将指令写入标准 crontab 中，且输出打印到 /config 以便长期除错
 # 通过行内参数赋予 Docker 全局的容器运行上下文
-echo "${SCHEDULE} cd /app && PROJECT_DIR=/app PYTHON_BIN=python LOG_DIR=/config/logs bash scripts/daily_render.sh >> /config/logs/cron_render.log 2>&1" > /etc/cron.d/inktime-cron
+echo "${SCHEDULE} cd /app && PROJECT_DIR=/app PYTHON_BIN=python LOG_DIR=/config/logs bash scripts/inktime_daily.sh >> /config/logs/cron_render.log 2>&1" > /etc/cron.d/inktime-cron
 chmod 0644 /etc/cron.d/inktime-cron
 crontab /etc/cron.d/inktime-cron
 

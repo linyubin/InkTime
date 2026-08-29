@@ -189,9 +189,9 @@ sudo systemctl start inktime-server
 使用 crontab 每天凌晨自动选片、渲染：
 
 ```
-chmod +x scripts/daily_render.sh
+chmod +x scripts/inktime_daily.sh
 sudo -u inktime crontab -e
-0 5 * * * /path/to/InkTime/scripts/daily_render.sh
+50 4 * * * /path/to/InkTime/scripts/inktime_daily.sh
 ```
 
 在 ```logs/render.log```可查看日志。

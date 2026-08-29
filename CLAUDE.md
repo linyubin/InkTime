@@ -13,11 +13,11 @@ The project consists of three main components:
    - Renders selected photos for e-paper displays
    - Provides web UI for photo review and ESP32 download server
 
-2. **ESP32 Firmware** (`esp32/ink-display-wifi-epd/`, `esp32/ink-display-7C-photo/`, `esp32/ink-display-133C-photo/`):
+2. **ESP32 Firmware** (`esp32/ink-display-wifi-epd/` is the active version; older `ink-display-7C-photo/` / `ink-display-133C-photo/` variants live under `esp32/archive/`; `esp32/servo_serial_cmd/` is a standalone servo test project):
    - WiFi-connected e-paper display devices that pull rendered images from the server
    - AP-mode captive portal for WiFi / server / timezone / refresh-time config (stored in NVS)
    - Deep sleep with daily scheduled wake for battery efficiency
-   - `ink-display-wifi-epd/` is the current/active version; `7C-photo` and `133C-photo` are older variants
+   - `ink-display-wifi-epd/` is the current/active version; `7C-photo` and `133C-photo` are archived older variants under `esp32/archive/`
 
 3. **EPD-nRF5 Integration** (`EPD-nRF5/`, `push_to_epd_ble.py`):
    - Nordic nRF5-based e-paper displays with BLE connectivity
@@ -67,13 +67,13 @@ Two driver families exist — they target different boards and use different dis
 - **Features beyond the older variants**: draws AP/connection status directly on the e-ink screen; on a manual reset (non-timer wake) it shows network info (SSID/IP/MAC) and keeps the web config server open on the device's LAN IP for ~3 min so settings can be tweaked without re-entering AP mode.
 - **Factory reset**: hold GPIO0 (BOOT) at boot → clears NVS and re-enters AP provisioning.
 
-**`ink-display-7C-photo/` & `ink-display-133C-photo/`** (older variants):
+**`esp32/archive/ink-display-7C-photo/` & `esp32/archive/ink-display-133C-photo/`** (archived older variants):
 - **Board**: ESP32-S3 Dev Module (PSRAM required; Tools > PSRAM: OPI PSRAM)
 - **Display driver**: GxEPD2 (`GxEPD2_7C` / `GxEPD2_730c_GDEY073D46`)
 - **Factory reset**: hold GPIO38 at boot.
 - **Firmware paths**:
-  - 7.3" display: `esp32/ink-display-7C-photo/ink-display-7C-photo.ino`
-  - 1.33" display: `esp32/ink-display-133C-photo/ink-display-133C-photo.ino`
+  - 7.3" display: `esp32/archive/ink-display-7C-photo/ink-display-7C-photo.ino`
+  - 13.3" display: `esp32/archive/ink-display-133C-photo/ink-display-133C-photo.ino`
 
 ### EPD-nRF5 Firmware
 
@@ -179,9 +179,10 @@ cp config-example.py config.py
 - `scripts/inktime_daily.sh` - 每日编排：render → 按 `ENABLE_BLE_PUSH`/`ENABLE_ESP32_SERVE` 跑 BLE 推送 / 起临时 server 供 ESP32 拉取（检测到拉取或超时后关闭）
 - `docker/` - Container deployment files
 - `esp32/` - ESP32 firmware projects
-  - `ink-display-wifi-epd/` - Current 7.3" WiFi EPD firmware (ESP32-L, bundled EPD driver, on-screen status + manual-wake LAN config)
-  - `ink-display-7C-photo/` - Older 7.3" display firmware (ESP32-S3, GxEPD2)
-  - `ink-display-133C-photo/` - 1.33" display firmware (ESP32-S3, GxEPD2)
+  - `ink-display-wifi-epd/` - Current/active 7.3" WiFi EPD firmware (ESP32-L, bundled EPD driver, on-screen status + manual-wake LAN config)
+  - `archive/ink-display-7C-photo/` - Archived older 7.3" display firmware (ESP32-S3, GxEPD2)
+  - `archive/ink-display-133C-photo/` - Archived older 13.3" display firmware (ESP32-S3, GxEPD2)
+  - `servo_serial_cmd/` - Standalone serial servo test/calibration project
   - `pcb/` - Hardware design files
 - `EPD-nRF5/` - Nordic nRF5-based display with Web Bluetooth control
 
@@ -190,7 +191,7 @@ cp config-example.py config.py
 - All prompt templates for VLM are in `analyze_photos.py` functions
 - Exif/GPS extraction falls back to filename date parsing if EXIF unavailable
 - BLE push requires Linux/Unix with BlueZ stack (or Windows with bleak)
-- ESP32 display drivers differ by firmware: `ink-display-wifi-epd/` uses the bundled `EPD.h` low-level driver (ESP32epdx-style Paint/PIC API, 2 bits/pixel), while the older `7C-photo`/`133C-photo` variants use GxEPD2.
+- ESP32 display drivers differ by firmware: `ink-display-wifi-epd/` uses the bundled `EPD.h` low-level driver (ESP32epdx-style Paint/PIC API, 2 bits/pixel), while the archived `archive/ink-display-7C-photo` / `archive/ink-display-133C-photo` variants use GxEPD2.
 - EPD-nRF5 includes a Windows emulator (`emulator.c`) for offline testing
 - Path mapping available via `PATH_MAP` for cross-platform deployments
 - NAS mount retry logic in `analyze_photos.py` for network photo storage

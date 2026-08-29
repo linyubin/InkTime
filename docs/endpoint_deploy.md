@@ -6,7 +6,7 @@
 
 ```
 每日 cron (07:30)
-  └→ daily_render.sh
+  └→ inktime_daily.sh
        ├─ render_daily_photo.py   选片 → 抖动 → photo_0.bin
        └─ push_to_epd_ble.py      格式转换 → BLE → nRF5 → 墨水屏刷新
 ```
@@ -133,9 +133,9 @@ EPD_BLE_CHUNK_SIZE = 238               # 传输不稳时改为 128
 
 ---
 
-## 4. 修改 daily_render.sh
+## 4. 确认 inktime_daily.sh 路径
 
-编辑 `scripts/daily_render.sh`，将 `PROJECT_DIR` 改为实际路径：
+`scripts/inktime_daily.sh` 默认指向仓库根目录，项目不在默认位置时用环境变量覆盖：
 
 ```bash
 # Unraid 示例
@@ -148,7 +148,7 @@ PROJECT_DIR="/home/pi/inktime"
 赋予执行权限：
 
 ```bash
-chmod +x /path/to/inktime/scripts/daily_render.sh
+chmod +x /path/to/inktime/scripts/inktime_daily.sh
 ```
 
 ---
@@ -178,7 +178,7 @@ python push_to_epd_ble.py
 #   [INFO] ✅ 刷新指令已发送！
 
 # Step 5：运行完整脚本
-bash scripts/daily_render.sh
+bash scripts/inktime_daily.sh
 
 # 查看日志
 tail -f logs/render.log
@@ -194,7 +194,7 @@ tail -f logs/render.log
 2. 新建脚本，粘贴内容：
    ```bash
    #!/bin/bash
-   /path/to/inktime/scripts/daily_render.sh
+   /path/to/inktime/scripts/inktime_daily.sh
    ```
 3. 调度设置：`Custom Cron` → `30 7 * * *`（每天 07:30）
 4. 点击 `Run in Background` 测试一次
@@ -204,7 +204,7 @@ tail -f logs/render.log
 ```bash
 crontab -e
 # 添加以下行：
-30 7 * * * /path/to/inktime/scripts/daily_render.sh >> /path/to/inktime/logs/cron.log 2>&1
+30 7 * * * /path/to/inktime/scripts/inktime_daily.sh >> /path/to/inktime/logs/cron.log 2>&1
 ```
 
 ---
