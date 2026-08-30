@@ -43,6 +43,7 @@
 #include "EPD.h"
 #include "ap_bg.h"
 #include "servo_rotate.h"
+#include "device_log.h"
 
 
 // ============================================================
@@ -813,6 +814,7 @@ void handleFetch() {
       pushLog(&g_fetchLog, String("[Fetch] idx 非法: ") + idx + "，回退为 0");
       idx = 0;
     }
+    journalEvent(EV_HTTP, "ep=/fetch idx=%d", idx);
 
     bool ok = downloadAndRenderDailyPhoto(g_cfg, idx, &g_fetchLog);
     pushLog(&g_fetchLog, ok ? "[Fetch] 结果: 成功 ✅" : "[Fetch] 结果: 失败 ❌");
@@ -972,7 +974,9 @@ void handleServoTest() {
     if (speed < 1.0f) speed = 40.0f;
 
     DBG_PRINTF("[HTTP] /servo_test?run angle=%.1f speed=%.1f\n", angle, speed);
+    journalEvent(EV_HTTP, "ep=/servo_test angle=%.1f speed=%.1f", angle, speed);
     bool ok = servo_rotate_to(angle, speed, 3000);
+    journalEvent(EV_SDONE, ok ? "ok test angle=%.1f" : "timeout test angle=%.1f", angle);
     String msg = ok ? (String("✅ 转到 ") + angle + "° 完成") 
                     : (String("⚠️ 转到 ") + angle + "° 超时（已 detach）");
     server.send(200, "text/plain; charset=utf-8", msg);
@@ -1217,6 +1221,8 @@ void handleServoSave() {
   saveServoConfig(newCfg);
   g_cfg = newCfg;
   servo_set_default_speed(g_cfg.servo_speed);   // 立即生效（不必等下次重启）
+  journalEvent(EV_HTTP, "ep=/servo_save p=%.1f l=%.1f spd=%.1f",
+               g_cfg.servo_portrait_deg, g_cfg.servo_landscape_deg, g_cfg.servo_speed);
 
   String html = htmlHead(F("标定已保存 · InkTime"), "calib");
   html += F("<div class='card' style='text-align:center'>");
@@ -1240,6 +1246,7 @@ void handleServoSync() {
   g_requestHappened = true;
   String actual = server.arg("actual");
   DBG_PRINTF("[HTTP] GET /servo_sync actual=%s\n", actual.c_str());
+  journalEvent(EV_HTTP, "ep=/servo_sync actual=%s", actual.c_str());
 
   String log;
   if (actual != "portrait" && actual != "landscape") {
@@ -1317,6 +1324,11 @@ void goDeepSleepMinutes(uint32_t minutes) {
 
   DBG_PRINTF("[SLEEP] 即将休眠 %d 分钟\n", (int)minutes);
 
+  // 设备日志：先记 SLEEP（本周期最后一条），再趁 WiFi 在线把增量推给树莓派。
+  // 所有休眠路径（定时/手动窗口结束/授时失败兜底）都汇聚到本函数，是唯一咽喉点。
+  journalEvent(EV_SLEEP, "next_min=%u heap=%u", (unsigned)minutes, (unsigned)ESP.getFreeHeap());
+  journalUpload();
+
   uint64_t us = (uint64_t)minutes * 60ULL * 1000000ULL;
 
   // 关闭外设
@@ -1355,6 +1367,7 @@ void startConfigPortal() {
   bool apOk = WiFi.softAP(apSsid.c_str(), apPwd);
 
   DBG_PRINTF("[CFG] AP 启动 %s\n", apOk ? "成功" : "失败");
+  journalEvent(EV_AP, "ssid=%s ok=%d", apSsid.c_str(), (int)apOk);
   DBG_PRINTF("[CFG] SSID: %s, IP: %s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
 
   // AP 模式：hub + 网络配置 + 不依赖网络的本地模块（屏幕测试、舵机测试）。
@@ -1413,8 +1426,10 @@ bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
 
   if (ok) {
     DBG_PRINTF("[WIFI] 已连接, IP=%s\n", WiFi.localIP().toString().c_str());
+    journalEvent(EV_WIFI, "ok ip=%s", WiFi.localIP().toString().c_str());
   } else {
     DBG_PRINTLN("[WIFI] 连接失败");
+    journalEvent(EV_WIFI, "fail ssid=%s timeout_ms=%u", cfg.wifi_ssid.c_str(), (unsigned)timeout_ms);
   }
 
   return ok;
@@ -1447,6 +1462,7 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
 
       time_t nowEpoch = time(nullptr);
       if (nowEpoch > 0) saveLastTimeEpoch(nowEpoch);
+      journalEvent(EV_TIME, "src=ntp anchor=%lld", (long long)nowEpoch);
       return true;
     }
     delay(500);
@@ -1459,6 +1475,7 @@ bool syncTime(const Config &cfg, struct tm &outLocal) {
   }
 
   DBG_PRINTLN("[TIME] 服务器授时与 NTP 均失败");
+  journalEvent(EV_TIME, "fail lan+ntp");
   return false;
 }
 
@@ -1556,6 +1573,7 @@ static bool fetchServerTime(const Config &cfg, struct tm &outLocal) {
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &outLocal);
   DBG_PRINTF("[TIME] 服务器授时成功: %s\n", buf);
   saveLastTimeEpoch(epoch);
+  journalEvent(EV_TIME, "src=lan anchor=%lld", (long long)epoch);   // 锚点：服务器据此换算绝对时间
   return true;
 }
 
@@ -1575,6 +1593,7 @@ static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrienta
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
     pushLog(logBuf, String("[朝向] HTTP 失败 code=") + code + "，将降级用 last_orientation");
+    journalEvent(EV_PJSON, "fail idx=%d code=%d", idx, code);
     http.end();
     return false;
   }
@@ -1584,13 +1603,16 @@ static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrienta
   // 极简 JSON 解析：找 "orientation":"xxx"
   // 不引入 ArduinoJson，sidecar 就这一行
   int k = body.indexOf("\"orientation\"");
-  if (k < 0) { pushLog(logBuf, "[朝向] json 无 orientation 字段"); return false; }
+  if (k < 0) { pushLog(logBuf, "[朝向] json 无 orientation 字段"); journalEvent(EV_PJSON, "fail idx=%d no_field", idx); return false; }
   int c1 = body.indexOf('"', k + 13);
   int c2 = body.indexOf('"', c1 + 1);
-  if (c1 < 0 || c2 < 0) { pushLog(logBuf, "[朝向] json 解析失败"); return false; }
+  if (c1 < 0 || c2 < 0) { pushLog(logBuf, "[朝向] json 解析失败"); journalEvent(EV_PJSON, "fail idx=%d parse", idx); return false; }
   outOrientation = body.substring(c1 + 1, c2);
+  bool valid = (outOrientation == "portrait" || outOrientation == "landscape");
+  if (valid) journalEvent(EV_PJSON, "idx=%d ori=%s", idx, outOrientation.c_str());
+  else       journalEvent(EV_PJSON, "fail idx=%d bad_ori=%s", idx, outOrientation.c_str());
   pushLog(logBuf, String("[朝向] orientation=") + outOrientation);
-  return (outOrientation == "portrait" || outOrientation == "landscape");
+  return valid;
 }
 
 // ============================================================
@@ -1837,9 +1859,13 @@ static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String 
 
   // WiFi 偶发抖断会导致 384KB 流式读取中途断开（少几百字节），
   // 重试细节见 fetchBinStreamWithRetry（每次重建连接、清空 framebuffer 重写）。
-  return fetchBinStreamWithRetry(url, "[拉取] ", "idx=" + String(idx) + " ",
-                                 30000 /*httpTimeoutMs*/, orientation,
-                                 computePaintRotate(cfg, orientation), BlackImage, logBuf);
+  uint32_t t0 = millis();
+  bool ok = fetchBinStreamWithRetry(url, "[拉取] ", "idx=" + String(idx) + " ",
+                                    30000 /*httpTimeoutMs*/, orientation,
+                                    computePaintRotate(cfg, orientation), BlackImage, logBuf);
+  journalEvent(EV_PBIN, ok ? "ok idx=%d ori=%s ms=%u" : "fail idx=%d ori=%s ms=%u",
+               idx, orientation.c_str(), (unsigned)(millis() - t0));
+  return ok;
 }
 
 // ============================================================
@@ -1849,6 +1875,7 @@ static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, con
   (void)cfg; (void)orientation;   // 画面朝向已在写入阶段（Paint_NewImage）定型，刷屏无需再处理
   if (!g_epdPresent) {
     DBG_PRINTLN("[EPD] 无屏，跳过刷屏");
+    journalEvent(EV_RENDER, "no_epd");
     return;
   }
   // 注意：PIC_display 把 framebuffer 字节原样推给屏幕，不读 Paint 的 rotate/状态。
@@ -1861,6 +1888,7 @@ static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, con
   PIC_display(BlackImage);
   EPD_DeepSleep();
   DBG_PRINTLN("[EPD] 渲染完成，屏幕已休眠");
+  journalEvent(EV_RENDER, "ok");
 }
 
 // ============================================================
@@ -1874,24 +1902,30 @@ static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, con
 static void applyServoForOrientation(const Config &cfg, const String &orientation, String* logBuf) {
   if (!cfg.servo_calibrated) {
     pushLog(logBuf, "[舵机] 未标定，跳过转动");
+    journalEvent(EV_SUNCAL);
     return;
   }
   // 首次开机归位（last_orientation 为空）
   if (cfg.last_orientation.length() == 0) {
     pushLog(logBuf, "[舵机] 首次开机，归位竖屏 home");
-    servo_rotate_to(cfg.servo_portrait_deg, cfg.servo_speed, 3000);
+    journalEvent(EV_SCMD, "home target=%.1f speed=%.1f", cfg.servo_portrait_deg, cfg.servo_speed);
+    bool ok = servo_rotate_to(cfg.servo_portrait_deg, cfg.servo_speed, 3000);
+    journalEvent(EV_SDONE, ok ? "ok home" : "timeout home");
     saveLastOrientation("portrait");
     return;
   }
   // 同朝向跳过
   if (orientation == cfg.last_orientation) {
     pushLog(logBuf, String("[舵机] 同朝向（") + orientation + "），跳过转动");
+    journalEvent(EV_SSKIP, "ori=%s last=%s", orientation.c_str(), cfg.last_orientation.c_str());
     return;
   }
   // 不同朝向，转
   float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
   pushLog(logBuf, String("[舵机] 转 → ") + orientation + " (" + target + "°)");
+  journalEvent(EV_SCMD, "to=%s target=%.1f speed=%.1f", orientation.c_str(), target, cfg.servo_speed);
   bool ok = servo_rotate_to(target, cfg.servo_speed, 3000);
+  journalEvent(EV_SDONE, ok ? "ok ori=%s" : "timeout ori=%s", orientation.c_str());
   pushLog(logBuf, ok ? "[舵机] 到位 ✅" : "[舵机] 超时（已 detach 继续）");
   if (ok) saveLastOrientation(orientation);
 }
@@ -2196,6 +2230,10 @@ void setup() {
   DBG_PRINTLN();
   DBG_PRINTLN("===== InkTime WiFi EPD 启动 =====");
 
+  // 3.5 设备日志（黑盒）：先于一切挂载 FS、开机序号+1、记录上次复位原因+本次唤醒原因。
+  //     即使后面崩溃/掉电，这条也已落盘。设计见 docs/adr/0001-esp32-flash-device-journal.md
+  journalBegin();
+
   // 4. 检查是否请求恢复出厂设置
   if (isFactoryResetRequestedAtBoot()) {
     DBG_PRINTLN("[BOOT] 触发 → 恢复出厂设置");
@@ -2212,6 +2250,13 @@ void setup() {
 
   // 6. 加载 NVS 配置
   loadConfig(g_cfg);
+
+  // 6.1 注入设备日志的上传目标（hostport + 照片 key 作设备标识）
+  {
+    String prefix = String(DAILY_PHOTO_PATH_PREFIX);            // "/static/inktime/<key>/photo_"
+    String base   = prefix.substring(0, prefix.length() - 6);   // "/static/inktime/<key>/"
+    journalSetServer(g_cfg.backend_hostport, base.substring(base.lastIndexOf('/') + 1));
+  }
 
   // 6.5 初始化墨水屏 SPI 引脚 (必须在 showNetworkInfoScreen 之前调用)
   pinMode(PIN_EPD_BUSY, INPUT_PULLUP);  // BUSY（上拉：无屏时读 idle，配合 detectEpdPresent 判据）

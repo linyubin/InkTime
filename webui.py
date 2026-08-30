@@ -6,6 +6,7 @@ from flask import Flask, render_template, jsonify, send_file, abort, request
 import sqlite3
 import json
 from pathlib import Path
+from datetime import datetime
 import config as cfg
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
@@ -342,6 +343,50 @@ def serve_image(filepath):
         abort(403)
     except Exception:
         abort(404)
+
+
+# ── 设备日志（黑盒）只读页 ───────────────────────────────────
+# 数据由 server.py 的 POST /api/device_log/<key> 落盘到 logs/device/<key>.log，
+# 每行一条 JSON 事件（设备行号 ls/开机序号 b/相对毫秒 ms/类型 t/明细 d/接收时刻 rcv）。
+# 倒序展示最近 N 条，供事故回查，不做任何写操作。
+
+DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
+DEVICE_LOG_DIR = ROOT_DIR / "logs" / "device"
+DEVLOG_PAGE_SIZE = 500
+_ANCHOR_RE = re.compile(r" anchor=(\d+)")
+
+
+@app.route('/devlog')
+def devlog():
+    p = DEVICE_LOG_DIR / f"{DOWNLOAD_KEY}.log"
+    events = []
+    if p.exists():
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            lines = []
+        for ln in lines:
+            try:
+                events.append(json.loads(ln))
+            except Exception:
+                continue
+
+    # 绝对时间换算：TIME_SYNC 事件的 anchor=epoch 是真实墙钟，其余事件按 ms 差值推算
+    anchor_epoch = anchor_ms = None
+    for ev in events:
+        d = str(ev.get("d", ""))
+        m = _ANCHOR_RE.search(d)
+        if ev.get("t") == "TIME_SYNC" and m:
+            anchor_epoch, anchor_ms = int(m.group(1)), int(ev.get("ms", 0))
+        if anchor_epoch is not None:
+            abs_s = anchor_epoch + (int(ev.get("ms", 0)) - anchor_ms) / 1000.0
+            ev["abs"] = datetime.fromtimestamp(abs_s).strftime("%m-%d %H:%M:%S")
+        else:
+            ev["abs"] = ""
+        ev["d"] = _ANCHOR_RE.sub("", d)   # 明细里去掉锚点数字，页面不重复展示
+
+    rows = events[-DEVLOG_PAGE_SIZE:][::-1]   # 最近 N 条，新事件在前
+    return render_template('devlog.html', rows=rows, exists=p.exists())
 
 
 if __name__ == '__main__':

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设备日志 · InkTime</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 24px; color: #222; background: #fafafa; }
+  h2 { margin-top: 0; }
+  .sub { color: #777; font-size: 13px; margin: 6px 0 16px; }
+  .empty { color: #999; padding: 32px 0; text-align: center; }
+  table { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
+  th, td { border: 1px solid #e3e3e3; padding: 5px 9px; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; white-space: nowrap; position: sticky; top: 0; }
+  td.ms, td.b, td.ls { white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  td.t { white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; }
+  td.d { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  tr:hover td { background: #f6faff; }
+  .BOOT td { background: #fffbe8; }
+  .BROWNOUT td, .PANIC td { background: #ffecec; }
+  a.back { display: inline-block; margin-top: 16px; color: #06c; }
+</style>
+</head>
+<body>
+<h2>📟 设备日志（黑盒）</h2>
+<div class="sub">
+  事件由相框设备每次入睡前推送至此。<code>ls</code>=事件行号，<code>开机</code>=开机序号（同一次唤醒的事件序号相同），
+  <code>相对ms</code>=该次唤醒内的毫秒偏移。BOOT 行的 reset= 字段即"上次怎么死的"（BROWNOUT=掉电、PANIC=崩溃、TIMER_WAKE=正常定时唤醒）。
+  <a href="{{ url_for('devlog') }}">刷新</a>
+</div>
+
+{% if not exists %}
+  <div class="empty">暂无日志文件 logs/device/*.log —— 设备首次上传后这里会出现数据。</div>
+{% elif not rows %}
+  <div class="empty">日志文件为空。</div>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>绝对时间(推算)</th><th>接收时刻</th><th>ls</th><th>开机</th>
+      <th>相对ms</th><th>事件</th><th>明细</th><th>来源IP</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr class="{{ r.d.split(' ')[0] if r.t == 'BOOT' and r.d else '' }}">
+      <td>{{ r.abs or '—' }}</td>
+      <td>{{ r.rcv or '—' }}</td>
+      <td class="ls">{{ r.ls }}</td>
+      <td class="b">{{ r.b }}</td>
+      <td class="ms">{{ r.ms }}</td>
+      <td class="t">{{ r.t }}</td>
+      <td class="d">{{ r.d or '' }}</td>
+      <td>{{ r.ip or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<a class="back" href="/">← 返回管理首页</a>
+</body>
+</html>

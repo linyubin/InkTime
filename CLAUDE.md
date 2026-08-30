@@ -174,6 +174,7 @@ cp config-example.py config.py
 - `photos.db` - SQLite database (auto-created)
 - `output/` - Rendered `.bin` files (由 server.py 在 `/static/inktime/<DOWNLOAD_KEY>/` 下提供下载)
 - `logs/transfer.log` - 详细 HTTP 传输日志（ESP32 每次拉取：时间/IP/idx/字节数/耗时）；另有 `logs/render.log`（cron 脚本日志）
+- `logs/device/<key>.log` - ESP32 设备日志（黑盒，JSONL）；查看页 WebUI `/devlog`，设计见 `docs/esp32-device-log.md` 与 `docs/adr/0001`
 - `tmp/last_fetch.json` - 拉取成功哨兵，供 `inktime_daily.sh` 轮询得知 ESP32 已取走数据
 - `templates/` - Flask/Jinja2 templates for WebUI
 - `scripts/inktime_daily.sh` - 每日编排：render → 按 `ENABLE_BLE_PUSH`/`ENABLE_ESP32_SERVE` 跑 BLE 推送 / 起临时 server 供 ESP32 拉取（检测到拉取或超时后关闭）

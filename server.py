@@ -1121,6 +1121,90 @@ def esp_shutdown(key: str):
     return "shutting down", 200
 
 
+# ── 设备日志（黑盒）上传 ─────────────────────────────────────
+# ESP32 在每次入睡前把增量事件（JSONL，一行一条）POST 上来；收到 200 才推进
+# 设备侧上传游标。设计见 docs/adr/0001-esp32-flash-device-journal.md。
+# 落盘 logs/device/<key>.log，每行 = 设备原始 JSON 事件补上接收时刻与来源 IP。
+
+DEVICE_LOG_DIR = LOG_DIR / "device"
+DEVICE_LOG_MAX_BYTES = 5 * 1024 * 1024   # >5MB 轮转为 .log.1（保留一代）
+_devlog_max_ls: dict[str, int] = {}      # key → 已落盘的最大事件行号 ls（去重用）
+
+
+def _devlog_path(key: str) -> Path:
+    return DEVICE_LOG_DIR / f"{key}.log"
+
+
+def _devlog_load_max_ls(key: str) -> int:
+    """从现有文件末段恢复最大 ls（server 重启后仍能去重）。"""
+    p = _devlog_path(key)
+    if not p.exists():
+        return 0
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
+    except Exception:
+        return 0
+    max_ls = 0
+    for ln in lines:
+        try:
+            ls = int(json.loads(ln).get("ls", 0))
+        except Exception:
+            continue
+        if ls > max_ls:
+            max_ls = ls
+    return max_ls
+
+
+@app.post("/api/device_log/<key>")
+def esp_device_log(key: str):
+    if key != DOWNLOAD_KEY:
+        abort(404)
+
+    raw = request.get_data(as_text=True)
+    if not raw:
+        return "empty", 400
+
+    if key not in _devlog_max_ls:
+        _devlog_max_ls[key] = _devlog_load_max_ls(key)
+    max_ls = _devlog_max_ls[key]
+
+    recv_iso = datetime.now().isoformat(timespec="seconds")
+    ip = request.remote_addr or ""
+    accepted = 0
+    out_lines: list[str] = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            ev = json.loads(ln)
+            ls = int(ev.get("ls", 0))
+            if not ls or ls <= max_ls:
+                continue   # 游标回绕/重传导致的重复，跳过
+            max_ls = ls
+        except Exception:
+            continue   # 损坏行丢弃，不影响其余行
+        ev["rcv"] = recv_iso
+        ev["ip"] = ip
+        out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
+        accepted += 1
+
+    if out_lines:
+        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        p = _devlog_path(key)
+        try:
+            if p.exists() and p.stat().st_size > DEVICE_LOG_MAX_BYTES:
+                p.replace(p.with_suffix(".log.1"))   # 轮转：当前 → .log.1（覆盖旧一代）
+            with open(p, "a", encoding="utf-8") as f:
+                f.write("\n".join(out_lines) + "\n")
+        except Exception as e:
+            print(f"[device_log] write failed: {e}")
+            return "write failed", 500
+        _devlog_max_ls[key] = max_ls
+
+    return f"OK n={accepted}", 200
+
+
 @app.get("/files/")
 @app.get("/files/<path:subpath>")
 def browse(subpath: str = ""):
