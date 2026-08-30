@@ -57,6 +57,10 @@ void servo_detach() {
   // 不动 _angleKnown：相框靠机械保持，detach 后物理姿态不变，_curAngle 仍可信。
 }
 
+bool servo_position_known() {
+  return _angleKnown;
+}
+
 bool servo_rotate_to(float target_deg, float speed_deg_s, uint32_t timeout_ms) {
   // 确保已 attach（深睡恢复后 / 兜底）
   if (!_attached) servo_attach();

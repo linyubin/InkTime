@@ -1920,10 +1920,23 @@ static void applyServoForOrientation(const Config &cfg, const String &orientatio
     saveLastOrientation("portrait");
     return;
   }
-  // 同朝向跳过
-  if (orientation == cfg.last_orientation) {
+  // 同朝向：只有舵机位置可信（本次开机后转过至少一次）才允许跳过。
+  //   开机后 servo_init 会把舵机打到 0°（首帧 PWM 必须有确定脉宽），位置不可信；
+  //   此时若跳过，相框会物理停在机械零点而屏幕仍显示原朝向——
+  //   "舵机突然归零、显示没变"事故的根因（见设备日志 SERVO_SKIP ori=… last=…）。
+  if (orientation == cfg.last_orientation && servo_position_known()) {
     pushLog(logBuf, String("[舵机] 同朝向（") + orientation + "），跳过转动");
     journalEvent(EV_SSKIP, "ori=%s last=%s", orientation.c_str(), cfg.last_orientation.c_str());
+    return;
+  }
+  if (orientation == cfg.last_orientation) {
+    // 开机恢复：从 0° 平滑转回当前朝向的标定角度（位置恢复可信后，后续照常跳过）
+    float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
+    pushLog(logBuf, String("[舵机] 开机恢复 → ") + orientation + " (" + target + "°)");
+    journalEvent(EV_SCMD, "restore ori=%s target=%.1f speed=%.1f", orientation.c_str(), target, cfg.servo_speed);
+    bool ok = servo_rotate_to(target, cfg.servo_speed, 3000);
+    journalEvent(EV_SDONE, ok ? "ok restore ori=%s" : "timeout restore ori=%s", orientation.c_str());
+    pushLog(logBuf, ok ? "[舵机] 恢复到位 ✅" : "[舵机] 恢复超时（已 detach 继续）");
     return;
   }
   // 不同朝向，转

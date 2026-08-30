@@ -47,3 +47,8 @@ bool servo_rotate_to(float target_deg, float speed_deg_s = -1.0f, uint32_t timeo
 
 // 立即停止 PWM 输出（仅深睡前调；运行态保持 attach）
 void servo_detach();
+
+// 舵机当前位置是否可信（开机后 false；首次 servo_rotate_to 成功后 true；
+// servo_detach 不改变它）。主流程的"同朝向跳过"必须以此为前提——
+// 开机后 servo_init 把舵机打回 0°，此时跳过转动会让相框停在零点。
+bool servo_position_known();
