@@ -28,7 +28,10 @@
 static const float SERVO_DEFAULT_SPEED = 40.0f;
 
 // 初始化舵机：分配 timer、设 50Hz、attach 到 SERVO_PIN。开机调一次。
-void servo_init();
+//   init_deg - 首帧角度：传"上次已知角度"（由主流程从 NVS 的 last_orientation
+//              推导），舵机断电期间机械保持在原位，首帧同角度 → 开机零动作。
+//              绝不要传 0（除非未标定）——那会全速甩到机械零点，损伤相框结构。
+void servo_init(float init_deg = 0.0f);
 
 // 设置全局默认转动速度（°/s）。主流程从 NVS 读 servo_speed 后调一次。
 void servo_set_default_speed(float speed_deg_s);

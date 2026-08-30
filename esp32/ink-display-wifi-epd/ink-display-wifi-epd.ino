@@ -1920,23 +1920,12 @@ static void applyServoForOrientation(const Config &cfg, const String &orientatio
     saveLastOrientation("portrait");
     return;
   }
-  // 同朝向：只有舵机位置可信（本次开机后转过至少一次）才允许跳过。
-  //   开机后 servo_init 会把舵机打到 0°（首帧 PWM 必须有确定脉宽），位置不可信；
-  //   此时若跳过，相框会物理停在机械零点而屏幕仍显示原朝向——
-  //   "舵机突然归零、显示没变"事故的根因（见设备日志 SERVO_SKIP ori=… last=…）。
-  if (orientation == cfg.last_orientation && servo_position_known()) {
+  // 同朝向跳过。位置可信的前提由 servo_init(bootAngle) 保证：开机首帧即驱动到
+  // 上次角度并置 _angleKnown=true（早期版本首帧写 0 且此时跳过，会让相框物理
+  // 停在机械零点而屏幕仍显示原朝向——设备日志里那批 SERVO_SKIP 对应的事故）。
+  if (orientation == cfg.last_orientation) {
     pushLog(logBuf, String("[舵机] 同朝向（") + orientation + "），跳过转动");
     journalEvent(EV_SSKIP, "ori=%s last=%s", orientation.c_str(), cfg.last_orientation.c_str());
-    return;
-  }
-  if (orientation == cfg.last_orientation) {
-    // 开机恢复：从 0° 平滑转回当前朝向的标定角度（位置恢复可信后，后续照常跳过）
-    float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
-    pushLog(logBuf, String("[舵机] 开机恢复 → ") + orientation + " (" + target + "°)");
-    journalEvent(EV_SCMD, "restore ori=%s target=%.1f speed=%.1f", orientation.c_str(), target, cfg.servo_speed);
-    bool ok = servo_rotate_to(target, cfg.servo_speed, 3000);
-    journalEvent(EV_SDONE, ok ? "ok restore ori=%s" : "timeout restore ori=%s", orientation.c_str());
-    pushLog(logBuf, ok ? "[舵机] 恢复到位 ✅" : "[舵机] 恢复超时（已 detach 继续）");
     return;
   }
   // 不同朝向，转
@@ -2297,21 +2286,18 @@ void setup() {
   //     未标定时 servo_rotate_to 不会被调用，但 attach 本身开销极小，先就位。
   //     注意：不再立即 servo_detach()——舵机需保持 attach 才平顺（参考 servo_serial_cmd）。
   //     深睡时由 goDeepSleepMinutes 统一 detach 省电。
-  servo_init();
-  servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
-  // 开机立即恢复到上次朝向角度（平滑，~2.5s），不要等照片下载完（~35s 后）才转：
-  //  1) 消除舵机带电堵转在机械零点 35 秒的嗡嗡抖动；
-  //  2) 避开 EPD 刷屏期的大电流争用（恢复完成后再联网/刷屏）。
-  // 恢复成功后位置可信，每日流程同朝向照常跳过；超时则保留 fallback
-  // （applyServoForOrientation 的开机恢复分支会再试一次）。
+  // 6.6 初始化舵机（IO32，与 EPD SPI 引脚无冲突，避开 DAC 脚 25/26）
+  //     首帧写"上次已知角度"：深睡/reset 期间舵机断电机械保持，物理位置≈上次
+  //     指令角度，首帧同角度 → 正常开机零动作。绝不能写 0——挂框状态全速甩到
+  //     机械零点会损伤结构。未标定/无朝向记录时退回 0（此时舵机不参与流程）。
+  //     开机即位置可信，之后"同朝向跳过"直接成立，全程不再有多余转动。
+  float bootAngle = 0.0f;
   if (g_cfg.servo_calibrated && g_cfg.last_orientation.length() > 0) {
-    float bootTarget = (g_cfg.last_orientation == "landscape") ? g_cfg.servo_landscape_deg
-                                                               : g_cfg.servo_portrait_deg;
-    DBG_PRINTF("[SERVO] 开机恢复 → %s (%.1f°)\n", g_cfg.last_orientation.c_str(), bootTarget);
-    journalEvent(EV_SCMD, "boot-restore ori=%s target=%.1f", g_cfg.last_orientation.c_str(), bootTarget);
-    bool bootOk = servo_rotate_to(bootTarget, g_cfg.servo_speed, 3000);
-    journalEvent(EV_SDONE, bootOk ? "ok boot-restore" : "timeout boot-restore");
+    bootAngle = (g_cfg.last_orientation == "landscape") ? g_cfg.servo_landscape_deg
+                                                        : g_cfg.servo_portrait_deg;
   }
+  servo_init(bootAngle);
+  servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
 
   // 7. 无有效配置 → 进入 AP 配网
   if (!g_cfg.valid) {

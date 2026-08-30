@@ -10,9 +10,11 @@
  *  - 阻塞小循环推进（主流程无 loop()），millis() 算 dt，每 20ms 写一次。
  *
  * 位置跟踪：
- *  - _angleKnown 只在 servo_init() 首次为 false（开机，舵机断电过、位置未知）。
+ *  - servo_init(init_deg) 首帧即驱动到"上次已知角度"并置 _angleKnown=true：
+ *    断电期间舵机机械保持，物理位置≈上次指令角度，开机零动作（写 0 会全速
+ *    甩到机械零点，挂框状态会损伤结构——历史上"开机归零"事故的根源）。
  *  - servo_detach() 不动 _angleKnown（机械保持，detach 后物理姿态不变）。
- *  - 首次转动从默认起点 0° 平滑走到 target；之后所有转动从 _curAngle 平滑走。
+ *  - 之后所有转动都从 _curAngle 平滑走（40°/s），杜绝任何全速甩动。
  */
 #include "servo_rotate.h"
 #include <ESP32Servo.h>
@@ -23,16 +25,18 @@ static float   _curAngle   = 0.0f;
 static bool    _angleKnown = false;  // 仅开机首次 false
 static float   _defaultSpeed = SERVO_DEFAULT_SPEED;
 
-void servo_init() {
-  // attach 前先 write(0)：ESP32Servo attach 瞬间会输出 PWM，先 write 让首帧脉宽确定
-  // 为 0° 对应值（而不是库默认的不可控脉宽）。开机后保持 attach，深睡前才 detach。
-  _servo.write(0);
+void servo_init(float init_deg) {
+  // attach 前先 write：ESP32Servo attach 瞬间会输出 PWM，先 write 让首帧脉宽确定。
+  // 首帧必须写"上次已知角度"而不是 0：深睡/reset 期间舵机断电靠机械保持，
+  // 物理位置 ≈ 上次指令角度，首帧写同角度 → 正常开机零动作、零冲击。
+  // 写 0 会让挂着相框的舵机每次开机全速甩到机械零点——大转动惯量下会损伤结构。
+  _servo.write(init_deg);
   ESP32PWM::allocateTimer(0);
   _servo.setPeriodHertz(50);
   _servo.attach(SERVO_PIN, 500, 2400);
-  _attached = true;
-  _angleKnown = false;
-  _curAngle = 0.0f;
+  _attached   = true;
+  _curAngle   = init_deg;
+  _angleKnown = true;   // 位置按指令角主动驱动，视为可信（"同朝向跳过"因此成立）
 }
 
 void servo_set_default_speed(float speed_deg_s) {
