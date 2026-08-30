@@ -18,6 +18,7 @@
  */
 #include "servo_rotate.h"
 #include <ESP32Servo.h>
+#include "driver/gpio.h"
 
 static Servo   _servo;
 static bool    _attached   = false;
@@ -58,6 +59,14 @@ void servo_detach() {
   if (!_attached) return;
   _servo.detach();
   _attached = false;
+  // 信号线钉在低电平并保持到深睡结束。detach 后若放任引脚悬空，它就是一根
+  // 天线：手碰线/挪动线束时人体电容会在上面感应出脉宽，舵机误当指令执行，
+  // 表现为"碰一下抖一下"（servo_serial_cmd 项目同款问题的同款解法）。
+  // 接地的信号线拾取不到电容噪声；深睡期间靠 gpio_hold 保持电平，
+  // 开机由 releaseAllGpioHoldsAtBoot() 统一释放后 attach 重新接管。
+  pinMode(SERVO_PIN, OUTPUT);
+  digitalWrite(SERVO_PIN, LOW);
+  gpio_hold_en((gpio_num_t)SERVO_PIN);
   // 不动 _angleKnown：相框靠机械保持，detach 后物理姿态不变，_curAngle 仍可信。
 }
 
