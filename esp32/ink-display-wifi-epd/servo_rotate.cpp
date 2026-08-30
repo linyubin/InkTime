@@ -51,6 +51,9 @@ void servo_attach() {
   _servo.write(w);
   ESP32PWM::allocateTimer(0);
   _servo.setPeriodHertz(50);
+  // detach 时对信号线做了 gpio_hold（钉低电平防噪声），必须先解除，
+  // 否则引脚保持旧电平，LEDC 的 PWM 到不了舵机。
+  gpio_hold_dis((gpio_num_t)SERVO_PIN);
   _servo.attach(SERVO_PIN, 500, 2400);
   _attached = true;
 }

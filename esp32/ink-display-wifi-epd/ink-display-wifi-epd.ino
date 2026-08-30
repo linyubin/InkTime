@@ -2013,6 +2013,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
 
   if (!fetchPhotoBinToFramebuffer(cfg, idx, orientation, BlackImage, logBuf)) {
     pushLog(logBuf, "[拉取] bin 下载失败，不转舵机不刷屏，保留昨天姿态");
+    servo_detach();   // 本周期无舵机动作，提前松力（与渲染成功路径一致）
     heap_caps_free(BlackImage);
     return false;
   }
@@ -2024,6 +2025,13 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
   displayFramebuffer(BlackImage, cfg, orientation);
 
   heap_caps_free(BlackImage);
+  // 渲染完成即停止 PWM：之后到深睡之间（手动唤醒的 Web 窗口）舵机已无任务，
+  // 继续带电持力只会白白发热，且与 WiFi 发射突发叠加时会电源跌落——舵机
+  // 欠压复位后猛甩回命令角（用户实测"静止期无征兆剧烈抖动"）。松力后与
+  // 深夜深睡状态相同，靠机械摩擦保持。窗口内任何舵机操作
+  // （/servo_test、/fetch 换朝向）经 servo_rotate_to → servo_attach 自动恢复。
+  // 注意：标定卡路径不在此处（标定时需要舵机带电对照表单角度）。
+  servo_detach();
   pushLog(logBuf, "[拉取] 完成 ✅");
   return true;
 }
