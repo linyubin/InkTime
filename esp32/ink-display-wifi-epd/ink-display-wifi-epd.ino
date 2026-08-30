@@ -2299,6 +2299,19 @@ void setup() {
   //     深睡时由 goDeepSleepMinutes 统一 detach 省电。
   servo_init();
   servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
+  // 开机立即恢复到上次朝向角度（平滑，~2.5s），不要等照片下载完（~35s 后）才转：
+  //  1) 消除舵机带电堵转在机械零点 35 秒的嗡嗡抖动；
+  //  2) 避开 EPD 刷屏期的大电流争用（恢复完成后再联网/刷屏）。
+  // 恢复成功后位置可信，每日流程同朝向照常跳过；超时则保留 fallback
+  // （applyServoForOrientation 的开机恢复分支会再试一次）。
+  if (g_cfg.servo_calibrated && g_cfg.last_orientation.length() > 0) {
+    float bootTarget = (g_cfg.last_orientation == "landscape") ? g_cfg.servo_landscape_deg
+                                                               : g_cfg.servo_portrait_deg;
+    DBG_PRINTF("[SERVO] 开机恢复 → %s (%.1f°)\n", g_cfg.last_orientation.c_str(), bootTarget);
+    journalEvent(EV_SCMD, "boot-restore ori=%s target=%.1f", g_cfg.last_orientation.c_str(), bootTarget);
+    bool bootOk = servo_rotate_to(bootTarget, g_cfg.servo_speed, 3000);
+    journalEvent(EV_SDONE, bootOk ? "ok boot-restore" : "timeout boot-restore");
+  }
 
   // 7. 无有效配置 → 进入 AP 配网
   if (!g_cfg.valid) {

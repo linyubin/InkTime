@@ -371,15 +371,20 @@ def devlog():
             except Exception:
                 continue
 
-    # 绝对时间换算：TIME_SYNC 事件的 anchor=epoch 是真实墙钟，其余事件按 ms 差值推算
-    anchor_epoch = anchor_ms = None
+    # 绝对时间换算：TIME_SYNC 事件的 anchor=epoch 是真实墙钟。
+    # 两遍扫描——第一遍按开机序号收集各自的锚点，第二遍用"本开机"的锚点换算。
+    # （单遍会让开机早期、锚点之前的行错用上一次开机的锚点，时间显示穿越。）
+    anchors = {}
+    for ev in events:
+        if ev.get("t") == "TIME_SYNC":
+            m = _ANCHOR_RE.search(str(ev.get("d", "")))
+            if m:
+                anchors[ev.get("b")] = (int(m.group(1)), int(ev.get("ms", 0)))
     for ev in events:
         d = str(ev.get("d", ""))
-        m = _ANCHOR_RE.search(d)
-        if ev.get("t") == "TIME_SYNC" and m:
-            anchor_epoch, anchor_ms = int(m.group(1)), int(ev.get("ms", 0))
-        if anchor_epoch is not None:
-            abs_s = anchor_epoch + (int(ev.get("ms", 0)) - anchor_ms) / 1000.0
+        a = anchors.get(ev.get("b"))
+        if a:
+            abs_s = a[0] + (int(ev.get("ms", 0)) - a[1]) / 1000.0
             ev["abs"] = datetime.fromtimestamp(abs_s).strftime("%m-%d %H:%M:%S")
         else:
             ev["abs"] = ""
