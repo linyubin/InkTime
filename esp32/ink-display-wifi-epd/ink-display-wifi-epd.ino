@@ -2316,6 +2316,12 @@ void setup() {
   struct tm timeinfo;
   bool hasTime = syncTime(g_cfg, timeinfo);
 
+  // 9.5 上传设备日志增量（拉照片之前先传）。
+  //     入睡前那次上传（goDeepSleepMinutes）只覆盖常驻 server 场景；若 server
+  //     是"检测到拉取即关闭"的临时模式，睡前上传必然扑空。两处都传，靠服务端
+  //     按 ls 去重，重复无害。本周期的新事件（照片/舵机/刷屏）下次唤醒补传。
+  journalUpload();
+
   // 10. 下载并渲染今日照片
   bool ok = downloadAndRenderDailyPhoto(g_cfg);
   if (!ok) {
