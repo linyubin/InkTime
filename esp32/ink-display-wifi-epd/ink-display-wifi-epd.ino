@@ -2310,9 +2310,10 @@ void setup() {
     DBG_PRINTF("[SERVO] 手动唤醒，机械归零后恢复 → %s (%.1f°)\n",
                g_cfg.last_orientation.c_str(), homeTarget);
     journalEvent(EV_SCMD, "rehome cur=%.1f via=0", bootAngle);
-    servo_rotate_to(0.0f, g_cfg.servo_speed, 5000);   // 平滑压到机械零点（重建参考）
-    delay(100);                                        // 短停靠即可——参考在触到限位瞬间已建立，
-                                                       // 久停只会延长堵转嗡嗡（实测用户感知为抖动）
+    servo_rotate_to(0.0f, g_cfg.servo_speed, 5000);   // 平滑压到机械零点（重建参考）。
+                                                      // 触限即建立参考，不停留——舵机在限位上
+                                                      // 每多堵转一毫秒都是用户可感知的抖动；
+                                                      // 立即进回程，仅剩 rotate_to 内部 150ms 就位时间。
     bool rehomeOk = servo_rotate_to(homeTarget, g_cfg.servo_speed, 5000);
     journalEvent(EV_SDONE, rehomeOk ? "ok rehome target=%.1f" : "timeout rehome target=%.1f", homeTarget);
   }
