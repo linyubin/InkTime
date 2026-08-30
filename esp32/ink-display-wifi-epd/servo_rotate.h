@@ -54,3 +54,7 @@ void servo_detach();
 // 舵机当前位置是否可信。servo_init 首帧按"上次已知角度"驱动并置 true；
 // servo_detach 不改变它。同朝向跳过的前提条件。
 bool servo_position_known();
+
+// 当前指令角度是否已落在 target_deg ± tol_deg 内（"同朝向跳过"用实际角度判断，
+// 而非朝向记录——手动唤醒机械归零后位置在 0°，必须据此恢复转动）。
+bool servo_at_angle(float target_deg, float tol_deg = 0.5f);

@@ -65,6 +65,10 @@ bool servo_position_known() {
   return _angleKnown;
 }
 
+bool servo_at_angle(float target_deg, float tol_deg) {
+  return fabs(_curAngle - target_deg) <= tol_deg;
+}
+
 bool servo_rotate_to(float target_deg, float speed_deg_s, uint32_t timeout_ms) {
   // 确保已 attach（深睡恢复后 / 兜底）
   if (!_attached) servo_attach();

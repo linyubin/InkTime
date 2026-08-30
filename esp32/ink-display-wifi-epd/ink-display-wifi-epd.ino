@@ -1920,16 +1920,16 @@ static void applyServoForOrientation(const Config &cfg, const String &orientatio
     saveLastOrientation("portrait");
     return;
   }
-  // 同朝向跳过。位置可信的前提由 servo_init(bootAngle) 保证：开机首帧即驱动到
-  // 上次角度并置 _angleKnown=true（早期版本首帧写 0 且此时跳过，会让相框物理
-  // 停在机械零点而屏幕仍显示原朝向——设备日志里那批 SERVO_SKIP 对应的事故）。
-  if (orientation == cfg.last_orientation) {
-    pushLog(logBuf, String("[舵机] 同朝向（") + orientation + "），跳过转动");
+  // 跳过条件 = 朝向没变 且 舵机指令角已落在该朝向的目标角度上。
+  // 只比较朝向记录不够：手动唤醒的机械归零会先把位置移到 0°，此时必须恢复转动；
+  // 反过来若上一次转动超时未到位，也要靠角度差补转。
+  float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
+  if (orientation == cfg.last_orientation && servo_at_angle(target)) {
+    pushLog(logBuf, String("[舵机] 同朝向且已到位（") + orientation + " " + target + "°），跳过转动");
     journalEvent(EV_SSKIP, "ori=%s last=%s", orientation.c_str(), cfg.last_orientation.c_str());
     return;
   }
-  // 不同朝向，转
-  float target = (orientation == "landscape") ? cfg.servo_landscape_deg : cfg.servo_portrait_deg;
+  // 需要转动（朝向变化 / 手动归零后恢复 / 上次未到位补转）
   pushLog(logBuf, String("[舵机] 转 → ") + orientation + " (" + target + "°)");
   journalEvent(EV_SCMD, "to=%s target=%.1f speed=%.1f", orientation.c_str(), target, cfg.servo_speed);
   bool ok = servo_rotate_to(target, cfg.servo_speed, 3000);
@@ -2298,6 +2298,23 @@ void setup() {
   }
   servo_init(bootAngle);
   servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
+  // 手动唤醒（reset 键）= 用户主动"重新对齐"：位置可能已被打乱（这正是 reset
+  // 的常见原因）。走一遍机械归零重建参考——先平滑压到机械 0°（硬限位，唯一
+  // 绝对参考），停靠片刻，再回到"当前显示照片"对应的角度。归零后若照片拉取
+  // 失败，舵机停在显示姿态角，屏上画面与物理朝向仍一致。定时唤醒不执行此流程
+  // （无人干预时保持零动作、零磨损）。
+  if (g_cfg.servo_calibrated && g_cfg.last_orientation.length() > 0 &&
+      esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+    float homeTarget = (g_cfg.last_orientation == "landscape") ? g_cfg.servo_landscape_deg
+                                                               : g_cfg.servo_portrait_deg;
+    DBG_PRINTF("[SERVO] 手动唤醒，机械归零后恢复 → %s (%.1f°)\n",
+               g_cfg.last_orientation.c_str(), homeTarget);
+    journalEvent(EV_SCMD, "rehome cur=%.1f via=0", bootAngle);
+    servo_rotate_to(0.0f, g_cfg.servo_speed, 5000);   // 平滑压到机械零点（重建参考）
+    delay(300);                                        // 在限位停靠片刻
+    bool rehomeOk = servo_rotate_to(homeTarget, g_cfg.servo_speed, 5000);
+    journalEvent(EV_SDONE, rehomeOk ? "ok rehome target=%.1f" : "timeout rehome target=%.1f", homeTarget);
+  }
 
   // 7. 无有效配置 → 进入 AP 配网
   if (!g_cfg.valid) {
