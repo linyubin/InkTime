@@ -2261,7 +2261,8 @@ void setup() {
   {
     String prefix = String(DAILY_PHOTO_PATH_PREFIX);            // "/static/inktime/<key>/photo_"
     String base   = prefix.substring(0, prefix.length() - 6);   // "/static/inktime/<key>/"
-    journalSetServer(g_cfg.backend_hostport, base.substring(base.lastIndexOf('/') + 1));
+    base.remove(base.length() - 1);                             // 去掉末尾 '/' → "/static/inktime/<key>"
+    journalSetServer(g_cfg.backend_hostport, base.substring(base.lastIndexOf('/') + 1));  // → "<key>"
   }
 
   // 6.5 初始化墨水屏 SPI 引脚 (必须在 showNetworkInfoScreen 之前调用)

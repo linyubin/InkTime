@@ -203,7 +203,8 @@ void journalEvent(const char* type, const char* fmt, ...) {
 
 void journalUpload() {
   if (!s_mounted) { s_lastUp = "skip: FS 未挂载"; return; }
-  if (s_hostport.length() == 0 || s_key.length() == 0) { s_lastUp = "skip: 未配置 hostport/key"; return; }
+  if (s_hostport.length() == 0) { s_lastUp = "skip: hostport 为空"; return; }
+  if (s_key.length() == 0)      { s_lastUp = "skip: key 为空"; return; }
   if (WiFi.status() != WL_CONNECTED) { s_lastUp = "skip: WiFi 未连接"; return; }
 
   String url = s_hostport;
