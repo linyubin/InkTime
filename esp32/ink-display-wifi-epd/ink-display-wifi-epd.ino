@@ -2311,7 +2311,8 @@ void setup() {
                g_cfg.last_orientation.c_str(), homeTarget);
     journalEvent(EV_SCMD, "rehome cur=%.1f via=0", bootAngle);
     servo_rotate_to(0.0f, g_cfg.servo_speed, 5000);   // 平滑压到机械零点（重建参考）
-    delay(300);                                        // 在限位停靠片刻
+    delay(100);                                        // 短停靠即可——参考在触到限位瞬间已建立，
+                                                       // 久停只会延长堵转嗡嗡（实测用户感知为抖动）
     bool rehomeOk = servo_rotate_to(homeTarget, g_cfg.servo_speed, 5000);
     journalEvent(EV_SDONE, rehomeOk ? "ok rehome target=%.1f" : "timeout rehome target=%.1f", homeTarget);
   }
