@@ -51,8 +51,12 @@
 
 ## 烧录注意（重要）
 
-- 分区方案必须是 **Default**（4MB with spiffs）—— LittleFS 复用其中的 1.5MB FS
-  分区，**不需要改分区表，NVS 里的 WiFi/标定配置不受影响**。
+- 分区方案用 **No OTA (Large APP)**（APP ~2MB + SPIFFS ~2MB）。Default 方案的
+  APP 上限只有 1.2MB，固件已超（1.33MB）编译不过；两者都带 SPIFFS 分区，
+  LittleFS 设备日志照常工作。若将来需要 OTA，可选 Minimal SPIFFS (Large APPS
+  with OTA)（APP ~1.9MB）。
+- 标准方案的 NVS 偏移一致，正常烧录不丢 WiFi 配置/舵机标定；但保险起见烧录前
+  先在设备 Web 标定页抄下当前值。
 - 保持 **Erase All Flash Before Sketch Upload: Disabled**；若手动 Erase 会连 NVS
   带标定一起擦掉。
 - AP 配网模式（WiFi 连不上）不入睡，日志只留在设备本地，下次联网成功后补传。
