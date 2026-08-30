@@ -36,6 +36,10 @@ static uint32_t s_lineSeq = 0;    // 全局行号，跨深睡从文件恢复
 static uint32_t s_cursor  = 0;    // 已上传到的行号（NVS 持久化）
 static String   s_hostport;
 static String   s_key;
+static String   s_lastUp = "never";   // 最近一次上传尝试的结果（诊断页/串口可见）
+
+// 模块自诊断输出（Serial 已由 .ino 的 DBG_BEGIN() 初始化）
+#define JLOG(...) Serial.printf(__VA_ARGS__)
 
 static const char* activeFile() { return s_activeA ? FILE_A : FILE_B; }
 static const char* otherFile()  { return s_activeA ? FILE_B : FILE_A; }
@@ -132,9 +136,11 @@ static void appendLine(const String& line) {
 void journalBegin() {
   s_mounted = LittleFS.begin(true);   // 首次烧录后 FS 分区为空，自动格式化（NVS 不受影响）
   if (!s_mounted) {
-    Serial.println("[DEVLOG] LittleFS 挂载失败，设备日志停用");
+    JLOG("[DEVLOG] LittleFS 挂载失败，设备日志停用！\n");
     return;
   }
+  JLOG("[DEVLOG] LittleFS 挂载 ok（已用 %u/%u KB）\n",
+       (unsigned)(LittleFS.usedBytes() / 1024), (unsigned)(LittleFS.totalBytes() / 1024));
 
   Preferences p;
   p.begin(NVS_NS, false);
@@ -149,6 +155,8 @@ void journalBegin() {
   uint32_t lsB = lastLs(FILE_B);
   if (lsB > s_lineSeq) s_lineSeq = lsB;
   if (s_lineSeq < s_cursor) s_lineSeq = s_cursor;
+
+  JLOG("[DEVLOG] boot=%u 行号=%u 游标=%u\n", (unsigned)s_bootSeq, (unsigned)s_lineSeq, (unsigned)s_cursor);
 
   char d[110];
   char rst[16];
@@ -194,14 +202,16 @@ void journalEvent(const char* type, const char* fmt, ...) {
 }
 
 void journalUpload() {
-  if (!s_mounted) return;
-  if (s_hostport.length() == 0 || s_key.length() == 0) return;
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (!s_mounted) { s_lastUp = "skip: FS 未挂载"; return; }
+  if (s_hostport.length() == 0 || s_key.length() == 0) { s_lastUp = "skip: 未配置 hostport/key"; return; }
+  if (WiFi.status() != WL_CONNECTED) { s_lastUp = "skip: WiFi 未连接"; return; }
 
   String url = s_hostport;
   if (!url.startsWith("http")) url = "http://" + url;
   url.trim();
   url += "/api/device_log/" + s_key;
+
+  JLOG("[DEVLOG] 上传开始 cur=%u -> %s\n", (unsigned)s_cursor, url.c_str());
 
   // 两段按首行行号升序（小的是旧段），保证服务器收到的顺序 = 发生顺序
   const char* order[2];
@@ -230,14 +240,17 @@ void journalUpload() {
     }
     if (count == 0) break;
 
+    JLOG("[DEVLOG] 批次 n=%u %uB\n", (unsigned)count, (unsigned)payload.length());
     HTTPClient http;
     http.begin(url);
     http.setTimeout(8000);
     http.addHeader("Content-Type", "application/x-ndjson");
     int code = http.POST(payload);
     http.end();
+    JLOG("[DEVLOG] 上传响应 code=%d\n", code);
 
     if (code != 200) {
+      s_lastUp = String("fail code=") + code;
       journalEvent(EV_UPLOAD, "fail code=%d sent=%u", code, (unsigned)sentTotal);
       return;   // 失败保留游标，下次唤醒重传
     }
@@ -250,8 +263,29 @@ void journalUpload() {
   }
 
   if (sentTotal > 0) {
+    s_lastUp = String("ok n=") + sentTotal + " cur=" + s_cursor;
     journalEvent(EV_UPLOAD, "ok n=%u cur=%u", (unsigned)sentTotal, (unsigned)s_cursor);
+  } else {
+    s_lastUp = "ok n=0（无增量）";
   }
+}
+
+// 诊断状态行（.ino 的 /log 页会展示）：挂载/行号/游标/两段占用/最近上传结果
+String journalStatus() {
+  String st = "mounted=" + String(s_mounted ? 1 : 0);
+  st += " boot=" + String(s_bootSeq);
+  st += " ls=" + String(s_lineSeq);
+  st += " cur=" + String(s_cursor);
+  if (s_mounted) {
+    File fa = LittleFS.open(FILE_A, FILE_READ);
+    size_t sa = fa ? fa.size() : 0; if (fa) fa.close();
+    File fb = LittleFS.open(FILE_B, FILE_READ);
+    size_t sb = fb ? fb.size() : 0; if (fb) fb.close();
+    st += " segA=" + String((unsigned)sa) + "B";
+    st += " segB=" + String((unsigned)sb) + "B";
+  }
+  st += " lastUp=" + s_lastUp;
+  return st;
 }
 
 uint32_t journalBootSeq() { return s_bootSeq; }

@@ -829,11 +829,17 @@ void handleFetch() {
 }
 
 // /log —— 下载累计的拉取日志
+//   默认内联显示（首行是 DEVLOG 诊断状态，便于排查设备日志上传链路）；
+//   ?dl=1 才加下载头（原行为）。
 void handleLog() {
   g_requestHappened = true;
   DBG_PRINTLN("[HTTP] GET /log");
-  server.sendHeader("Content-Disposition", "attachment; filename=inktime_fetch.log");
-  server.send(200, "text/plain; charset=utf-8", g_fetchLog.length() ? g_fetchLog : String(F("(暂无日志)")));
+  if (server.hasArg("dl")) {
+    server.sendHeader("Content-Disposition", "attachment; filename=inktime_fetch.log");
+  }
+  String body = String("== DEVLOG ") + journalStatus() + " ==\n";
+  body += g_fetchLog.length() ? g_fetchLog : String(F("(暂无日志)"));
+  server.send(200, "text/plain; charset=utf-8", body);
 }
 
 // /debug?state=on|off|confirm_off —— 切换 debug 模式（两步关闭，关前提示下载日志）

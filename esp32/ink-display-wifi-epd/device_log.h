@@ -45,6 +45,9 @@ void journalEvent(const char* type, const char* fmt = "", ...);
 // 需要 WiFi 已连接；断网/未配置时直接返回。
 void journalUpload();
 
+// 诊断状态行（挂载/行号/游标/段占用/最近上传结果），供设备 /log 页与串口展示
+String journalStatus();
+
 uint32_t journalBootSeq();
 
 #endif   // DEVICE_LOG_H
