@@ -4,11 +4,14 @@
  * InkTime ESP32 WiFi 墨水屏驱动
  *
  * 功能：
- *   1. 首次启动进入 AP 配网模式（SSID: InkTime-xxxx / 密码: 12345678）
+ *   1. 支持保存 3 组 WiFi 配置（含一组固件内置备用网络），启动时扫描周围
+ *      网络并自动连接信号最强的已保存组；一组都连不上时进入 AP 配网模式
+ *      （SSID: InkTime-xxxx / 密码: 12345678），并刷新屏幕提示 AP 模式
  *   2. 配网后通过 WiFi 连接服务器，HTTP 下载当日照片 .bin 文件
  *   3. ESP32epdx 低层驱动 (EPD.h) 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
- *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网）
+ *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网；
+ *      内置备用 WiFi 会在下次启动时自动补回）
  *
  * 硬件参数（对齐 push_to_epd_ble.py 中的墨水屏配置）：
  *   - 屏幕型号：GDEY073D46 (EL073TS3)，7.3 寸四色（黑/白/红/黄）
@@ -116,9 +119,22 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 Preferences prefs;
 WebServer   server(80);
 
+// ── 多组 WiFi 配置 ──
+// 最多 3 组凭据。组0 沿用旧 NVS 键 ssid/pass（升级固件后已有配置自动成为组0），
+// 组1/2 用 ssid1/pass1、ssid2/pass2。启动时先扫描周围 SSID，与已存组匹配后
+// 按信号强度从高到低逐组尝试；一组都不可见则直接进 AP 配网（不盲试，省电省时）。
+// 注意：隐藏 SSID（不广播）的网络扫描不到，不会被尝试。
+static const int WIFI_PROFILE_COUNT = 3;
+
+// 固件内置备用网络：若没有任何槽位保存它，自动写入首个空槽位（优先组1，
+// 避开用户主配置；恢复出厂清空 NVS 后下次启动也会重新补入）。
+static const char* BUILTIN_WIFI_SSID = "lybclj123";
+static const char* BUILTIN_WIFI_PASS = "woshi123";
+
 struct Config {
-  String  wifi_ssid;         // WiFi SSID
-  String  wifi_pass;         // WiFi 密码
+  String  wifi_ssid[WIFI_PROFILE_COUNT];  // WiFi SSID（组0 为主配置）
+  String  wifi_pass[WIFI_PROFILE_COUNT];  // WiFi 密码
+  int8_t  active_wifi;                    // 本次唤醒实际连上的组下标（RAM 不落盘），-1=未连接
   String  backend_hostport;  // 服务器地址 (host:port)
   int32_t tz_offset_hours;   // 时区偏移（小时）
   uint8_t refresh_hour;      // 每日刷新时间（0-23）
@@ -172,6 +188,9 @@ void handleRoot();         // /  (hub 首页)
 void handleNetwork();      // /network
 void handleScreen();       // /screen
 void handleServoTest();    // /servo_test
+// 网络信息屏显（AP 提示页 / 联网成功页）。显式前置声明：带默认参数的函数
+// 不能依赖 .ino 自动生成原型（Arduino 预处理器对默认参数会生成重复声明）。
+void showNetworkInfoScreen(bool isAP, bool isSuccess);
 
 // ── 手动调试模式（仅手动唤醒后生效；RAM 变量，每个唤醒周期独立）──
 volatile bool g_debugMode         = false;   // /debug?state=on|off 切换
@@ -212,8 +231,14 @@ static void clearConfigNVS() {
 
 void loadConfig(Config &cfg) {
   prefs.begin("dashcfg", true);
-  cfg.wifi_ssid        = prefs.getString("ssid", "");
-  cfg.wifi_pass        = prefs.getString("pass", "");
+  // 组0 沿用旧键 ssid/pass（老固件已保存的配置自动迁移为组0），组1/2 为扩展键
+  cfg.wifi_ssid[0]     = prefs.getString("ssid",  "");
+  cfg.wifi_pass[0]     = prefs.getString("pass",  "");
+  cfg.wifi_ssid[1]     = prefs.getString("ssid1", "");
+  cfg.wifi_pass[1]     = prefs.getString("pass1", "");
+  cfg.wifi_ssid[2]     = prefs.getString("ssid2", "");
+  cfg.wifi_pass[2]     = prefs.getString("pass2", "");
+  cfg.active_wifi      = -1;
   cfg.backend_hostport = prefs.getString("hostport", DEFAULT_HOSTPORT);
   cfg.tz_offset_hours  = prefs.getInt("tz", DEFAULT_TZ);
   cfg.refresh_hour     = (uint8_t)prefs.getUChar("hour", DEFAULT_HOUR);
@@ -227,11 +252,18 @@ void loadConfig(Config &cfg) {
   cfg.last_orientation    = prefs.getString("last_ori", "");
   prefs.end();
 
-  cfg.valid = (cfg.wifi_ssid.length() > 0);
+  cfg.valid = false;
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    if (cfg.wifi_ssid[i].length() > 0) { cfg.valid = true; break; }
+  }
 
 #if DEBUG_LOG
   DBG_PRINTLN("──── loadConfig ────");
-  DBG_PRINTF("[CFG] ssid=%s\n",       cfg.wifi_ssid.c_str());
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    DBG_PRINTF("[CFG] wifi[%d] ssid=%s pass=%s\n", i + 1,
+               cfg.wifi_ssid[i].c_str(),
+               cfg.wifi_pass[i].length() > 0 ? "(已存)" : "(空)");
+  }
   DBG_PRINTF("[CFG] hostport=%s\n",   cfg.backend_hostport.c_str());
   DBG_PRINTF("[CFG] tz=%d, hour=%d\n", cfg.tz_offset_hours, (int)cfg.refresh_hour);
   DBG_PRINTF("[CFG] rotate180=%s\n",  cfg.rotate180 ? "true" : "false");
@@ -244,10 +276,36 @@ void loadConfig(Config &cfg) {
 #endif
 }
 
+// 固件内置备用 WiFi：若没有任何槽位保存它，写入首个空槽位（优先组1，避开
+// 用户主配置）。同步写 NVS + 内存；恢复出厂（clearConfigNVS）后下次启动重新补入。
+static void ensureBuiltinWifiProfile(Config &cfg) {
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    if (cfg.wifi_ssid[i] == BUILTIN_WIFI_SSID) return;   // 已保存过，不重复
+  }
+  for (int i = 1; i < WIFI_PROFILE_COUNT; ++i) {
+    if (cfg.wifi_ssid[i].length() == 0) {
+      cfg.wifi_ssid[i] = BUILTIN_WIFI_SSID;
+      cfg.wifi_pass[i] = BUILTIN_WIFI_PASS;
+      prefs.begin("dashcfg", false);
+      prefs.putString((String("ssid") + String(i)).c_str(), cfg.wifi_ssid[i]);
+      prefs.putString((String("pass") + String(i)).c_str(), cfg.wifi_pass[i]);
+      prefs.end();
+      cfg.valid = true;
+      DBG_PRINTF("[CFG] 内置备用 WiFi 已写入组 %d: %s\n", i + 1, BUILTIN_WIFI_SSID);
+      return;
+    }
+  }
+}
+
 void saveConfig(const Config &cfg) {
   prefs.begin("dashcfg", false);
-  prefs.putString("ssid",     cfg.wifi_ssid);
-  prefs.putString("pass",     cfg.wifi_pass);
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    // 组0 用旧键 ssid/pass（兼容老固件写入的 NVS），组1/2 用 ssid1/pass1...
+    String ks = (i == 0) ? String("ssid") : (String("ssid") + String(i));
+    String kp = (i == 0) ? String("pass") : (String("pass") + String(i));
+    prefs.putString(ks.c_str(), cfg.wifi_ssid[i]);
+    prefs.putString(kp.c_str(), cfg.wifi_pass[i]);
+  }
   prefs.putString("hostport", cfg.backend_hostport);
   prefs.putInt("tz",          cfg.tz_offset_hours);
   prefs.putUChar("hour",      cfg.refresh_hour);
@@ -510,8 +568,7 @@ String buildConfigPage() {
   int n = WiFi.scanNetworks(false, true);
   DBG_PRINTF("[CFG] 扫描到 %d 个 WiFi 网络\n", n);
 
-  String curSsid = g_cfg.wifi_ssid;
-  String host    = htmlEscape(g_cfg.backend_hostport);
+  String host = htmlEscape(g_cfg.backend_hostport);
   int32_t tz     = g_cfg.tz_offset_hours;
   if (tz < -12 || tz > 14) tz = DEFAULT_TZ;
   uint8_t hour   = g_cfg.refresh_hour;
@@ -519,7 +576,7 @@ String buildConfigPage() {
   bool rot180    = g_cfg.rotate180;
 
   String html;
-  html.reserve(6144);
+  html.reserve(9216);   // 3 组配置表单 + 扫描列表，页面变长
 
   // ── HTML 头部（共享样式 + 导航）──
   html += htmlHead(F("网络配置 · InkTime"), "network");
@@ -533,6 +590,9 @@ String buildConfigPage() {
   html += F("<div style='background:#f8f9fa;padding:12px;border-radius:8px;margin-bottom:20px;text-align:center;font-size:14px;'>");
   if (WiFi.status() == WL_CONNECTED) {
     html += F("<strong>网络状态:</strong> <span style='color:#2e7d32'>已连接</span><br>");
+    html += F("<span style='color:#666'>SSID: </span><strong>");
+    html += WiFi.SSID();
+    html += F("</strong><br>");
     html += F("<span style='color:#666'>IP: </span><strong>");
     html += WiFi.localIP().toString();
     html += F("</strong>");
@@ -543,35 +603,61 @@ String buildConfigPage() {
 
   html += F("<form method='POST' action='/save'>");
 
+  // 多组 WiFi 配置说明
+  html += F("<div class='note'>支持保存 ");
+  html += String(WIFI_PROFILE_COUNT);
+  html += F(" 组 WiFi：设备启动时扫描周围网络，自动连接信号最强的已保存组。");
+  html += F("密码留空表示保持不变；SSID 留空表示删除该组（固件内置的备用网络");
+  html += F("删除后重启会自动补回）。隐藏 SSID（不广播）的网络无法被扫描匹配。</div>");
 
-  // WiFi SSID 选择 + 输入
-  html += F("<div class='group'><label>WiFi 网络</label>");
-  html += F("<select id='ssid_select' onchange=\"document.getElementById('ssid_input').value=this.value;\">");
-  html += F("<option value=''>（手动输入或选择）</option>");
-  if (n > 0) {
-    for (int i = 0; i < n; ++i) {
-      String s = WiFi.SSID(i);
-      if (s.length() == 0) continue;
-      String esc = htmlEscape(s);
-      html += F("<option value='");
-      html += esc;
-      html += F("'");
-      if (s == curSsid) html += F(" selected");
-      html += F(">");
-      html += esc;
-      html += F("</option>");
+  // 3 组 WiFi 编辑：每组 = 扫描下拉 + SSID 输入 + 密码输入
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    // 组标题（当前连接的组带标注）
+    html += F("<h3>WiFi 配置 ");
+    html += String(i + 1);
+    if (WiFi.status() == WL_CONNECTED && g_cfg.active_wifi == i) html += F("（当前连接）");
+    html += F("</h3>");
+
+    // 扫描列表选择（选中即填入下方 SSID 输入框）
+    html += F("<div class='group'><label>从扫描列表选择</label>");
+    html += F("<select onchange=\"document.getElementById('ssid_input_");
+    html += String(i);
+    html += F("').value=this.value;\">");
+    html += F("<option value=''>（手动输入或选择）</option>");
+    if (n > 0) {
+      for (int j = 0; j < n; ++j) {
+        String s = WiFi.SSID(j);
+        if (s.length() == 0) continue;
+        String esc = htmlEscape(s);
+        html += F("<option value='");
+        html += esc;
+        html += F("'");
+        if (s == g_cfg.wifi_ssid[i]) html += F(" selected");
+        html += F(">");
+        html += esc;
+        html += F("</option>");
+      }
     }
+    html += F("</select></div>");
+
+    // SSID（留空 = 删除该组）
+    html += F("<div class='group'><label>SSID</label>");
+    html += F("<input id='ssid_input_");
+    html += String(i);
+    html += F("' name='ssid");
+    html += String(i);
+    html += F("' type='text' value='");
+    html += htmlEscape(g_cfg.wifi_ssid[i]);
+    html += F("' placeholder='WiFi 名称（留空删除该组）'></div>");
+
+    // 密码（留空 = 保持原密码）
+    html += F("<div class='group'><label>密码</label>");
+    html += F("<input name='pass");
+    html += String(i);
+    html += F("' type='password' placeholder='");
+    html += (g_cfg.wifi_pass[i].length() > 0) ? F("不填=保持原密码") : F("WiFi 密码");
+    html += F("'></div>");
   }
-  html += F("</select></div>");
-
-  html += F("<div class='group'><label>SSID</label>");
-  html += F("<input id='ssid_input' name='ssid' type='text' value='");
-  html += htmlEscape(curSsid);
-  html += F("' placeholder='WiFi 名称'></div>");
-
-  // WiFi 密码
-  html += F("<div class='group'><label>密码</label>");
-  html += F("<input name='pass' type='password' placeholder='WiFi 密码'></div>");
 
   // 服务器地址
   html += F("<div class='group'><label>服务器地址 (host:port)</label>");
@@ -648,10 +734,15 @@ static String buildStatusBar() {
   s += F("<div class='row-s'><span class='k'>舵机</span><span class='v ");
   s += g_cfg.servo_calibrated ? F("ok'>已标定") : F("warn'>未标定");
   s += F("</span></div>");
-  // WiFi
+  // WiFi（STA 已连接时直接显示 SSID，多组配置下能看到当前用的是哪组）
   bool apMode = (WiFi.status() != WL_CONNECTED);
   s += F("<div class='row-s'><span class='k'>网络</span><span class='v ");
-  s += apMode ? F("warn'>AP 配网模式") : F("ok'>STA 已连接");
+  if (apMode) {
+    s += F("warn'>AP 配网模式");
+  } else {
+    s += F("ok'>");
+    s += WiFi.SSID();
+  }
   s += F("</span></div>");
   // IP
   s += F("<div class='row-s'><span class='k'>IP</span><span class='v'>");
@@ -714,20 +805,28 @@ void handleNetwork() {
 void handleSave() {
   DBG_PRINTLN("[HTTP] POST /save");
 
-  String ssid    = server.arg("ssid");
-  String pass    = server.arg("pass");
   String host    = server.arg("hostport");
   String hourStr = server.arg("hour");
   String tzStr   = server.arg("tz");
   bool rot180Req = (server.arg("rot180") == "1");
 
-  ssid.trim();
   host.trim();
 
   Config newCfg = g_cfg;
 
-  if (ssid.length() > 0) newCfg.wifi_ssid = ssid;
-  if (pass.length() > 0) newCfg.wifi_pass = pass;
+  // 3 组 WiFi：SSID 留空=删除该组；密码留空=保持原密码
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    String ssid = server.arg(String("ssid") + String(i));
+    String pass = server.arg(String("pass") + String(i));
+    ssid.trim();
+    if (ssid.length() > 0) {
+      newCfg.wifi_ssid[i] = ssid;
+      if (pass.length() > 0) newCfg.wifi_pass[i] = pass;
+    } else {
+      newCfg.wifi_ssid[i] = "";
+      newCfg.wifi_pass[i] = "";
+    }
+  }
   newCfg.backend_hostport = host;
 
   int32_t tz = tzStr.toInt();
@@ -741,7 +840,10 @@ void handleSave() {
   newCfg.refresh_hour = (uint8_t)hour;
 
   newCfg.rotate180 = rot180Req;
-  newCfg.valid     = (newCfg.wifi_ssid.length() > 0);
+  newCfg.valid     = false;
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    if (newCfg.wifi_ssid[i].length() > 0) { newCfg.valid = true; break; }
+  }
 
   saveConfig(newCfg);
 
@@ -1364,6 +1466,10 @@ void goDeepSleepMinutes(uint32_t minutes) {
 void startConfigPortal() {
   DBG_PRINTLN("[CFG] 进入 AP 配网模式");
 
+  // 进入配网统一刷新屏幕提示（热点名/密码/配置地址 192.168.4.1）：
+  // 无论从哪条路径进来（无配置 / 多组全连不上 / 配网超时休眠后再醒）都会显示。
+  showNetworkInfoScreen(true, false);
+
   wifiHardResetForPortal();
 
   // AP 名称：InkTime-<MAC后4位>
@@ -1410,16 +1516,17 @@ void startConfigPortal() {
 // ============================================================
 //  WiFi STA 连接
 // ============================================================
-bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
-  DBG_PRINTF("[WIFI] 连接到 %s ...\n", cfg.wifi_ssid.c_str());
+// 连接指定组的 WiFi。groupIdx 仅用于日志（-1=未指定组）。
+bool connectWiFi(const char* ssid, const char* pass, int8_t groupIdx = -1, uint32_t timeout_ms = 15000) {
+  DBG_PRINTF("[WIFI] 连接到 %s (组 %d)...\n", ssid, groupIdx + 1);
 
-  if (cfg.wifi_ssid.isEmpty()) return false;
+  if (!ssid || strlen(ssid) == 0) return false;
 
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(true);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);  // 降低发射功率以省电
-  WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_pass.c_str());
+  WiFi.begin(ssid, pass);
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < timeout_ms) {
@@ -1432,13 +1539,70 @@ bool connectWiFi(const Config &cfg, uint32_t timeout_ms = 15000) {
 
   if (ok) {
     DBG_PRINTF("[WIFI] 已连接, IP=%s\n", WiFi.localIP().toString().c_str());
-    journalEvent(EV_WIFI, "ok ip=%s", WiFi.localIP().toString().c_str());
+    journalEvent(EV_WIFI, "ok group=%d ip=%s", groupIdx + 1, WiFi.localIP().toString().c_str());
   } else {
     DBG_PRINTLN("[WIFI] 连接失败");
-    journalEvent(EV_WIFI, "fail ssid=%s timeout_ms=%u", cfg.wifi_ssid.c_str(), (unsigned)timeout_ms);
+    journalEvent(EV_WIFI, "fail group=%d ssid=%s timeout_ms=%u", groupIdx + 1, ssid, (unsigned)timeout_ms);
   }
 
   return ok;
+}
+
+// ============================================================
+//  扫描周围 WiFi，找出已保存且当前可见的配置组，
+//  按信号强度（RSSI）从高到低排序填入 tryOrder[]，返回可见组数。
+//  扫描约 2~4 秒。隐藏 SSID（不广播）的网络扫描不到，不会被返回——
+//  这是有意取舍：避免对不可见网络逐组盲试（3 组 × 15s 超时），
+//  换网络环境时几秒内即可判定"该进 AP 配网"并刷屏提示。
+// ============================================================
+static int scanVisibleSavedProfiles(const Config &cfg, int tryOrder[WIFI_PROFILE_COUNT]) {
+  DBG_PRINTLN("[WIFI] 扫描周围网络，匹配已存配置...");
+  WiFi.scanDelete();
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  int n = WiFi.scanNetworks(false, true);
+  if (n < 0) n = 0;   // 扫描错误码按 0 个网络处理
+  DBG_PRINTF("[WIFI] 扫描到 %d 个网络\n", n);
+
+  // 每组取可见 AP 中的最强 RSSI（同名 mesh/中继取最近那个）
+  int bestRssi[WIFI_PROFILE_COUNT];
+  for (int p = 0; p < WIFI_PROFILE_COUNT; ++p) {
+    bestRssi[p] = -9999;
+    if (cfg.wifi_ssid[p].length() == 0) continue;
+    for (int i = 0; i < n; ++i) {
+      if (WiFi.SSID(i) == cfg.wifi_ssid[p]) {
+        int r = WiFi.RSSI(i);
+        if (r > bestRssi[p]) bestRssi[p] = r;
+      }
+    }
+  }
+  WiFi.scanDelete();   // 释放扫描结果内存，随后 begin 连接
+
+  // 按 RSSI 从高到低选出可见组
+  int cnt = 0;
+  bool used[WIFI_PROFILE_COUNT] = {false};
+  for (;;) {
+    int best = -1;
+    for (int p = 0; p < WIFI_PROFILE_COUNT; ++p) {
+      if (used[p] || bestRssi[p] == -9999) continue;
+      if (best < 0 || bestRssi[p] > bestRssi[best]) best = p;
+    }
+    if (best < 0) break;
+    used[best] = true;
+    tryOrder[cnt++] = best;
+  }
+
+  if (cnt > 0) {
+    DBG_PRINT("[WIFI] 可见已存配置（按信号强度）:");
+    for (int k = 0; k < cnt; ++k) {
+      DBG_PRINTF(" 组%d=%s(%ddBm)", tryOrder[k] + 1,
+                 cfg.wifi_ssid[tryOrder[k]].c_str(), bestRssi[tryOrder[k]]);
+    }
+    DBG_PRINTLN();
+  } else {
+    DBG_PRINTLN("[WIFI] 当前环境看不到任何已保存的网络");
+  }
+  return cnt;
 }
 
 // ============================================================
@@ -2104,7 +2268,7 @@ void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &no
 // ============================================================
 //  显示配网/网络状态信息页面
 // ============================================================
-void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
+void showNetworkInfoScreen(bool isAP, bool isSuccess) {   // 前置声明在文件头部（无默认参数）
   if (!g_epdPresent) {
     DBG_PRINTLN("[EPD] 无屏，跳过网络信息页面");
     return;
@@ -2167,7 +2331,10 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess = false) {
       textY += 40;
       Paint_DrawString_EN(textX, textY, "WiFi Configured!", &Font24, RED0, WHITE0);
       textY += 30;
-      Paint_DrawString_EN(textX, textY, ("SSID: " + g_cfg.wifi_ssid).c_str(), &Font16, BLACK0, WHITE0);
+      // 多组配置下显示实际连上的那组
+      String shownSsid = (g_cfg.active_wifi >= 0) ? g_cfg.wifi_ssid[g_cfg.active_wifi]
+                                                  : g_cfg.wifi_ssid[0];
+      Paint_DrawString_EN(textX, textY, ("SSID: " + shownSsid).c_str(), &Font16, BLACK0, WHITE0);
       textY += 30;
       Paint_DrawString_EN(textX, textY, ("IP: " + WiFi.localIP().toString()).c_str(), &Font16, BLACK0, WHITE0);
       textY += 30;
@@ -2264,8 +2431,9 @@ void setup() {
   // 5. 初始化随机数种子
   randomSeed(esp_random());
 
-  // 6. 加载 NVS 配置
+  // 6. 加载 NVS 配置 + 补入固件内置备用 WiFi（lybclj123）
   loadConfig(g_cfg);
+  ensureBuiltinWifiProfile(g_cfg);
 
   // 6.1 注入设备日志的上传目标（hostport + 照片 key 作设备标识）
   {
@@ -2326,27 +2494,33 @@ void setup() {
     journalEvent(EV_SDONE, rehomeOk ? "ok rehome target=%.1f" : "timeout rehome target=%.1f", homeTarget);
   }
 
-  // 7. 无有效配置 → 进入 AP 配网
+  // 7. 无有效配置 → 进入 AP 配网（屏幕提示由 startConfigPortal 内统一刷新）
   if (!g_cfg.valid) {
     DBG_PRINTLN("[BOOT] 无有效配置 → AP 配网模式");
-    showNetworkInfoScreen(true, false);
     startConfigPortal();
     // startConfigPortal() 不返回
   }
 
-  // 8. 连接 WiFi（最多 3 次尝试，线性退避；全失败才进 AP 配网门户）
+  // 8. 连接 WiFi：扫描匹配已存配置组，按信号强度从高到低逐组尝试；
+  //    第一轮全失败再来一轮（等路由器/DHCP 恢复），两轮全败 → AP 配网。
+  //    不可见的组不盲试——换网络环境时一次扫描（~4s）即可判定进配网，
+  //    不再像旧逻辑（单组连 3 次 × 15s）那样空等近一分钟。
   DBG_PRINTLN("[BOOT] 尝试连接 WiFi...");
   bool wifiOk = false;
-  for (int attempt = 1; attempt <= 3; ++attempt) {
-    if (connectWiFi(g_cfg)) { wifiOk = true; break; }
-    if (attempt < 3) {
-      DBG_PRINTF("[BOOT] WiFi 第 %d 次尝试失败，退避 %ds 后重试...\n", attempt, attempt);
-      delay(1000 * attempt);   // 退避 1s / 2s，等路由器/ DHCP 恢复
+  int tryOrder[WIFI_PROFILE_COUNT];
+  int visible = scanVisibleSavedProfiles(g_cfg, tryOrder);
+  for (int pass = 0; pass < 2 && !wifiOk; ++pass) {
+    for (int k = 0; k < visible && !wifiOk; ++k) {
+      int8_t p = (int8_t)tryOrder[k];
+      if (pass > 0 || k > 0) delay(1500);   // 换组/重试前退避
+      if (connectWiFi(g_cfg.wifi_ssid[p].c_str(), g_cfg.wifi_pass[p].c_str(), p)) {
+        wifiOk = true;
+        g_cfg.active_wifi = p;
+      }
     }
   }
   if (!wifiOk) {
     DBG_PRINTLN("[BOOT] WiFi 连接失败 → AP 配网模式");
-    showNetworkInfoScreen(true, false);
     startConfigPortal();
   }
 

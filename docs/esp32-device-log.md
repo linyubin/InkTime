@@ -15,7 +15,7 @@
 |------|------|----------|
 | `BOOT` | 每次开机第一条 | `reset=`（POWERON/BROWNOUT/PANIC/…WDT/SW_REBOOT/DEEPSLEEP_WAKE）、`wake=`（TIMER/POWERON）、`heap=` |
 | `SLEEP` | 入睡前最后一条 | `next_min=` 下次唤醒分钟数、`heap=` |
-| `WIFI` | connectWiFi 结果 | `ok ip=` / `fail ssid= timeout_ms=` |
+| `WIFI` | connectWiFi 结果（多组配置带 `group=` 组号） | `ok group= ip=` / `fail group= ssid= timeout_ms=` |
 | `AP_PORTAL` | 进配网模式 | `ssid= ok=` |
 | `TIME_SYNC` | 授时成功（**锚点**）/失败 | `src=lan\|ntp anchor=<epoch>` |
 | `PHOTO_JSON` | 朝向 sidecar 拉取 | `idx= ori=` / `fail idx= code=` |
