@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 import json
+import math
 import re
 import datetime as dt
 import os
@@ -956,107 +957,26 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
     img_area_w = CANVAS_WIDTH
     img_area_h = CANVAS_HEIGHT  # 取消专属文字留白，让照片和背景彻底铺满全屏
 
-    # “铺满裁剪”：缩放到至少覆盖区域，再从中间裁一块
+    # 全出血（full-bleed）缩放：scale 固定取 cover（两个方向都铺满画布）。
+    # 绝不能缩到 cover 以下——任何低于 cover 的缩放都会露出未覆盖区域，
+    # 抖动后表现为左右/上下白边（2026-09-11 移除旧的"内容感知缩小 +
+    # 毛玻璃回填"路径；主体适配完全交给 compute_crop_window 的滑动窗口裁切）。
     ratio_w = img_area_w / img_w
     ratio_h = img_area_h / img_h
     scale = max(ratio_w, ratio_h)
-    
-    # ====== 内容感知缩放（防止多个主体相隔太远导致必然有一人被裁掉） ======
-    subjects_json_str = item.get("subjects_json", "")
-    if subjects_json_str:
-        try:
-            import json
-            subs = json.loads(subjects_json_str)
-            weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
-            valid_subs = [s for s in subs if s.get("label") in weights_map and s.get("conf", 0) >= 0.2]
-            
-            # 如果存在有效主体，计算它们在画面中占据的极值边界
-            if len(valid_subs) >= 1:
-                xs = []
-                ys = []
-                for s in valid_subs:
-                    cx, cy, bw, bh = s["bbox"]
-                    xs.append(cx - bw/2)
-                    xs.append(cx + bw/2)
-                    ys.append(cy - bh/2)
-                    ys.append(cy + bh/2)
-                
-                group_min_x, group_max_x = min(xs), max(xs)
-                group_min_y, group_max_y = min(ys), max(ys)
-                
-                # 增加 5% 的边缘呼吸空间，防止人脸紧贴边框
-                group_min_x = max(0.0, group_min_x - 0.05)
-                group_max_x = min(1.0, group_max_x + 0.05)
-                group_min_y = max(0.0, group_min_y - 0.05)
-                group_max_y = min(1.0, group_max_y + 0.05)
-                
-                # 主体群在原图的真实物理像素跨度
-                sub_w = (group_max_x - group_min_x) * img_w
-                sub_h = (group_max_y - group_min_y) * img_h
-                
-                # 计算为了将群体塞进目标框内，所允许的最大 scale
-                max_scale_w = img_area_w / sub_w if sub_w > 0 else scale
-                max_scale_h = img_area_h / sub_h if sub_h > 0 else scale
-                max_safe_scale = min(max_scale_w, max_scale_h)
-                
-                # 用户要求：宽度必须填满屏幕（绝不出现左右黑边/毛玻璃边）。高度方向允许裁剪或上下留白。
-                # 所以缩放比例的底线就是 ratio_w（即保证 draw_w 至少等于 img_area_w）
-                min_scale = ratio_w
-                
-                # 如果默认的 fill scale 会导致主体群越界被硬切，我们就妥协退让，缩小 scale
-                if scale > max_safe_scale:
-                    scale = max(max_safe_scale, min_scale)
-        except Exception as e:
-            print(f"[WARN] Content-aware scaling failed: {e}")
-    # =================================================================
 
-    draw_w = int(img_w * scale)
-    draw_h = int(img_h * scale)
+    # ceil 并钳到区域尺寸：防止浮点取整后差 1px 在边缘露出白缝
+    draw_w = max(img_area_w, math.ceil(img_w * scale))
+    draw_h = max(img_area_h, math.ceil(img_h * scale))
 
     img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
 
+    subjects_json_str = item.get("subjects_json", "")
     left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str)
-    
-    # 防止因为 scale 缩小导致 draw_w 小于 img_area_w，PIL crop 越界产生黑边
-    crop_left = left if draw_w >= img_area_w else 0
-    crop_right = left + img_area_w if draw_w >= img_area_w else draw_w
-    crop_top = top if draw_h >= img_area_h else 0
-    crop_bottom = top + img_area_h if draw_h >= img_area_h else draw_h
-    
-    img_cropped = img_resized.crop((crop_left, crop_top, crop_right, crop_bottom))
-    
-    # 居中 Letterboxing (如果由于缩小导致图像没填满目标区域，生成高斯模糊的扩大版背景)
-    paste_x = (img_area_w - draw_w) // 2 if draw_w < img_area_w else 0
-    paste_y = (img_area_h - draw_h) // 2 if draw_h < img_area_h else 0
+    img_cropped = img_resized.crop((left, top, left + img_area_w, top + img_area_h))
 
-    if draw_w < img_area_w or draw_h < img_area_h:
-        from PIL import ImageFilter, ImageEnhance
-        # 1. 采用 Fill 模式(即默认比例)将原图填充整个区域作为背景
-        bg_scale = max(img_area_w / img_w, img_area_h / img_h)
-        bg_w = int(img_w * bg_scale)
-        bg_h = int(img_h * bg_scale)
-        bg_resized = img.resize((bg_w, bg_h), Image.LANCZOS)
-        
-        # 居中裁剪出需要的背景
-        bg_left = max(0, (bg_w - img_area_w) // 2)
-        bg_top = max(0, (bg_h - img_area_h) // 2)
-        bg_cropped = bg_resized.crop((bg_left, bg_top, bg_left + img_area_w, bg_top + img_area_h))
-        
-        # 2. 高斯模糊参数 (你可以调整这个 radius，数值越大越模糊)
-        bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(radius=45))
-        
-        # 3. 调整背景风格 (弃用变暗，改为覆盖半透明纯白蒙版)
-        # 之前使用的变暗 (enhance 0.4) 在彩色墨水屏上会因为 4 色抖动算法生成大量密集黑点，显得非常脏和生硬。
-        # 这里改为覆盖一层约 70% 透明度 (alpha=180) 的白色，形成干净明亮的“浅色毛玻璃”效果。
-        white_overlay = Image.new("RGBA", bg_blurred.size, (255, 255, 255, 180))
-        pic_area = Image.alpha_composite(bg_blurred.convert("RGBA"), white_overlay).convert("RGB")
-    else:
-        pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
-
-    pic_area.paste(img_cropped, (paste_x, paste_y))
-    
-    # 贴到上方
-    canvas.paste(pic_area, (0, 0))
+    # 照片区直接铺满画布顶部（全尺寸裁切窗口，无留白路径）
+    canvas.paste(img_cropped, (0, 0))
 
     # ---------- 底部文字区域 (毛玻璃圆角矩形) ----------
     # 相框遮挡：竖屏可视底边在 CANVAS_HEIGHT - FRAME_MASK_INSET_PX，底部 inset 像素会被
@@ -1172,107 +1092,33 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     if img_w == 0 or img_h == 0:
         raise RuntimeError(f"横屏渲染：图片尺寸非法 {img.size}")
 
-    # ---------- 横屏铺满裁剪（cover-crop） ----------
+    # ---------- 横屏铺满裁剪（cover-crop，全出血） ----------
     img_area_w = canvas_w
     img_area_h = canvas_h
-    # 底部文字卡片高度：既是卡片绘制高度，也是缩放/裁切阶段的“主体避让区”。
-    # 提前定义以便缩放与裁切共同遵守，避免主体（如坐在水里的小孩）被毛玻璃卡片遮挡。
+    # 底部文字卡片高度：作为裁切阶段的“主体避让区”传给 compute_crop_window，
+    # 避免主体（如坐在水里的小孩）被毛玻璃卡片遮挡。
     text_area_height = 110
 
+    # 全出血（full-bleed）缩放：scale 固定取 cover，照片铺满 800×480 画布。
+    # 旧版在主体装不下时会缩小画面、允许最多 LANDSCAPE_MAX_LETTERBOX_RATIO
+    # （15%）宽度的毛玻璃留白回填——回填层 70% 为白色，抖动后就是用户看到的
+    # 左右白边，已于 2026-09-11 移除。主体适配全部交给 compute_crop_window
+    # （滑动窗口 + 完整框入硬约束 + 底部卡片避让）。
     scale = max(canvas_w / img_w, canvas_h / img_h)
 
-    # ====== 内容感知缩放（与竖屏同款：防止多个主体相隔太远必然切人） ======
-    subjects_json_str = item.get("subjects_json", "")
-    if subjects_json_str:
-        try:
-            subs = json.loads(subjects_json_str)
-            weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
-            valid_subs = [s for s in subs if s.get("label") in weights_map and s.get("conf", 0) >= 0.2]
-
-            if len(valid_subs) >= 1:
-                xs = []
-                ys = []
-                for s in valid_subs:
-                    cx, cy, bw, bh = s["bbox"]
-                    xs.append(cx - bw/2)
-                    xs.append(cx + bw/2)
-                    ys.append(cy - bh/2)
-                    ys.append(cy + bh/2)
-
-                group_min_x, group_max_x = min(xs), max(xs)
-                group_min_y, group_max_y = min(ys), max(ys)
-
-                group_min_x = max(0.0, group_min_x - 0.05)
-                group_max_x = min(1.0, group_max_x + 0.05)
-                group_min_y = max(0.0, group_min_y - 0.05)
-                group_max_y = min(1.0, group_max_y + 0.05)
-
-                sub_w = (group_max_x - group_min_x) * img_w
-                sub_h = (group_max_y - group_min_y) * img_h
-
-                max_scale_w = img_area_w / sub_w if sub_w > 0 else scale
-                # 高度方向用“有效画面高”（扣除底部文字区）来约束：
-                # 让主体群缩放后尽量装进文字区以上的空间，避免被毛玻璃卡片压住。
-                max_scale_h = (img_area_h - text_area_height) / sub_h if sub_h > 0 else scale
-                max_safe_scale = min(max_scale_w, max_scale_h)
-
-                # 横屏缩放下限：允许缩小（毛玻璃回填）以装下主体、避开文字区，
-                # 但横向留白不得超过画布宽的 LANDSCAPE_MAX_LETTERBOX_RATIO（默认 15%）。
-                # 超过这个比例则停止缩小，转而由下游 compute_crop_window 裁切非主体边缘
-                # （宁可裁掉少量腿部，也不要满屏白边影响观感）。
-                # 推导：canvas_w - img_w*scale <= ratio*canvas_w  =>  scale >= (1-ratio)*canvas_w/img_w
-                max_letterbox_ratio = float(getattr(cfg, "LANDSCAPE_MAX_LETTERBOX_RATIO", 0.15))
-                min_scale = (1.0 - max_letterbox_ratio) * canvas_w / img_w
-
-                if scale > max_safe_scale:
-                    scale = max(max_safe_scale, min_scale)
-        except Exception as e:
-            print(f"[WARN] 横屏内容感知缩放失败: {e}")
-    # =================================================================
-
-    draw_w = int(img_w * scale)
-    draw_h = int(img_h * scale)
+    # ceil 并钳到区域尺寸：防止浮点取整后差 1px 在边缘露出白缝
+    draw_w = max(img_area_w, math.ceil(img_w * scale))
+    draw_h = max(img_area_h, math.ceil(img_h * scale))
     img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
 
     # 复用竖屏的主体感知裁剪窗口算法（函数本身几何不敏感）。
     # 传入底部文字卡片高度作为避让区，避免主体被毛玻璃卡片遮挡（如坐在水里的孩子）。
-    # text_area_height 已在上方缩放段前定义，此处复用。
+    subjects_json_str = item.get("subjects_json", "")
     left, top = compute_crop_window(draw_w, draw_h, img_area_w, img_area_h, subjects_json_str, bottom_reserve=text_area_height)
+    img_cropped = img_resized.crop((left, top, left + img_area_w, top + img_area_h))
 
-    # 越界兜底（与竖屏一致）：scale 缩小导致填不满时回到原点裁切。
-    crop_left = left if draw_w >= img_area_w else 0
-    crop_right = left + img_area_w if draw_w >= img_area_w else draw_w
-    crop_top = top if draw_h >= img_area_h else 0
-    crop_bottom = top + img_area_h if draw_h >= img_area_h else draw_h
-
-    img_cropped = img_resized.crop((crop_left, crop_top, crop_right, crop_bottom))
-
-    # 居中 Letterboxing：缩小装下主体后若没填满画布，用高斯模糊的扩大版背景回填
-    # （与竖屏 render_image 完全同款视觉，保证两套管线风格一致）。
-    paste_x = (img_area_w - draw_w) // 2 if draw_w < img_area_w else 0
-    paste_y = (img_area_h - draw_h) // 2 if draw_h < img_area_h else 0
-
-    if draw_w < img_area_w or draw_h < img_area_h:
-        from PIL import ImageFilter
-        # 1. 用 Fill 比例（cover）把原图铺满整个画布作为背景
-        bg_scale = max(img_area_w / img_w, img_area_h / img_h)
-        bg_w = int(img_w * bg_scale)
-        bg_h = int(img_h * bg_scale)
-        bg_resized = img.resize((bg_w, bg_h), Image.LANCZOS)
-
-        bg_left = max(0, (bg_w - img_area_w) // 2)
-        bg_top = max(0, (bg_h - img_area_h) // 2)
-        bg_cropped = bg_resized.crop((bg_left, bg_top, bg_left + img_area_w, bg_top + img_area_h))
-
-        # 2. 高斯模糊 + 半透明白蒙版（浅色毛玻璃，规避 4 色抖动的密集黑点）
-        bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(radius=45))
-        white_overlay = Image.new("RGBA", bg_blurred.size, (255, 255, 255, 180))
-        pic_area = Image.alpha_composite(bg_blurred.convert("RGBA"), white_overlay).convert("RGB")
-    else:
-        pic_area = Image.new("RGB", (img_area_w, img_area_h), (255, 255, 255))
-    pic_area.paste(img_cropped, (paste_x, paste_y))
-
-    canvas.paste(pic_area, (0, 0))
+    # 照片区直接铺满画布（全尺寸裁切窗口，无留白路径）
+    canvas.paste(img_cropped, (0, 0))
 
     # ---------- 底部 3D 玻璃圆角卡片（不贴底）----------
     # 设计要点（经四色抖动实测验证）：
