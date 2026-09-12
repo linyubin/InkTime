@@ -853,15 +853,14 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
         print(f"[WARN] compute_crop_window error: {e}")
         return default_left, default_top
 
-def _resolve_and_load_image(item: Dict[str, Any]) -> Image.Image:
+def resolve_photo_path(raw_path: str) -> Path:
     """
-    把 DB 路径解析成可读的本地文件并加载：
+    把 DB 路径解析成可读的本地文件路径：
     - 依次尝试原始路径、PATH_MAP 跨平台映射、IMAGE_DIR 兜底推断。
-    - 加载后做 EXIF transpose 并转 RGB，返回的 img 朝向是真实像素朝向。
-    抽出来供 render_image 与 main() 共用：main() 据此计算 sidecar 朝向，
-    保证 sidecar 写入的 orientation 与 render_image 实际走的分支完全一致。
+    - 解析失败抛 RuntimeError（含排查提示）。
+    供 _resolve_and_load_image 与 holiday_ai（AI 选片缩略图）共用，
+    保证两条路径读的是同一个文件。
     """
-    raw_path = str(item["path"])
     img_path = Path(raw_path)
 
     # 跨平台路径映射支持 (Windows -> Linux 迁移自动修复)
@@ -907,6 +906,18 @@ def _resolve_and_load_image(item: Dict[str, Any]) -> Image.Image:
 
         debug_msg += f"[DEBUG] 或者，你可以尝试在树莓派的 config.py 里加上 PATH_MAP = {{r'\\\\10.168.1.111\\Photos': '你实际的Linux目录'}}\n"
         raise RuntimeError(debug_msg)
+    return img_path
+
+
+def _resolve_and_load_image(item: Dict[str, Any]) -> Image.Image:
+    """
+    把 DB 路径解析成可读的本地文件并加载：
+    - 路径解析见 resolve_photo_path（PATH_MAP / IMAGE_DIR 兜底）。
+    - 加载后做 EXIF transpose 并转 RGB，返回的 img 朝向是真实像素朝向。
+    抽出来供 render_image 与 main() 共用：main() 据此计算 sidecar 朝向，
+    保证 sidecar 写入的 orientation 与 render_image 实际走的分支完全一致。
+    """
+    img_path = resolve_photo_path(str(item["path"]))
 
     img = Image.open(img_path)
     img = ImageOps.exif_transpose(img).convert("RGB")
@@ -971,7 +982,8 @@ def _cover_crop(img: Image.Image, canvas_w: int, canvas_h: int,
 
 
 def _render_with_layout(item: Dict[str, Any], img: Image.Image,
-                        orientation: str, canvas_w: int, canvas_h: int) -> Image.Image:
+                        orientation: str, canvas_w: int, canvas_h: int,
+                        holiday: Optional[Dict[str, Any]] = None) -> Image.Image:
     """选型 + 裁切 + 文字层绘制，返回成品画布（info 携带 layout 决策明细）。"""
     import render_layouts
     from layout_strategy import CROP_RESERVES
@@ -980,6 +992,11 @@ def _render_with_layout(item: Dict[str, Any], img: Image.Image,
     canvas.paste(_cover_crop(img, canvas_w, canvas_h, item,
                              CROP_RESERVES.get(layout, {})), (0, 0))
     render_layouts.render_layout(canvas, layout, item)
+    if holiday:
+        # 节日层在版式文字层之上、gamma/抖动之前（2026-09-12 节假日模式，
+        # 设计见 docs/plans/2026-09-12-holiday-mode-design.md §5）
+        import holiday_render
+        holiday_render.apply_holiday_layer(canvas, layout, orientation, holiday)
     canvas.info["render_orientation"] = orientation
     canvas.info["layout"] = layout
     canvas.info["layout_info"] = info
@@ -991,7 +1008,8 @@ def _render_with_layout(item: Dict[str, Any], img: Image.Image,
     return canvas
 
 
-def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image.Image:
+def render_image(item: Dict[str, Any], force_orientation: str = "auto",
+                 holiday: Optional[Dict[str, Any]] = None) -> Image.Image:
     """
     根据选中的 item 渲染一张 RGB 图像（竖屏 480x800 或横屏 800x480）。
     - 上方图片：占 [0, CANVAS_HEIGHT - TEXT_AREA_HEIGHT)
@@ -1001,6 +1019,7 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
       - "auto"（默认）：按 compute_render_orientation(img_w, img_h) 自动判定，与 main() 一致。
       - "portrait"：强制走竖屏管线（横版照片也会渲染成竖屏）。
       - "landscape"：强制走横屏管线（竖版照片也会渲染成横屏）。
+    holiday: get_today_holiday() 的命中结果；非 None 时叠加节日庆祝层。
     """
     # ---------- 加载原图并按 EXIF 方向纠正 ----------
     img = _resolve_and_load_image(item)
@@ -1018,7 +1037,7 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
 
     if orient == "landscape":
         # 把已经 EXIF 修正过的 PIL 图直接交给横屏管线，避免重复打开/transpose。
-        canvas = render_image_landscape(item, img)
+        canvas = render_image_landscape(item, img, holiday=holiday)
         canvas.info["render_orientation"] = "landscape"
         return canvas
 
@@ -1026,7 +1045,8 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
     # TEXT_LAYOUT_STRATEGY=True（或 TEXT_LAYOUT_FORCE 指定版式）时走 14 款版式；
     # 关闭且未强制时走下方旧版固定底部卡片路径，行为与历史版本完全一致。
     if _layout_strategy_enabled() or _forced_layout():
-        return _render_with_layout(item, img, "portrait", CANVAS_WIDTH, CANVAS_HEIGHT)
+        return _render_with_layout(item, img, "portrait", CANVAS_WIDTH, CANVAS_HEIGHT,
+                                   holiday=holiday)
 
     canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
@@ -1139,11 +1159,17 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
         loc_x = padding_x
     draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
 
+    if holiday:
+        # 旧版固定底部卡片路径同样支持节日层（TEXT_LAYOUT_STRATEGY=False 时）
+        import holiday_render
+        holiday_render.apply_holiday_layer(canvas, "", "portrait", holiday)
+
     canvas.info["render_orientation"] = orient
     return canvas
 
 
-def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: str = "bottom") -> Image.Image:
+def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: str = "bottom",
+                           holiday: Optional[Dict[str, Any]] = None) -> Image.Image:
     """
     渲染一张 800×480 的横屏 RGB 图像：
     - cover-crop 填满横屏画布（β-紧：不做 letterbox 毛玻璃回退）。
@@ -1166,7 +1192,8 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
 
     # ---------- 版式自动选型路径（2026-09-12）----------
     if _layout_strategy_enabled() or _forced_layout():
-        return _render_with_layout(item, img, "landscape", canvas_w, canvas_h)
+        return _render_with_layout(item, img, "landscape", canvas_w, canvas_h,
+                                   holiday=holiday)
 
     canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
@@ -1297,6 +1324,11 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
     if loc_x < padding_x:
         loc_x = padding_x
     draw.text((loc_x, second_line_y), loc_display, font=font_small, fill=text_fill, stroke_width=stroke_w, stroke_fill=text_fill)
+
+    if holiday:
+        # 旧版固定底部卡片路径同样支持节日层（TEXT_LAYOUT_STRATEGY=False 时）
+        import holiday_render
+        holiday_render.apply_holiday_layer(canvas, "", "landscape", holiday)
 
     return canvas
 
@@ -1528,8 +1560,37 @@ def main():
     if not items:
         raise SystemExit("没有可用照片（exif_json 为空或解析失败）。")
 
-    photos, info = choose_photos_for_today(items, TODAY, count=DAILY_PHOTO_QUANTITY)
-    photos = apply_portrait_rerank(photos)
+    # ---------- 节假日模式（2026-09-12，设计见 docs/plans/2026-09-12-holiday-mode-design.md）----------
+    from holidays import get_today_holiday
+    holiday = get_today_holiday(TODAY)
+    if holiday:
+        print(f"[HOLIDAY] 命中{holiday['name']} ({TODAY}, template={holiday['template']})")
+
+    # AI 模式：候选取前 HOLIDAY_AI_CANDIDATES 张送远端 VLM 重排；失败整体回退
+    ai_count = DAILY_PHOTO_QUANTITY
+    if holiday:
+        import holiday_ai
+        if holiday_ai.enabled():
+            ai_count = max(int(getattr(cfg, "HOLIDAY_AI_CANDIDATES", 10) or 10),
+                           DAILY_PHOTO_QUANTITY)
+
+    photos, info = choose_photos_for_today(items, TODAY, count=ai_count)
+
+    ai_applied = False
+    if holiday and ai_count > DAILY_PHOTO_QUANTITY:
+        import holiday_ai
+        ai_result = holiday_ai.select_and_describe(photos, holiday)
+        if ai_result:
+            photos = ai_result["photos"][:DAILY_PHOTO_QUANTITY]
+            if ai_result.get("greeting"):
+                holiday["greeting"] = ai_result["greeting"]
+            ai_applied = True
+            print(f"[HOLIDAY-AI] 已按 AI 重排，首选: {photos[0]['path']}")
+        else:
+            print("[HOLIDAY-AI] ⚠️ AI 选片失败，回退现有管线")
+    if not ai_applied:
+        # 回退现有管线：候选取前 DAILY_PHOTO_QUANTITY 张（未启用 AI 时本身等长，切片无操作）
+        photos = apply_portrait_rerank(photos[:DAILY_PHOTO_QUANTITY])
 
     print("[INFO] 目标月日:", info["target_md"])
     print("[INFO] 实际使用月日:", info["used_md"])
@@ -1569,8 +1630,8 @@ def main():
         print("[DEBUG] 经纬度:", chosen.get("lat"), chosen.get("lon"))
         print("[DEBUG] 文案:", chosen.get("side", ""))
 
-        # 渲染成完整成品图（照片 + 文案 + 日期 + 地点）
-        img = render_image(chosen)
+        # 渲染成完整成品图（照片 + 文案 + 日期 + 地点 [+ 节日庆祝层]）
+        img = render_image(chosen, holiday=holiday)
 
         # 朝向决策：render_image 已把实际渲染朝向写入 canvas.info，不再为判定朝向
         # 而第二次完整加载原图。
@@ -1628,6 +1689,8 @@ def main():
             # 版式选型结果（2026-09-12），旧固件会忽略未知字段
             "layout": img.info.get("layout", ""),
         }
+        if holiday:
+            sidecar["holiday"] = holiday["name"]
         sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
         sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
         print(f"[OK] 已生成 sidecar: {sidecar_path} ({sidecar})")

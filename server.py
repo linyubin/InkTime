@@ -979,11 +979,15 @@ def sim_render():
         dither = "floyd_steinberg"
 
     try:
-        cache_path = _sim_render_cache_path(f"{p}|{p.stat().st_mtime_ns}|{orient}|{dither}")
+        # 节假日命中结果计入缓存键：节日层随日期变化，避免跨天串缓存
+        from holidays import get_today_holiday
+        holiday = get_today_holiday(datetime.now().date())
+        cache_path = _sim_render_cache_path(
+            f"{p}|{p.stat().st_mtime_ns}|{orient}|{dither}|{holiday['name'] if holiday else ''}")
         if cache_path.exists():
             return send_file(cache_path, mimetype="image/png", as_attachment=False)
 
-        img = rdp.render_image(meta, force_orientation=orient)
+        img = rdp.render_image(meta, force_orientation=orient, holiday=holiday)
         img_dithered = rdp.apply_dither(img, dither)
 
         bio = BytesIO()

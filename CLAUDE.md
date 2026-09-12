@@ -137,9 +137,10 @@ cp config-example.py config.py
 `render_daily_photo.py`:
 1. Queries `photos.db` for photos matching today's month-day
 2. Applies weighted selection algorithm (considering scores, recency, path/category preferences)
-3. Renders selected photo to e-paper format (black/white/red/yellow dithering)
-4. Outputs `photo_0.bin` (or multiple based on `DAILY_PHOTO_QUANTITY`)
-5. `.bin` format consumed by all ESP32 firmware: portrait 480×800 = 384,000 bytes, 1 byte/pixel, color values `0=black, 1=white, 2=red, 3=yellow`, row-major (y=0..799, x=0..479)
+3. Renders selected photo to e-paper format (black/white/red/yellow dithering); text layer uses the 12-layout pipeline (`layout_strategy.py` + `render_layouts.py`, `TEXT_LAYOUT_STRATEGY=False` falls back to the legacy bottom card)
+4. On holidays (matched by `holidays.py` from `holidays.json`, solar + lunar + 除夕), overlays celebration templates (`holiday_render.py`) on every rendered photo; optionally re-ranks candidates / rewrites captions / greeting via remote VLM (`holiday_ai.py`, config section ⑧)
+5. Outputs `photo_0.bin` (or multiple based on `DAILY_PHOTO_QUANTITY`)
+6. `.bin` format consumed by all ESP32 firmware: portrait 480×800 = 384,000 bytes, 1 byte/pixel, color values `0=black, 1=white, 2=red, 3=yellow`, row-major (y=0..799, x=0..479)
 
 ### BLE Push Flow
 
@@ -166,6 +167,8 @@ cp config-example.py config.py
 
 - `analyze_photos.py` - Main photo analysis script
 - `render_daily_photo.py` - Daily photo rendering
+- `holidays.py` / `holiday_render.py` / `holiday_ai.py` - Holiday matching / celebration templates / AI photo picking (design: `docs/plans/2026-09-12-holiday-mode-design.md`; validation report: `docs/holiday-template-validation/index.html`)
+- `holidays-example.json` - Holiday list template (copy to `holidays.json`, gitignored)
 - `server.py` - Download server + review UI
 - `webui.py` - Standalone web UI manager
 - `push_to_epd_ble.py` - BLE push to EPD-nRF5

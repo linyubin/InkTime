@@ -230,3 +230,27 @@ EPD_BLE_CHUNK_SIZE = 238
 #   "NONE"   - 不旋转（横屏使用，或调试用）
 # 如果显示内容整体是镜像或颠倒的，请切换 CW90 / CCW90 再试。
 EPD_ROTATE = "CW90"
+
+
+# ═══ ⑧ 节假日模式 ═════════════════════════════════════
+# （holidays.py / holiday_render.py / holiday_ai.py —— render_daily_photo.py 调用）
+# 节日列表在独立数据文件 holidays.json 中维护（模板见 holidays-example.json），
+# 支持公历/农历、单日循环、带年份一次性日期、范围、除夕特殊规则（"chuxi"）。
+# 命中后当日渲染批次的所有照片叠加节日模板；详见 docs/plans/2026-09-12-holiday-mode-design.md
+
+HOLIDAY_MODE_ENABLED = True
+# 节假日列表文件路径（相对仓库根目录或绝对路径）
+HOLIDAYS_FILE = "./holidays.json"
+
+# ── 可选：远端视觉大模型（节日选片重排 / 照片描述 / 祝福语）──
+# 协议自动识别：URL 以 /api/chat 结尾按 Ollama native，
+# 其余按 OpenAI 兼容（只填 base 会自动补 /chat/completions）。
+# 模型必须支持图像输入。MODEL 或 API_URL 留空视为未启用，
+# 未启用/调用失败时：选片按现有算法、描述用分析期 side_caption、祝福语用 holidays.json 手写的。
+HOLIDAY_AI_ENABLED = False
+HOLIDAY_AI_API_URL  = ""   # 例: https://open.bigmodel.cn/api/paas/v4 或 http://127.0.0.1:11434/api/chat
+HOLIDAY_AI_API_KEY  = ""
+HOLIDAY_AI_MODEL    = ""   # 例: glm-4.6v / qwen-vl-plus 等视觉模型
+HOLIDAY_AI_TIMEOUT_SEC    = 120
+HOLIDAY_AI_CANDIDATES     = 10   # 送选照片数（选片管线照常打分，取前 N 张送 AI）
+HOLIDAY_AI_IMAGE_MAX_EDGE = 512  # 送选缩略图长边
