@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InkTime 文字排版样式集 · 精选 12 款与自动选型策略</title>
+<style>
+  @font-face {
+    font-family: 'LXGW';
+    src: url('font/LXGWHeartSerifMN.ttf') format('truetype');
+    font-display: swap;
+  }
+  :root {
+    --ink-red: #c80000;
+    --ink-yellow: #dcb400;
+    --paper: #f5f2ec;
+    --card: #ffffff;
+    --text-main: #2b2620;
+    --text-sub: #6f675c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--text-main);
+    font-family: 'LXGW', 'Noto Serif CJK SC', serif;
+    padding-bottom: 80px;
+  }
+  /* ================= 页头 ================= */
+  header {
+    background: #211d18;
+    color: #f2ede4;
+    padding: 42px 6vw 34px;
+  }
+  header h1 { font-size: 30px; letter-spacing: 2px; font-weight: 700; }
+  header h1 em { font-style: normal; color: var(--ink-yellow); }
+  header .sub { margin-top: 10px; font-size: 14.5px; color: #b9b0a2; line-height: 1.8; max-width: 980px; }
+  .constraint-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 20px; }
+  .constraint {
+    background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px; line-height: 1.75; color: #d8d0c2;
+  }
+  .constraint b { color: #fff; font-size: 13.5px; display: block; margin-bottom: 2px; }
+  .palette-chips { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+  .chip { width: 26px; height: 26px; border-radius: 6px; border: 1px solid rgba(255,255,255,.35); }
+  .toolbar { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .toolbar button {
+    font-family: inherit; font-size: 14px; cursor: pointer;
+    background: transparent; color: #d8d0c2;
+    border: 1px solid rgba(255,255,255,.4); border-radius: 999px;
+    padding: 7px 18px; transition: all .15s;
+  }
+  .toolbar button.on { background: var(--ink-yellow); border-color: var(--ink-yellow); color: #211d18; font-weight: 700; }
+
+  /* ================= 章节 ================= */
+  section { padding: 40px 6vw 10px; }
+  .sec-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
+  .sec-head h2 { font-size: 24px; letter-spacing: 1px; }
+  .sec-head .photo-meta { font-size: 13.5px; color: var(--text-sub); }
+  .sec-desc { font-size: 14px; color: var(--text-sub); line-height: 1.9; max-width: 1000px; margin-bottom: 26px; }
+  .grid-p { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 34px 26px; }
+  .grid-l { display: grid; grid-template-columns: repeat(auto-fill, minmax(500px, 1fr)); gap: 34px 26px; }
+
+  /* ================= 作品卡 ================= */
+  figure.shot { display: flex; flex-direction: column; gap: 12px; }
+  .frame { position: relative; margin: 0 auto; border-radius: 4px; overflow: hidden;
+           box-shadow: 0 10px 30px rgba(43,38,32,.22); background: #ddd; }
+  .frame-p { width: 300px; height: 500px; }
+  .frame-l { width: 440px; height: 264px; }
+  figcaption { padding: 0 6px; }
+  .shot-num { font-size: 12px; letter-spacing: 2px; color: var(--ink-red); font-weight: 700; }
+  .shot-title { font-size: 18px; font-weight: 700; margin: 3px 0 7px; }
+  .shot-idea { font-size: 13.5px; line-height: 1.85; color: var(--text-main); }
+  .shot-idea .label, .shot-notes .label { font-weight: 700; color: var(--ink-red); margin-right: 6px; }
+  .shot-notes { list-style: none; margin-top: 7px; }
+  .shot-notes li { font-size: 12.5px; line-height: 1.8; color: var(--text-sub); padding-left: 14px; position: relative; }
+  .shot-notes li::before { content: '·'; position: absolute; left: 2px; font-weight: 700; }
+
+  /* ================= 画布（原生 480×800 / 800×480，缩放显示） ================= */
+  .canvas {
+    position: absolute; top: 0; left: 0;
+    font-family: 'LXGW', serif;
+    background-size: cover; background-position: center;
+  }
+  .cv-p { width: 480px; height: 800px; transform: scale(.625); transform-origin: 0 0; background-image: url('img/p_portrait.jpg'); }
+  .cv-l { width: 800px; height: 480px; transform: scale(.55);  transform-origin: 0 0; background-image: url('img/p_landscape.jpg'); }
+  body.ink-mode .canvas { filter: grayscale(1) contrast(1.12) brightness(1.06); }
+
+  /* 画布内通用零件 */
+  .abs { position: absolute; }
+  .glass  { background: rgba(255,255,255,.72); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.95), 0 6px 18px rgba(0,0,0,.28); }
+  .glass-soft { background: rgba(255,255,255,.66); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 5px 14px rgba(0,0,0,.24); }
+  .solid-w { background: #fff; box-shadow: 0 8px 20px rgba(0,0,0,.32); }
+  .scrim-b { background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.66)); }
+  .scrim-b-soft { background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.6)); }
+  .scrim-b-strong { background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,.24) 20.9%, rgba(0,0,0,.68) 41.9%, rgba(0,0,0,.92) 63.4%, rgba(0,0,0,.92) 100%); }
+  .t-dark  { color: #111; }
+  .t-white { color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,.55); }
+  .t-white-dim { color: rgba(255,255,255,.88); text-shadow: 0 1px 5px rgba(0,0,0,.5); }
+  .seal { background: var(--ink-red); color: #fff; display: flex; align-items: center; justify-content: center;
+          border-radius: 6px; box-shadow: 0 3px 10px rgba(0,0,0,.35); }
+  .seal img { display: block; }
+  .seal-col { flex-direction: column; }
+
+  /* 抖动模拟：栅格化 + Floyd-Steinberg 后的画布盖在 mockup 上层。
+     z-index 须低于相框遮挡(50)/安全区(60)，保证开关叠加时遮挡模拟仍然可见 */
+  .dither-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+
+  /* ================= 参考线（全局开关） ================= */
+  body.show-safe .cv-p::after, body.show-safe .cv-l::after {
+    content: ''; position: absolute; border: 2px dashed rgba(0,160,255,.85); pointer-events: none; z-index: 60;
+  }
+  body.show-safe .cv-p::after { inset: 40px 0; }
+  body.show-safe .cv-l::after { inset: 0 40px; }
+  body.show-mask .cv-p::before, body.show-mask .cv-l::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 50;
+    background: repeating-linear-gradient(45deg, rgba(20,20,20,.62) 0 7px, rgba(20,20,20,.38) 7px 14px);
+  }
+  body.show-mask .cv-p::before { clip-path: polygon(0 0, 100% 0, 100% 40px, 0 40px, 0 0, 0 100%, 100% 100%, 100% calc(100% - 40px), 0 calc(100% - 40px)); }
+  body.show-mask .cv-l::before { clip-path: polygon(0 0, 40px 0, 40px 100%, 0 100%, 0 0, 100% 0, 100% 100%, calc(100% - 40px) 100%, calc(100% - 40px) 0); }
+
+  /* ================= 落地建议 ================= */
+  .impl { margin: 56px 6vw 0; background: var(--card); border-radius: 14px; padding: 30px 34px;
+          box-shadow: 0 6px 24px rgba(43,38,32,.1); }
+  .impl h2 { font-size: 21px; margin-bottom: 14px; }
+  .impl ol { padding-left: 22px; }
+  .impl li { font-size: 14px; line-height: 2; color: #443e35; }
+  .impl code { background: #efe9de; border-radius: 4px; padding: 1px 7px; font-size: 12.5px;
+               font-family: 'SFMono-Regular', Consolas, monospace; color: #8a3b12; }
+  .impl h3 { font-size: 16px; margin: 24px 0 10px; color: var(--ink-red); letter-spacing: .5px; }
+  .impl-sub { font-size: 14px; color: var(--text-sub); line-height: 1.9; }
+  .impl table { width: 100%; border-collapse: collapse; margin: 8px 0 6px; }
+  .impl th, .impl td { border: 1px solid #e4ddd0; padding: 7px 10px; font-size: 13px; line-height: 1.7; text-align: left; vertical-align: top; }
+  .impl th { background: #f2ede3; font-weight: 700; white-space: nowrap; }
+  .impl td:first-child { white-space: nowrap; font-weight: 700; }
+  .impl pre { background: #26221c; color: #e8e2d5; border-radius: 10px; padding: 16px 18px; overflow-x: auto;
+              font-size: 12.5px; line-height: 1.75; font-family: 'SFMono-Regular', Consolas, monospace; margin-top: 8px; }
+  footer { margin-top: 46px; text-align: center; font-size: 12.5px; color: #9a9184; line-height: 2; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>InkTime 文字排版样式集 <em>·</em> 精选 12 款与自动选型策略</h1>
+  <div class="sub">
+    为 7.3″ 四色墨水屏相框重新设计的一组「文字框排布」方案。照片保持全出血 cover 裁切（主体感知滑动窗口，宁裁边缘不留白边），
+    本页只变化<strong>文字的容器形态、位置与层级</strong>。展示照片横竖各一张，随机抽自本机照片库（seed=20260911），
+    裁切与线上渲染管线同一算法生成。坐标均按真实画布 1:1 标注，可直接翻译为 PIL 绘制代码。
+  </div>
+  <div class="constraint-row">
+    <div class="constraint"><b>画布 / 安全区</b>竖屏 480×800、横屏 800×480；相框遮挡长边两端各 40px，<br>文字必须落在 480×720 / 720×480 可视区内</div>
+    <div class="constraint"><b>四色调色板</b><div class="palette-chips">
+      <span class="chip" style="background:#000"></span><span class="chip" style="background:#fff"></span>
+      <span class="chip" style="background:#c80000"></span><span class="chip" style="background:#dcb400"></span>
+      <span style="margin-left:6px">黑 / 白 / 红 #C80000 / 黄 #DCB400，Floyd-Steinberg 抖动</span>
+    </div></div>
+    <div class="constraint"><b>抖动三条铁律（实测）</b>① 半透明白叠加 alpha ≥ 150 才干净<br>② 深色描边会塌缩成黑实线，禁用<br>③ 立体感 = 外投影 + 白色高光边<br>点上方「四色抖动模拟」预览实刷观感<br>（模拟中毛玻璃不做模糊，卡片噪点较实机略重）</div>
+    <div class="constraint"><b>可用文字字段</b>VLM 文案（≤2 行）、日期 YYYY.M.D、<br>星期（可推导）、地点（城市，缺省经纬度）</div>
+  </div>
+  <div class="toolbar">
+    <button id="btn-safe" onclick="toggle('show-safe',this)">显示安全区</button>
+    <button id="btn-mask" onclick="toggle('show-mask',this)">模拟相框遮挡</button>
+    <button id="btn-ink" onclick="toggle('ink-mode',this)">墨水屏灰度近似</button>
+    <button id="btn-dither" onclick="toggleDither(this)">四色抖动模拟</button>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<!-- 竖屏 10 款                                                         -->
+<!-- ================================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>竖屏 5 款（480 × 800）</h2>
+    <span class="photo-meta">展示照片：厦门 · 2023.6.1 ·「嘴里的鸭子还没咽，手里的快乐先漏了。」</span>
+  </div>
+  <p class="sec-desc">保留的五款覆盖完整的设计语言：玻璃卡基线（P01）、无卡裸字（P03/P10）、海报大字（P08）与中式题签钤印（P05）。P02/P04/P07/P09 与 P06（实色墨条）已裁撤，正式管线只实现这五款。选型规则见页底「选型策略」。</p>
+  <div class="grid-p">
+
+  <!-- P1 -->
+  <figure class="shot">
+    <div class="frame frame-p"><div class="canvas cv-p">
+      <div class="abs glass" style="left:10px;top:645px;width:460px;height:105px;border-radius:16px;"></div>
+      <div class="abs t-dark" style="left:24px;top:659px;width:432px;font-size:22px;line-height:30px;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
+      <div class="abs t-dark" style="left:24px;top:714px;font-size:19px;">2023.6.1 · 星期四</div>
+      <div class="abs t-dark" style="right:24px;top:714px;font-size:19px;">厦门市</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">P 01</div>
+      <div class="shot-title">底部玻璃卡 · 经典改良</div>
+      <p class="shot-idea"><span class="label">设计思路</span>沿用现网底部毛玻璃卡的信息架构（文案在上、日期/地点分列左右）作为对照基线；改良点是卡片整体锚进相框安全区，四角圆角完整不再被遮。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>白色叠加 alpha 180（≥150 抖动干净），文字纯黑 + 同色 0.3px 描边模拟加粗</li>
+        <li>卡片高度随文案行数自适应：行数 × 30 + 上下边距</li>
+        <li>bottom_reserve = 130 让裁切主动避让卡片</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- P3 -->
+  <figure class="shot">
+    <div class="frame frame-p"><div class="canvas cv-p">
+      <div class="abs" style="left:0;top:514px;width:480px;height:286px;background:linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,.24) 19.6%, rgba(0,0,0,.68) 39.2%, rgba(0,0,0,.92) 59.4%, rgba(0,0,0,.92) 100%);"></div>
+      <div class="abs t-white" style="left:28px;top:684px;width:420px;font-size:22px;line-height:30px;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
+      <div class="abs t-white-dim" style="left:28px;top:724px;font-size:15px;">2023.6.1 · 星期四 · 厦门市</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">P 03</div>
+      <div class="shot-title">角落手记</div>
+      <p class="shot-idea"><span class="label">设计思路</span>无卡片，文字直接"长"在照片上，仅靠底部黑色渐变（scrim）托底，电影海报式左对齐。照片露出最大化，文字像写在照片背面的笔记。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>与 P08/P10 同款渐变规则：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 92% 黑并平推至画布底（抖动回归后加深，文字坐近实色黑底）</li>
+        <li>白字不加描边，对比度全靠 scrim；日期行降一级透明度形成层级</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- P5 -->
+  <figure class="shot">
+    <div class="frame frame-p"><div class="canvas cv-p">
+      <div class="abs glass" style="left:382px;top:56px;width:72px;height:296px;border-radius:8px;"></div>
+      <div class="abs t-dark" style="left:388px;top:64px;width:60px;height:280px;writing-mode:vertical-rl;font-size:20px;line-height:28px;text-align:center;letter-spacing:2px;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
+      <div class="abs seal" style="left:382px;top:356px;width:72px;height:44px;gap:6px;">
+        <img src="img/seal/5EC8.svg" style="width:26px;height:26px;" alt="廈">
+        <img src="img/seal/9580.svg" style="width:26px;height:26px;" alt="門">
+      </div>
+      <div class="abs t-white-dim" style="left:24px;top:724px;font-size:15px;">2023.6.1 · 星期四</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">P 05</div>
+      <div class="shot-title">竖排题签 · 钤印</div>
+      <p class="shot-idea"><span class="label">设计思路</span>中式「题签 + 钤印」：右侧近实心白签竖排文案，红印章落地名「厦门」（去行政后缀，与签面等宽横排小篆），日期退到左下角——复刻传统卷轴的观看秩序。竖排天然要求短句，与 VLM 生成的诗意文案最搭。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>签面 alpha 184 半透明毛玻璃（≥150 抖动干净）；PIL 端逐字竖排绘制（每列 10 字，超出换列）</li>
+        <li>钤印与签面等宽（72px），地名横排（厦门，去行政后缀）；小篆字形为内嵌 SVG（汉典小篆字形，白 26px），不依赖系统字体</li>
+        <li>印章为纯色块 #C80000，抖动无损；PIL 落地时以字形图或位图印章绘制</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- P8 -->
+  <figure class="shot">
+    <div class="frame frame-p"><div class="canvas cv-p">
+      <div class="abs" style="left:0;top:486px;width:480px;height:314px;background:linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,.24) 17.9%, rgba(0,0,0,.68) 35.7%, rgba(0,0,0,.92) 54.1%, rgba(0,0,0,.92) 100%);"></div>
+      <div class="abs t-white" style="right:28px;top:540px;font-size:20px;text-align:right;">2023</div>
+      <div class="abs t-white" style="right:24px;top:562px;font-size:84px;line-height:86px;font-weight:700;text-align:right;">6.1</div>
+      <div class="abs t-white-dim" style="right:28px;top:656px;font-size:14px;text-align:right;">星期四 · 厦门市</div>
+      <div class="abs t-white" style="left:24px;top:700px;width:230px;font-size:18px;line-height:27px;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">P 08</div>
+      <div class="shot-title">大字日期</div>
+      <p class="shot-idea"><span class="label">设计思路</span>日期即图形：把「6.1」放大到 84px 当画面元素用，年份缩小垫在其上，文案以小字在左下收尾。远看是海报，近看是日记，日期本身成为构图的一半。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>大字号天然容忍抖动，白字 + 外阴影即可，无需卡片；渐变自文字上方 170px 处全透明、smoothstep 平滑升至小字区顶 92% 黑后平推过相框遮挡区</li>
+        <li>日期组（年/大日期/星期地点）整体上移收拢，不与左下文案上下对齐</li>
+        <li>日期建议用粗壮字重（可引入第二字体），避免衬线细笔画抖断</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- P10 -->
+  <figure class="shot">
+    <div class="frame frame-p"><div class="canvas cv-p">
+      <div class="abs" style="left:0;top:506px;width:480px;height:294px;background:linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,.24) 19.1%, rgba(0,0,0,.68) 38.1%, rgba(0,0,0,.92) 57.8%, rgba(0,0,0,.92) 100%);"></div>
+      <div class="abs t-white" style="left:40px;top:676px;width:400px;text-align:center;font-size:22px;line-height:30px;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
+      <div class="abs t-white-dim" style="left:40px;top:718px;width:400px;text-align:center;font-size:15px;">2023.6.1 · 厦门市</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">P 10</div>
+      <div class="shot-title">全幅字幕</div>
+      <p class="shot-idea"><span class="label">设计思路</span>居中电影字幕式：文案与日期地点沿中轴收在底部渐变上，完全对称、没有任何几何卡片，画面的「完整感」最好。居中排版对中文长句也最宽容，左右不破相。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>与 P03/P08 同款渐变：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 92% 黑后平推过相框遮挡区，文字居中、行高 30、最多两行</li>
+        <li>适合对称构图与合影；日期地点合并一行居中 15px</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<!-- 横屏 10 款                                                         -->
+<!-- ================================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>横屏 7 款（800 × 480）</h2>
+    <span class="photo-meta">展示照片：苏州木渎 · 2024.9.22 ·「台阶尽头站着个看风景的人。」</span>
+  </div>
+  <p class="sec-desc">横屏可视区是 720×480 的 3:2 横带，左右两端各被相框遮 40px。保留的七款 = 与竖屏同语言的基线卡（L01）、字幕（L04），加上横屏专属的侧栏（L02）、报尾条（L05）、顶签（L06）、落款钤印（L07）与中央铭牌（L10）；L03/L09 因与 L02 及居中方案定位重叠、L08（墨条）不合适，均已裁撤。所有方案的文字左右边界都收在 40px 遮挡线以内。</p>
+  <div class="grid-l">
+
+  <!-- L1 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs glass" style="left:54px;top:366px;width:692px;height:100px;border-radius:18px;"></div>
+      <div class="abs t-dark" style="left:68px;top:376px;width:664px;font-size:22px;line-height:28px;">台阶尽头站着个看风景的人。</div>
+      <div class="abs t-dark" style="left:68px;top:436px;font-size:18px;">2024.9.22 · 星期日</div>
+      <div class="abs t-dark" style="right:68px;top:436px;font-size:18px;">木渎镇</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 01</div>
+      <div class="shot-title">底部玻璃卡 · 现行基线</div>
+      <p class="shot-idea"><span class="label">设计思路</span>现网横屏方案原样收录作对照：3D 玻璃卡（外投影 + 白高光边 + alpha 180 毛玻璃），文案两行 + 日期/地点左右分列，左右边界已收进 40px 遮挡线。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>即代码注释中的四条实测结论：投影在外、无深色描边、alpha≥180、日期行锚卡片底上方 10px</li>
+        <li>bottom_reserve = 110 已在现网生效</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L2 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs glass" style="left:40px;top:40px;width:176px;height:400px;border-radius:14px;"></div>
+      <div class="abs t-dark" style="left:58px;top:62px;font-size:24px;font-weight:700;">2024.9.22</div>
+      <div class="abs" style="left:58px;top:96px;font-size:13px;color:#666;">星期日</div>
+      <div class="abs" style="left:58px;top:122px;width:28px;height:3px;background:var(--ink-red);"></div>
+      <div class="abs t-dark" style="left:58px;top:138px;width:142px;font-size:18px;line-height:27px;">台阶尽头站着个看风景的人。</div>
+      <div class="abs" style="left:58px;top:412px;font-size:14px;color:#555;">木渎镇</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 02</div>
+      <div class="shot-title">左侧信息栏</div>
+      <p class="shot-idea"><span class="label">设计思路</span>文字收进左侧一根通高栏，照片在右侧 3/4 完整叙事——美术馆墙上「作品 + 标签」的关系。字段纵向排布（日期/星期/红色分隔线/文案/城市），是信息层级最完整的一款。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>通高栏 alpha 180 毛玻璃；文案栏内宽 142px 自动折行</li>
+        <li>现有 bottom_reserve 不够用，需给 compute_crop_window 增加 left_reserve ≈ 190 把主体往右推</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L4 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs scrim-b-strong" style="left:0;top:212px;width:800px;height:268px;"></div>
+      <div class="abs t-white" style="left:80px;top:382px;width:640px;text-align:center;font-size:22px;line-height:30px;">台阶尽头站着个看风景的人。</div>
+      <div class="abs t-white-dim" style="left:80px;top:424px;width:640px;text-align:center;font-size:14px;">2024.9.22 · 木渎镇</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 04</div>
+      <div class="shot-title">电影字幕</div>
+      <p class="shot-idea"><span class="label">设计思路</span>居中底部字幕 + 渐变托底，最「无声」的方案——文字退到介质边缘，只在被需要时被阅读。横屏宽幅让居中字幕的舞台感比竖屏更强。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>字幕 22px 白字 + 柔和阴影；scrim 自文字上方 170px 处全透明、smoothstep 平滑升至文字顶 92% 黑并平推至画布底</li>
+        <li>日期地点合并一行居中 14px，保持中轴对称</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L5 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs solid-w" style="left:40px;top:404px;width:720px;height:64px;border-radius:10px;"></div>
+      <div class="abs t-dark" style="left:64px;top:422px;font-size:21px;font-weight:700;">2024.9.22</div>
+      <div class="abs" style="left:180px;top:422px;width:1px;height:28px;background:#d8d8d8;"></div>
+      <div class="abs" style="left:196px;top:427px;width:480px;font-size:15px;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">台阶尽头站着个看风景的人。</div>
+      <div class="abs" style="right:64px;top:429px;font-size:13px;color:#666;">木渎镇</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 05</div>
+      <div class="shot-title">报纸横条</div>
+      <p class="shot-idea"><span class="label">设计思路</span>底部一条 64px 实白横带，日期—竖线—文案—城市从左到右排开，像报纸的报尾。信息密度最高、竖向最省，一条带解决全部字段，其余 87% 画布还给照片。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>实白带零噪点；文案单行纪律，超长截断加「……」</li>
+        <li>分隔线必须浅灰 #D8D8D8——深色竖线抖动后会变成黑实线</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L6 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs glass" style="left:40px;top:40px;width:330px;height:138px;border-radius:0 0 16px 16px;"></div>
+      <div class="abs t-dark" style="left:60px;top:56px;font-size:25px;font-weight:700;">2024.9.22</div>
+      <div class="abs" style="left:60px;top:90px;font-size:12.5px;color:#555;">星期日</div>
+      <div class="abs" style="left:60px;top:114px;width:30px;height:3px;background:var(--ink-red);"></div>
+      <div class="abs t-dark" style="left:60px;top:126px;width:290px;font-size:16px;line-height:24px;">台阶尽头站着个看风景的人。</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 06</div>
+      <div class="shot-title">顶签悬挂</div>
+      <p class="shot-idea"><span class="label">设计思路</span>从可视区顶边垂下一张挂签，日期、星期、红色短线、文案自上而下——展览入口导视牌的语汇。文字占据通常最空的左上角，照片重心自然沉到画面下半。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>挂签顶边与可视区顶对齐（顶部圆角为 0），alpha 180 毛玻璃</li>
+        <li>裁切需要 top_reserve ≈ 180：现算法只有 bottom_reserve，需对称扩展</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L7 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs" style="left:0;top:168px;width:800px;height:312px;background:linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,.24) 18.0%, rgba(0,0,0,.68) 36.0%, rgba(0,0,0,.92) 54.5%, rgba(0,0,0,.92) 100%);"></div>
+      <div class="abs" style="right:64px;top:338px;display:flex;align-items:stretch;gap:10px;">
+        <div class="t-white" style="text-align:right;">
+          <div style="font-size:21px;white-space:nowrap;">台阶尽头站着个看风景的人。</div>
+          <div class="t-white-dim" style="font-size:14px;margin-top:13px;">2024.9.22 · 星期日</div>
+        </div>
+        <div class="seal seal-col" style="width:42px;gap:5px;padding:5px 0;">
+          <img src="img/seal/6728.svg" style="width:20px;height:20px;" alt="木">
+          <img src="img/seal/7006.svg" style="width:20px;height:20px;" alt="瀆">
+        </div>
+      </div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 07</div>
+      <div class="shot-title">落款钤印</div>
+      <p class="shot-idea"><span class="label">设计思路</span>国画落款：文案、日期右对齐收在右下，末尾一枚竖排朱印压轴——最东方、最留白的横屏方案。整幅画面几乎不被文字打扰，地址化作文字右侧一方与文本等高的小篆印章。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>全部文字直接压照片，默认 scrim 自文字上方 170px 处全透明、smoothstep 平滑升至文字顶 92% 黑并平推至画布底；可按画面亮度（复用 choose_gamma 思路）再动态加深</li>
+        <li>钤印置于文字右侧、与文字块等高，地名竖排（木渎，去行政后缀）一行不换行；小篆字形为内嵌 SVG（汉典小篆字形，白 20px）</li>
+        <li>印章 #C80000 纯色抖动无损；PIL 落地时以字形图或位图印章绘制</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  <!-- L10 -->
+  <figure class="shot">
+    <div class="frame frame-l"><div class="canvas cv-l">
+      <div class="abs solid-w" style="left:260px;top:374px;width:280px;height:96px;border-radius:14px;"></div>
+      <div class="abs t-dark" style="left:260px;top:388px;width:280px;text-align:center;font-size:19px;font-weight:700;">2024.9.22</div>
+      <div class="abs" style="left:385px;top:418px;width:30px;height:2px;background:var(--ink-red);"></div>
+      <div class="abs" style="left:272px;top:430px;width:256px;text-align:center;font-size:14px;line-height:21px;color:#333;">台阶尽头站着个看风景的人。</div>
+    </div></div>
+    <figcaption>
+      <div class="shot-num">L 10</div>
+      <div class="shot-title">中央铭牌</div>
+      <p class="shot-idea"><span class="label">设计思路</span>底部居中一块实体白铭牌：日期、红色细线、文案纵向排列——博物馆主展品的仪式感。对称构图的建筑、正面人像与它最配，横平竖直的版式稳住整个画面。</p>
+      <ul class="shot-notes"><span class="label">落地要点</span>
+        <li>铭牌 280×96 实白；红细线 30×2 纯色；14px 小字在实白底上依然清晰</li>
+        <li>居中锚定（左右各 260px），裁切按中央底部避让</li>
+      </ul>
+    </figcaption>
+  </figure>
+
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<div class="impl">
+  <h2>选型策略 · 按照片格局自动排版</h2>
+  <p class="impl-sub">渲染时按照片自身的「格局」挑版式。<strong>不需要任何新的照片分析</strong>——信号全部来自现有管线：choose_gamma 已经算好的亮度估计、YOLO subjects_json、VLM 的 type / caption、库里的 memory_score。逻辑是「加分制打分 + 硬否决 + 确定性平局」，约 40 行 Python，先打分选型、再按所选版式决定裁切避让方向。</p>
+
+  <h3>① 信号定义（全部现成，零新增分析成本）</h3>
+  <table>
+    <tr><th>信号</th><th>含义</th><th>来源</th></tr>
+    <tr><td>I 亮度</td><td>高调 I≥0.55 / 低调 I≤0.35 / 其余为中间调</td><td><code>choose_gamma</code> 的 predicted_white_ratio（已实现）</td></tr>
+    <tr><td>S 主体占比</td><td>最大主体的画面面积占比，S≥0.12 视为大主体</td><td><code>subjects_json</code>（conf≥0.2 才计入）</td></tr>
+    <tr><td>cx / cy</td><td>最大主体的重心位置（归一化 0–1）</td><td><code>subjects_json</code> bbox 中心</td></tr>
+    <tr><td>对称</td><td>|cx−0.5|&lt;0.08 且 S≥0.08（合影 / 正面建筑）</td><td>同上推导</td></tr>
+    <tr><td>风格标签</td><td>中国风（古镇/园林/庙/塔/水乡）、雪、夜景、风光</td><td>type + exif_city + caption 关键词匹配</td></tr>
+    <tr><td>memory_score</td><td>≥85 视为「纪念日级」照片，配仪式感版式</td><td>photos.db 已有</td></tr>
+  </table>
+
+  <h3>② 竖屏打分表（480×800，基线 P01）</h3>
+  <table>
+    <tr><th>版式</th><th>加分</th><th>减分 / 否决</th></tr>
+    <tr><td>P01 玻璃卡</td><td>基线起评 1.0；中间调 +0.3；无主体 +0.2</td><td>主体压底（S≥0.12 且 cy&gt;0.6）−0.8</td></tr>
+    <tr><td>P03 角落手记</td><td>低调 +1.0；主体不在左下 +0.5；无主体 +0.2</td><td>高调 −0.6（亮底白字吃力）</td></tr>
+    <tr><td>P05 题签钤印</td><td>高调 +1.0（浅底白签）；中国风 +0.9；主体偏左 +0.5</td><td><strong>主体偏右（cx&gt;0.6）或无城市 → 否决</strong>；低调 −0.3</td></tr>
+    <tr><td>P08 大字日期</td><td>主体偏左 +0.9；简洁留白（I&gt;0.45 且 S&lt;0.12）+0.6；memory≥85 +0.3</td><td>主体偏右 −0.8</td></tr>
+    <tr><td>P10 全幅字幕</td><td>对称 +1.0；居中大主体 +0.6；低调 +0.4</td><td>主体压底（cy&gt;0.65）−0.4</td></tr>
+  </table>
+
+  <h3>③ 横屏打分表（800×480，基线 L01）</h3>
+  <table>
+    <tr><th>版式</th><th>加分</th><th>减分 / 否决</th></tr>
+    <tr><td>L01 玻璃卡</td><td>基线起评 1.0；中间调 +0.3；无主体 +0.2</td><td>主体压底 −0.6</td></tr>
+    <tr><td>L02 左侧信息栏</td><td>主体偏右或无主体 +0.9；小主体 +0.5；风光类 +0.5</td><td><strong>主体偏左（cx&lt;0.4）→ 否决</strong></td></tr>
+    <tr><td>L04 电影字幕</td><td>低调 +0.9；对称居中 +0.7</td><td>高调 −0.5；主体压底 −0.5</td></tr>
+    <tr><td>L05 报纸横条</td><td>高调 +1.0（实白条和谐）；主体压底 +0.5（64px 条遮挡最小）</td><td>低调 −0.3（暗照片上白条刺眼）</td></tr>
+    <tr><td>L06 顶签悬挂</td><td>主体偏下（cy&gt;0.55）+1.0；上部留白（无主体）+0.4</td><td><strong>主体偏上（cy&lt;0.4）→ 否决</strong></td></tr>
+    <tr><td>L07 落款钤印</td><td>低调 +1.1；中国风 +0.9；小主体 +0.3</td><td>高调 −0.7；<strong>无城市 → 否决</strong></td></tr>
+    <tr><td>L10 中央铭牌</td><td>对称 +1.0；居中大主体 +0.5；建筑/园林 +0.2</td><td>主体明显偏侧（|cx−0.5|&gt;0.25）−0.5</td></tr>
+  </table>
+
+  <h3>④ 决策规则</h3>
+  <ol>
+    <li><strong>兜底回落</strong>：亮度估计失败、图像异常 → 直接基线 P01 / L01（对任何照片都成立）；subjects_json 为空不算异常，按「无主体」正常打分。</li>
+    <li><strong>硬否决先于得分</strong>：会压到主体的版式（P05 压右侧主体、L02 压左侧主体、L06 压上部主体）直接排除；<strong>无城市时 P05/L07 整体排除</strong>（红章无内容可镌，2026-09-12）——主体不被遮挡优先级最高。</li>
+    <li><strong>argmax + 确定性平局</strong>：取总分最高者；同分时用 <code>hash(照片路径 + 拍摄日期)</code> 挑选——同一照片每次渲染永远得到同一版式（刷屏不跳变），不同照片之间分布均匀、不刻板。</li>
+    <li><strong>回落</strong>：最高分 ≤ 0（所有候选都被否决或不合适）→ 基线。</li>
+    <li><strong>分布校验</strong>：上线后统计各版式实际占比，期望每款 10–25%；偏离过多只调分数权重，不动规则结构。2026-09-12 首轮 50 张随机回归：基线合计 64% → 调平后 30%，12/14 款被激活（已按此定稿上方权重）。</li>
+  </ol>
+
+  <h3>⑤ 参考实现骨架</h3>
+  <pre>import hashlib
+
+def pick_layout(item, ori, white_ratio):
+    sub = largest_subject(item["subjects_json"])   # conf&gt;=0.2，person/cat/dog 加权取最大
+    S   = sub.area if sub else 0.0                 # 最大主体面积占比
+    cx, cy = (sub.cx, sub.cy) if sub else (0.5, 0.5)
+    tags = style_tags(item)                        # .zh / .snow / .night / .travel 关键词命中
+    sym  = abs(cx - 0.5) &lt; 0.08 and S &gt;= 0.08
+    I    = white_ratio                             # choose_gamma 已算好
+    hi, lo = I &gt;= 0.55, I &lt;= 0.35
+
+    if ori == "portrait":
+        sc = {
+          "P01": 1.0 + .3*(not hi and not lo) + .2*(not sub) - .8*(S&gt;=.12 and cy&gt;.6),
+          "P03": 1.0*lo + .5*(cx&gt;.35 or cy&lt;.55) + .2*(not sub) - .6*hi,
+          "P05": 1.0*hi + .9*tags.zh + .5*(cx&lt;.45) - .3*lo,
+          "P08": .9*(cx&lt;.4) + .6*(I&gt;.45 and S&lt;.12) + .3*(item["memory_score"]&gt;=85) - .8*(cx&gt;.6),
+          "P10": 1.0*sym + .6*(S&gt;=.12 and abs(cx-.5)&lt;.15) + .4*lo - .4*(cy&gt;.65),
+        }
+        veto = {"P05": cx &gt; .6 or not city}
+        base = "P01"
+    else:
+        sc = {
+          "L01": 1.0 + .3*(not hi and not lo) + .2*(not sub) - .6*(S&gt;=.12 and cy&gt;.6),
+          "L02": .9*(cx&gt;.55 or not sub) + .5*(S&lt;.12) + .5*tags.travel - .9*(cx&lt;.4),
+          "L04": .9*lo + .7*sym - .5*hi - .5*(cy&gt;.6),
+          "L05": 1.0*hi + .5*(cy&gt;.6) - .3*lo,
+          "L06": 1.0*(cy&gt;.55) + .4*(not sub),
+          "L07": 1.1*lo + .9*tags.zh + .3*(S&lt;.12) - .7*hi,
+          "L10": 1.0*sym + .5*(S&gt;=.12 and abs(cx-.5)&lt;.15) + .2*tags.zh - .5*(abs(cx-.5)&gt;.25),
+        }
+        veto = {"L02": cx &lt; .4, "L06": cy &lt; .4, "L07": not city}
+        base = "L01"
+
+    for k, bad in veto.items():
+        if bad: sc[k] = -9.0
+    top = max(sc.values())
+    if top &lt;= 0: return base
+    best = sorted(k for k, v in sc.items() if v == top)
+    if len(best) == 1: return best[0]
+    h = hashlib.md5(f"{item['path']}|{item['date']}".encode()).hexdigest()
+    return best[int(h, 16) % len(best)]
+
+# 选型之后：把版式对应的避让传给 compute_crop_window
+#   P01 bottom_reserve=130 / L05 无需避让 / P05 right_reserve=110
+#   L01 bottom_reserve=110 / L02 left_reserve=190 / L06 top_reserve=180 ...</pre>
+</div>
+
+<div class="impl">
+  <h2>落地建议</h2>
+  <ol>
+    <li><strong>结构</strong>：<code>config.py</code> 增加 <code>TEXT_LAYOUT</code>（竖屏 5 / 横屏 7 个枚举值）；<code>render_daily_photo.py</code> 的 <code>render_image</code> / <code>render_image_landscape</code> 改为按枚举分发到独立小函数，每款一个函数，共享 <code>_get_font</code> / <code>wrap_text_chinese</code> / 毛玻璃 / scrim / 印章五个工具件。</li>
+    <li><strong>裁切避让</strong>：给 <code>compute_crop_window</code> 增加 <code>top_reserve / left_reserve / right_reserve</code>（现仅 <code>bottom_reserve</code>），L2/L6 等「非底部占位」方案才能不压主体；实色条方案（L05）条身不透明，避让可给 0。</li>
+    <li><strong>选型策略</strong>：见上方「按照片格局自动选型」章节——用现有管线信号打分选版式，硬否决防压主体，确定性哈希平局（同一照片永远同一版式）。</li>
+    <li><strong>验证方式</strong>：任选 3–5 款先接进渲染管线出 .bin，实机刷屏后与数码预览对照，重点核对毛玻璃 alpha、小字可读性与红/黄显色。</li>
+  </ol>
+</div>
+
+<footer>
+  InkTime · 排版样式展示页 · 生成于 2026-09-11 · 预览为数码近似，最终效果以四色墨水屏实刷为准<br>
+  展示照片选自本机照片库（随机抽样），裁切由渲染管线同一主体感知算法生成
+</footer>
+
+<script src="html-to-image.js"></script>
+<script>
+  function toggle(cls, btn) {
+    document.body.classList.toggle(cls);
+    btn.classList.toggle('on');
+  }
+
+  /* ================= 四色抖动模拟 =================
+     把每个 mockup 按 480×800 / 800×480 原生尺寸栅格化，
+     再用与 render_daily_photo.py 完全一致的四色调色板做
+     Floyd-Steinberg 抖动，结果画布盖在 mockup 上层。 */
+  const PALETTE = [[0,0,0],[255,255,255],[200,0,0],[220,180,0]];  // 与 PALETTE 常量同步
+  const ditherCache = new Map();   // canvas 元素 -> 已抖动的画布
+  let ditherBusy = false;
+
+  async function toggleDither(btn) {
+    if (ditherBusy) return;
+    const on = document.body.classList.toggle('dither-mode');
+    btn.classList.toggle('on', on);
+    const list = Array.from(document.querySelectorAll('.canvas'));
+    if (!on) {
+      list.forEach(c => { const ov = c.querySelector('.dither-overlay'); if (ov) ov.remove(); });
+      return;
+    }
+    // 与灰度近似互斥：抖动本身就是最真实的实刷模拟
+    if (document.body.classList.contains('ink-mode')) {
+      document.body.classList.remove('ink-mode');
+      document.getElementById('btn-ink').classList.remove('on');
+    }
+    ditherBusy = true;
+    const label = btn.textContent;
+    try {
+      let fontCSS = '';
+      try { fontCSS = await htmlToImage.getFontEmbedCSS(list[0]); } catch (e) { /* 字体内嵌失败则退回系统字体 */ }
+      let done = 0;
+      for (const c of list) {
+        btn.textContent = '抖动处理中 ' + (++done) + '/' + list.length;
+        let dcv = ditherCache.get(c);
+        if (!dcv) {
+          try {
+            // mockup 根节点自带 scale(.625/.55) 显示缩放，栅格化时必须去掉，
+            // 否则内容被缩小、剩余透明区会抖成黑块
+            const raw = await htmlToImage.toCanvas(c, {
+              pixelRatio: 1,
+              fontEmbedCSS: fontCSS,
+              style: { transform: 'none', transformOrigin: 'top left' },
+            });
+            const ctx = raw.getContext('2d');
+            const data = ctx.getImageData(0, 0, raw.width, raw.height);
+            flattenWhite(data.data);   // 透明像素合成到白底，避免抖成黑点
+            floydSteinberg(data.data, raw.width, raw.height);
+            ctx.putImageData(data, 0, 0);
+            dcv = raw;
+            ditherCache.set(c, dcv);
+          } catch (e) { console.warn('dither skip one mockup:', e); continue; }
+        }
+        dcv.className = 'dither-overlay';
+        c.appendChild(dcv);
+        await new Promise(r => setTimeout(r));   // 让按钮进度即时刷新
+      }
+    } finally {
+      btn.textContent = label;
+      ditherBusy = false;
+    }
+  }
+
+  function flattenWhite(px) {
+    for (let o = 0; o < px.length; o += 4) {
+      const a = px[o + 3] / 255;
+      if (a < 1) {
+        px[o]     = px[o]     * a + 255 * (1 - a);
+        px[o + 1] = px[o + 1] * a + 255 * (1 - a);
+        px[o + 2] = px[o + 2] * a + 255 * (1 - a);
+        px[o + 3] = 255;
+      }
+    }
+  }
+
+  function floydSteinberg(px, w, h) {
+    const buf = new Float32Array(px.length);
+    for (let i = 0; i < px.length; i++) buf[i] = px[i];
+    const near = (r, g, b) => {
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < PALETTE.length; i++) {
+        const d = (r - PALETTE[i][0]) ** 2 + (g - PALETTE[i][1]) ** 2 + (b - PALETTE[i][2]) ** 2;
+        if (d < bd) { bd = d; bi = i; }
+      }
+      return PALETTE[bi];
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4;
+        const r = Math.max(0, Math.min(255, buf[o]));
+        const g = Math.max(0, Math.min(255, buf[o + 1]));
+        const b = Math.max(0, Math.min(255, buf[o + 2]));
+        const p = near(r, g, b);
+        px[o] = p[0]; px[o + 1] = p[1]; px[o + 2] = p[2]; px[o + 3] = 255;
+        const er = r - p[0], eg = g - p[1], eb = b - p[2];
+        const push = (oo, f) => { buf[oo] += er * f; buf[oo + 1] += eg * f; buf[oo + 2] += eb * f; };
+        if (x + 1 < w) push(o + 4, 7 / 16);
+        if (y + 1 < h) {
+          if (x > 0) push(o + w * 4 - 4, 3 / 16);
+          push(o + w * 4, 5 / 16);
+          if (x + 1 < w) push(o + w * 4 + 4, 1 / 16);
+        }
+      }
+    }
+  }
+</script>
+</body>
+</html>

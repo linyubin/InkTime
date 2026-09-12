@@ -714,11 +714,14 @@ def format_location(lat, lon, city: str) -> str:
         return ""
 
 
-def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: int, subjects_json: str, bottom_reserve: int = 0) -> tuple[int, int]:
+def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: int, subjects_json: str, bottom_reserve: int = 0,
+                        top_reserve: int = 0, left_reserve: int = 0, right_reserve: int = 0) -> tuple[int, int]:
     """
     bottom_reserve: 画布底部需避让（如文字卡片区）的像素数，主体应尽量落在该区之上。
                     算法通过把“有效窗口高度”收缩为 img_area_h - bottom_reserve 来评估
                     主体覆盖率，从而主动把主体上移、避开底部遮挡。默认 0（竖屏向后兼容）。
+    top/left/right_reserve: 同理的四向避让（2026-09-12 版式选型引入），供 L02 左侧
+                    信息栏 / L06 顶签 / P05 右侧题签等非底部占位版式使用。
     """
     default_left = max(0, (draw_w - img_area_w) // 2)
     default_top  = max(0, (draw_h - img_area_h) // 2)
@@ -806,16 +809,19 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
             for y in y_steps:
                 wx1, wx2 = x, x + img_area_w
                 wy1, wy2 = y, y + img_area_h
-                # 主体评估用到的“有效下边界”（避开底部文字区）
+                # 主体评估用的“有效边界”（四向文字避让区，物理窗口仍填满画布）
+                wy_eff1 = wy1 + top_reserve
                 wy_eff2 = wy2 - eff_bottom_margin
+                wx_eff1 = wx1 + left_reserve
+                wx_eff2 = wx2 - right_reserve
 
                 score = 0.0
                 fully_covered = 0
                 for s in valid_subs:
-                    ix1 = max(wx1, s["x1"])
-                    ix2 = min(wx2, s["x2"])
-                    # y 方向用“有效下边界”评估：主体延伸进底部文字区算作被遮挡
-                    iy1 = max(wy1, s["y1"])
+                    ix1 = max(wx_eff1, s["x1"])
+                    ix2 = min(wx_eff2, s["x2"])
+                    # y 方向用“有效边界”评估：主体延伸进文字避让区算作被遮挡
+                    iy1 = max(wy_eff1, s["y1"])
                     iy2 = min(wy_eff2, s["y2"])
 
                     if ix1 < ix2 and iy1 < iy2:
@@ -919,6 +925,72 @@ def compute_render_orientation(img_w: int, img_h: int) -> str:
     return "portrait"
 
 
+# ========== 版式自动选型（2026-09-12，设计见 docs/layout-showcase-2026-09-11）==========
+
+def _layout_strategy_enabled() -> bool:
+    return bool(getattr(cfg, "TEXT_LAYOUT_STRATEGY", True))
+
+
+def _forced_layout() -> str:
+    return str(getattr(cfg, "TEXT_LAYOUT_FORCE", "") or "").strip().upper()
+
+
+def _white_ratio_of(img: Image.Image) -> float:
+    """照片自身亮度（predicted white ratio @gamma=1），口径与 choose_gamma 一致。"""
+    return _predicted_white_ratio(img.convert("L").histogram(), 1.0)
+
+
+def _pick_layout_for(item: Dict[str, Any], orientation: str, img: Image.Image,
+                     forced: str) -> Tuple[str, Dict[str, Any]]:
+    from layout_strategy import (PORTRAIT_LAYOUTS, LANDSCAPE_LAYOUTS,
+                                 extract_signals, pick_layout)
+    wr = _white_ratio_of(img)
+    valid = PORTRAIT_LAYOUTS if orientation == "portrait" else LANDSCAPE_LAYOUTS
+    if forced and forced in valid:
+        info = {"signals": extract_signals(item, wr), "scores": {}, "final": {},
+                "vetoed": {}, "tie": "forced"}
+        return forced, info
+    return pick_layout(item, orientation, wr)
+
+
+def _cover_crop(img: Image.Image, canvas_w: int, canvas_h: int,
+                item: Dict[str, Any], reserves: Dict[str, int]) -> Image.Image:
+    """全出血 cover 裁切，避让区按所选版式的 CROP_RESERVES 四向传入。"""
+    img_w, img_h = img.size
+    scale = max(canvas_w / img_w, canvas_h / img_h)
+    draw_w = max(canvas_w, math.ceil(img_w * scale))
+    draw_h = max(canvas_h, math.ceil(img_h * scale))
+    img_resized = img.resize((draw_w, draw_h), Image.LANCZOS)
+    left, top = compute_crop_window(
+        draw_w, draw_h, canvas_w, canvas_h, item.get("subjects_json", ""),
+        bottom_reserve=reserves.get("bottom", 0),
+        top_reserve=reserves.get("top", 0),
+        left_reserve=reserves.get("left", 0),
+        right_reserve=reserves.get("right", 0))
+    return img_resized.crop((left, top, left + canvas_w, top + canvas_h))
+
+
+def _render_with_layout(item: Dict[str, Any], img: Image.Image,
+                        orientation: str, canvas_w: int, canvas_h: int) -> Image.Image:
+    """选型 + 裁切 + 文字层绘制，返回成品画布（info 携带 layout 决策明细）。"""
+    import render_layouts
+    from layout_strategy import CROP_RESERVES
+    layout, info = _pick_layout_for(item, orientation, img, _forced_layout())
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
+    canvas.paste(_cover_crop(img, canvas_w, canvas_h, item,
+                             CROP_RESERVES.get(layout, {})), (0, 0))
+    render_layouts.render_layout(canvas, layout, item)
+    canvas.info["render_orientation"] = orientation
+    canvas.info["layout"] = layout
+    canvas.info["layout_info"] = info
+    print(f"[LAYOUT] {layout} ({render_layouts.LAYOUT_NAMES.get(layout, '?')}) "
+          f"| tie={info['tie']} | scores=" +
+          ", ".join(f"{k}:{v:.2f}" for k, v in
+                    sorted(info["scores"].items(), key=lambda kv: -kv[1]))
+          + (f" | vetoed={list(info['vetoed'])}" if info["vetoed"] else ""))
+    return canvas
+
+
 def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image.Image:
     """
     根据选中的 item 渲染一张 RGB 图像（竖屏 480x800 或横屏 800x480）。
@@ -949,6 +1021,12 @@ def render_image(item: Dict[str, Any], force_orientation: str = "auto") -> Image
         canvas = render_image_landscape(item, img)
         canvas.info["render_orientation"] = "landscape"
         return canvas
+
+    # ---------- 版式自动选型路径（2026-09-12）----------
+    # TEXT_LAYOUT_STRATEGY=True（或 TEXT_LAYOUT_FORCE 指定版式）时走 14 款版式；
+    # 关闭且未强制时走下方旧版固定底部卡片路径，行为与历史版本完全一致。
+    if _layout_strategy_enabled() or _forced_layout():
+        return _render_with_layout(item, img, "portrait", CANVAS_WIDTH, CANVAS_HEIGHT)
 
     canvas = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
@@ -1085,6 +1163,11 @@ def render_image_landscape(item: Dict[str, Any], img: Image.Image, text_layout: 
 
     canvas_w = int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
     canvas_h = int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
+
+    # ---------- 版式自动选型路径（2026-09-12）----------
+    if _layout_strategy_enabled() or _forced_layout():
+        return _render_with_layout(item, img, "landscape", canvas_w, canvas_h)
+
     canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
 
@@ -1542,6 +1625,8 @@ def main():
             "orientation": render_orientation,
             "w": sidecar_w,
             "h": sidecar_h,
+            # 版式选型结果（2026-09-12），旧固件会忽略未知字段
+            "layout": img.info.get("layout", ""),
         }
         sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
         sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")

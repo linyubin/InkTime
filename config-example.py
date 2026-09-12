@@ -174,6 +174,14 @@ LANDSCAPE_CANVAS_HEIGHT = 480
 # 0 = 无遮挡（默认，恢复原始全屏布局）。
 FRAME_MASK_INSET_PX = 0
 
+# ── 文字版式自动选型（2026-09-12）─────────────────────────
+# True: 按照片格局（亮度/主体位置/风格标签）在 12 款版式中自动选型，
+#       设计与打分表见 docs/layout-showcase-2026-09-11 「选型策略」章节。
+# False: 回落旧版固定底部卡片渲染（行为与历史版本一致）。
+TEXT_LAYOUT_STRATEGY = True
+# 调试用：强制指定版式（如 "P05" / "L02"），留空则自动选型。
+TEXT_LAYOUT_FORCE = ""
+
 
 # ═══ ⑦ 投递：ESP32 拉取 / BLE 推送 ════════════════════
 # （inktime_daily.sh 读取能力开关；server.py / push_to_epd_ble.py 读取各自参数）
