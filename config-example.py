@@ -181,6 +181,8 @@ FRAME_MASK_INSET_PX = 0
 TEXT_LAYOUT_STRATEGY = True
 # 调试用：强制指定版式（如 "P05" / "L02"），留空则自动选型。
 TEXT_LAYOUT_FORCE = ""
+# 浅色底托（P03/P08/P10/L04/L07）渐变峰值不透明度：1.0=实色，0.85=留 15% 照片透出
+TEXT_VEIL_OPACITY = 0.85
 
 
 # ═══ ⑦ 投递：ESP32 拉取 / BLE 推送 ════════════════════

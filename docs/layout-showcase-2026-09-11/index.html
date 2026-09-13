@@ -97,7 +97,7 @@
   .solid-w { background: #fff; box-shadow: 0 8px 20px rgba(0,0,0,.32); }
   .scrim-b { background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.66)); }
   .scrim-b-soft { background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.6)); }
-  .scrim-l-strong { background: linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.26) 20.9%, rgba(246,241,231,.73) 41.9%, rgba(246,241,231,1) 63.4%, rgba(246,241,231,1) 100%); }
+  .scrim-l-strong { background: linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.22) 20.9%, rgba(246,241,231,.63) 41.9%, rgba(246,241,231,.85) 63.4%, rgba(246,241,231,.85) 100%); }
   .t-dark  { color: #111; }
   .t-white { color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,.55); }
   .t-white-dim { color: rgba(255,255,255,.88); text-shadow: 0 1px 5px rgba(0,0,0,.5); }
@@ -204,7 +204,7 @@
   <!-- P3 -->
   <figure class="shot">
     <div class="frame frame-p"><div class="canvas cv-p">
-      <div class="abs" style="left:0;top:514px;width:480px;height:286px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.26) 39.2%, rgba(246,241,231,.73) 59.4%, rgba(246,241,231,1) 100%);"></div>
+      <div class="abs" style="left:0;top:514px;width:480px;height:286px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.22) 39.2%, rgba(246,241,231,.63) 59.4%, rgba(246,241,231,.85) 100%);"></div>
       <div class="abs t-dark" style="left:28px;top:684px;width:420px;font-size:22px;line-height:30px;font-weight:700;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
       <div class="abs t-mut" style="left:28px;top:724px;font-size:15px;">2023.6.1 · 星期四 · 厦门市</div>
     </div></div>
@@ -213,7 +213,7 @@
       <div class="shot-title">角落手记</div>
       <p class="shot-idea"><span class="label">设计思路</span>无卡片，文字直接"长"在照片上，仅靠底部黑色渐变（scrim）托底，电影海报式左对齐。照片露出最大化，文字像写在照片背面的笔记。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
-        <li>与 P08/P10 同款渐变规则：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 100% 实色米白并平推至画布底（实色平台抖动后为净白，亮照片上渐变区也清晰可辨）</li>
+        <li>与 P08/P10 同款渐变规则：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 85% 米白并平推至画布底（峰值不透明度由 config TEXT_VEIL_OPACITY 控制）</li>
         <li>黑字加粗（同色描边 0.6），日期行用灰色降一级形成层级</li>
       </ul>
     </figcaption>
@@ -245,7 +245,7 @@
   <!-- P8 -->
   <figure class="shot">
     <div class="frame frame-p"><div class="canvas cv-p">
-      <div class="abs" style="left:0;top:486px;width:480px;height:314px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.26) 35.7%, rgba(246,241,231,.73) 54.1%, rgba(246,241,231,1) 100%);"></div>
+      <div class="abs" style="left:0;top:486px;width:480px;height:314px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.22) 35.7%, rgba(246,241,231,.63) 54.1%, rgba(246,241,231,.85) 100%);"></div>
       <div class="abs t-dark" style="right:28px;top:540px;font-size:20px;text-align:right;font-weight:700;">2023</div>
       <div class="abs t-dark" style="right:24px;top:562px;font-size:84px;line-height:86px;font-weight:700;text-align:right;">6.1</div>
       <div class="abs t-mut" style="right:28px;top:656px;font-size:14px;text-align:right;">星期四 · 厦门市</div>
@@ -256,7 +256,7 @@
       <div class="shot-title">大字日期</div>
       <p class="shot-idea"><span class="label">设计思路</span>日期即图形：把「6.1」放大到 84px 当画面元素用，年份缩小垫在其上，文案以小字在左下收尾。远看是海报，近看是日记，日期本身成为构图的一半。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
-        <li>大字号天然容忍抖动，黑字加粗即可，无需卡片；渐变自文字上方 170px 处全透明、smoothstep 平滑升至小字区顶 100% 实色米白后平推过相框遮挡区</li>
+        <li>大字号天然容忍抖动，黑字加粗即可，无需卡片；渐变自文字上方 170px 处全透明、smoothstep 平滑升至小字区顶 85% 米白后平推过相框遮挡区</li>
         <li>日期组（年/大日期/星期地点）整体上移收拢，不与左下文案上下对齐</li>
         <li>日期建议用粗壮字重（可引入第二字体），避免衬线细笔画抖断</li>
       </ul>
@@ -266,7 +266,7 @@
   <!-- P10 -->
   <figure class="shot">
     <div class="frame frame-p"><div class="canvas cv-p">
-      <div class="abs" style="left:0;top:506px;width:480px;height:294px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.26) 38.1%, rgba(246,241,231,.73) 57.8%, rgba(246,241,231,1) 100%);"></div>
+      <div class="abs" style="left:0;top:506px;width:480px;height:294px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.22) 38.1%, rgba(246,241,231,.63) 57.8%, rgba(246,241,231,.85) 100%);"></div>
       <div class="abs t-dark" style="left:40px;top:676px;width:400px;text-align:center;font-size:22px;line-height:30px;font-weight:700;">嘴里的鸭子还没咽，手里的快乐先漏了。</div>
       <div class="abs t-mut" style="left:40px;top:718px;width:400px;text-align:center;font-size:15px;">2023.6.1 · 厦门市</div>
     </div></div>
@@ -275,7 +275,7 @@
       <div class="shot-title">全幅字幕</div>
       <p class="shot-idea"><span class="label">设计思路</span>居中电影字幕式：文案与日期地点沿中轴收在底部渐变上，完全对称、没有任何几何卡片，画面的「完整感」最好。居中排版对中文长句也最宽容，左右不破相。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
-        <li>与 P03/P08 同款渐变：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 100% 实色米白后平推过相框遮挡区，黑字加粗居中、行高 30、最多两行</li>
+        <li>与 P03/P08 同款渐变：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 85% 米白后平推过相框遮挡区，黑字加粗居中、行高 30、最多两行</li>
         <li>适合对称构图与合影；日期地点合并一行居中 15px</li>
       </ul>
     </figcaption>
@@ -347,7 +347,7 @@
       <div class="shot-title">电影字幕</div>
       <p class="shot-idea"><span class="label">设计思路</span>居中底部字幕 + 渐变托底，最「无声」的方案——文字退到介质边缘，只在被需要时被阅读。横屏宽幅让居中字幕的舞台感比竖屏更强。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
-        <li>字幕 22px 黑字加粗；scrim 自文字上方 170px 处全透明、smoothstep 平滑升至文字顶 100% 实色米白并平推至画布底</li>
+        <li>字幕 22px 黑字加粗；scrim 自文字上方 170px 处全透明、smoothstep 平滑升至文字顶 85% 米白并平推至画布底</li>
         <li>日期地点合并一行居中 14px，保持中轴对称</li>
       </ul>
     </figcaption>
@@ -396,7 +396,7 @@
   <!-- L7 -->
   <figure class="shot">
     <div class="frame frame-l"><div class="canvas cv-l">
-      <div class="abs" style="left:0;top:168px;width:800px;height:312px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.26) 36.0%, rgba(246,241,231,.73) 54.5%, rgba(246,241,231,1) 100%);"></div>
+      <div class="abs" style="left:0;top:168px;width:800px;height:312px;background:linear-gradient(to bottom, rgba(246,241,231,0) 0%, rgba(246,241,231,.22) 36.0%, rgba(246,241,231,.63) 54.5%, rgba(246,241,231,.85) 100%);"></div>
       <div class="abs" style="right:64px;top:338px;display:flex;align-items:stretch;gap:10px;">
         <div class="t-dark" style="text-align:right;">
           <div style="font-size:21px;white-space:nowrap;font-weight:700;">台阶尽头站着个看风景的人。</div>

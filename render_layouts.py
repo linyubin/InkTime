@@ -30,7 +30,9 @@ INSET = int(getattr(cfg, "FRAME_MASK_INSET_PX", 40) or 0)
 
 WHITE = (255, 255, 255)
 WHITE_DIM = (228, 226, 222)      # ≈88% 白，压在深色 scrim 上
-VEIL_RGB = (246, 241, 231)       # 浅色渐变米白（P03/P08/P10/L04/L07 底托），实色平台抖动后为净白
+VEIL_RGB = (246, 241, 231)       # 浅色渐变米白（P03/P08/P10/L04/L07 底托）
+# 渐变峰值不透明度（config: TEXT_VEIL_OPACITY），1.0=实色；0.85=留 15% 照片透出
+VEIL_ALPHA = int(255 * float(getattr(cfg, "TEXT_VEIL_OPACITY", 0.85)))
 META_GRAY = (96, 90, 82)         # 浅底上的次要文字（日期/地点）
 BLACK = (0, 0, 0)
 INK_BAR = (12, 12, 12)           # 墨条黑
@@ -299,7 +301,7 @@ def _p01(canvas, item) -> None:
 
 def _p03(canvas, item) -> None:
     """角落手记：左对齐黑字加粗 + 底部米白渐变（514→800，文字顶到位）。"""
-    _scrim(canvas, 0, int(_py(514)), 480, 800 - int(_py(514)), 0, 255,
+    _scrim(canvas, 0, int(_py(514)), 480, 800 - int(_py(514)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
@@ -336,7 +338,7 @@ def _p05(canvas, item) -> None:
 
 def _p08(canvas, item) -> None:
     """大字日期：日期即图形（右侧竖组黑字），文案小字左下；米白渐变 486→800。"""
-    _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, 255,
+    _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     full, year, rest = _date_parts(item)
     _draw_dark(canvas, 452, _py(540), year, 20, align="r", cx=452, bold=True)
@@ -356,7 +358,7 @@ def _p08(canvas, item) -> None:
 
 def _p10(canvas, item) -> None:
     """全幅字幕：中轴对称黑字收在底部米白渐变上（506→800）。"""
-    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, 255,
+    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
@@ -416,7 +418,7 @@ def _l02(canvas, item) -> None:
 
 def _l04(canvas, item) -> None:
     """电影字幕：居中黑字 + 底部米白渐变（212→480）。"""
-    _scrim(canvas, 0, 212, 800, 480 - 212, 0, 255, ramp_px=170, rgb=VEIL_RGB)
+    _scrim(canvas, 0, 212, 800, 480 - 212, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
         lines = _wrap_lines(canvas, caption, _get_font(22), 640, 2)
@@ -468,7 +470,7 @@ def _l06(canvas, item) -> None:
 
 def _l07(canvas, item) -> None:
     """落款钤印：黑字文案/日期右对齐收在右下 + 底部米白渐变，末尾竖排小篆印。"""
-    _scrim(canvas, 0, 168, 800, 480 - 168, 0, 255, ramp_px=170, rgb=VEIL_RGB)
+    _scrim(canvas, 0, 168, 800, 480 - 168, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
     seal_x1 = int(_lx(736))
     text_r = seal_x1                            # 无城市→无印章，文字直接顶右缘
     if _city(item):
