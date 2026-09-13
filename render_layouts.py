@@ -30,6 +30,8 @@ INSET = int(getattr(cfg, "FRAME_MASK_INSET_PX", 40) or 0)
 
 WHITE = (255, 255, 255)
 WHITE_DIM = (228, 226, 222)      # ≈88% 白，压在深色 scrim 上
+VEIL_RGB = (250, 247, 240)       # 浅色渐变米白（P03/P08/P10/L04/L07 底托）
+META_GRAY = (96, 90, 82)         # 浅底上的次要文字（日期/地点）
 BLACK = (0, 0, 0)
 INK_BAR = (12, 12, 12)           # 墨条黑
 SEAL_RED = (200, 0, 0)           # 与 PALETTE 红 #C80000 一致
@@ -130,10 +132,20 @@ def _wrap_lines(canvas, text: str, font, max_w: float, max_lines: int) -> List[s
 
 
 def _draw_dark(canvas, x: float, y: float, s: str, size: int,
-               fill=BLACK, stroke: float = 0.3) -> None:
-    """深色文字（毛玻璃/实白底上），同色细描边模拟加粗。"""
-    ImageDraw.Draw(canvas).text((x, y), s, font=_get_font(size), fill=fill,
-                                stroke_width=stroke, stroke_fill=fill)
+               fill=BLACK, stroke: float = 0.3,
+               align: str = "l", cx: float = None, bold: bool = False) -> None:
+    """深色文字（毛玻璃/实白/浅色渐变底上），同色描边模拟加粗。"""
+    d = ImageDraw.Draw(canvas)
+    font = _get_font(size)
+    w = d.textlength(s, font=font)
+    if align == "c":
+        x = (cx if cx is not None else x) - w / 2
+    elif align == "r":
+        x = (cx if cx is not None else x) - w
+    if bold:
+        stroke = max(stroke, 0.6)
+    d.text((x, y), s, font=font, fill=fill,
+           stroke_width=stroke, stroke_fill=fill)
 
 
 def _draw_white(canvas, specs: List[Dict[str, Any]]) -> None:
@@ -164,7 +176,8 @@ def _draw_white(canvas, specs: List[Dict[str, Any]]) -> None:
 
 
 def _scrim(canvas, x: int, y: int, w: int, h: int,
-           a0: int = 0, a1: int = 235, ramp_px: int = None) -> None:
+           a0: int = 0, a1: int = 235, ramp_px: int = None,
+           rgb: Tuple[int, int, int] = (0, 0, 0)) -> None:
     """
     竖向黑色渐变，a 取 0–255。
     ramp_px: 自顶部起用 smoothstep 曲线在 ramp_px 内升至 a1，其后平推到底。
@@ -182,7 +195,7 @@ def _scrim(canvas, x: int, y: int, w: int, h: int,
             k = 1.0
         a = a0 + (a1 - a0) * k
         if a > 0:
-            d.line([(0, yy), (w, yy)], fill=(0, 0, 0, int(a)))
+            d.line([(0, yy), (w, yy)], fill=(rgb[0], rgb[1], rgb[2], int(a)))
     canvas.paste(ov.convert("RGB"), (x, y), ov)
 
 
@@ -285,18 +298,18 @@ def _p01(canvas, item) -> None:
 
 
 def _p03(canvas, item) -> None:
-    """角落手记：左对齐白字 + 底部渐变（584→800，可视底边 81% 处到位）。"""
-    _scrim(canvas, 0, int(_py(514)), 480, 800 - int(_py(514)), 0, 235, ramp_px=170)
+    """角落手记：左对齐黑字加粗 + 底部米白渐变（514→800，文字顶到位）。"""
+    _scrim(canvas, 0, int(_py(514)), 480, 800 - int(_py(514)), 0, 237,
+           ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
-    specs = []
     if caption:
         lines = _wrap_lines(canvas, caption, _get_font(22), 420, 2)
         y = _py(684)
         for ln in lines:
-            specs.append({"x": 28, "y": y, "text": ln, "size": 22})
+            _draw_dark(canvas, 28, y, ln, 22, bold=True)
             y += 30
-    specs.append({"x": 28, "y": _py(724), "text": _meta_segments(item), "size": 15, "dim": True})
-    _draw_white(canvas, specs)
+    _draw_dark(canvas, 28, _py(724), _meta_segments(item), 15,
+               fill=META_GRAY, stroke=0)
 
 
 def _p05(canvas, item) -> None:
@@ -322,44 +335,38 @@ def _p05(canvas, item) -> None:
 
 
 def _p08(canvas, item) -> None:
-    """大字日期：日期即图形（右侧竖组），文案小字左下；渐变 440→800。"""
-    _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, 235, ramp_px=170)
+    """大字日期：日期即图形（右侧竖组黑字），文案小字左下；米白渐变 486→800。"""
+    _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, 237,
+           ramp_px=170, rgb=VEIL_RGB)
     full, year, rest = _date_parts(item)
-    _draw_white(canvas, [
-        {"x": 452, "cx": 452, "y": _py(540), "text": year, "size": 20, "align": "r"},
-        {"x": 456, "cx": 456, "y": _py(562), "text": rest, "size": 84, "align": "r"},
-        {"x": 452, "cx": 452, "y": _py(656),
-         "text": " · ".join(x for x in (weekday_cn(item.get("date", "")), _city(item)) if x),
-         "size": 14, "align": "r", "dim": True},
-    ])
-    ImageDraw.Draw(canvas).text((456, _py(562)), rest, font=_get_font(84),
-                                fill=WHITE, anchor="ra",
-                                stroke_width=1, stroke_fill=WHITE)  # 大字加粗
+    _draw_dark(canvas, 452, _py(540), year, 20, align="r", cx=452, bold=True)
+    _draw_dark(canvas, 456, _py(562), rest, 84, align="r", cx=456,
+               bold=True, stroke=1.2)
+    _draw_dark(canvas, 452, _py(656),
+               " · ".join(x for x in (weekday_cn(item.get("date", "")), _city(item)) if x),
+               14, fill=META_GRAY, stroke=0, align="r", cx=452)
     caption = item.get("side") or ""
     if caption:
         lines = _wrap_lines(canvas, caption, _get_font(18), 230, 2)
-        specs = []
         y = _py(700)
         for ln in lines:
-            specs.append({"x": 24, "y": y, "text": ln, "size": 18})
+            _draw_dark(canvas, 24, y, ln, 18, bold=True)
             y += 27
-        _draw_white(canvas, specs)
 
 
 def _p10(canvas, item) -> None:
-    """全幅字幕：中轴对称收在底部渐变上（576→800）。"""
-    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, 235, ramp_px=170)
-    specs = []
+    """全幅字幕：中轴对称黑字收在底部米白渐变上（506→800）。"""
+    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, 237,
+           ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
         lines = _wrap_lines(canvas, caption, _get_font(22), 400, 2)
         y = _py(676)
         for ln in lines:
-            specs.append({"x": 40, "cx": 240, "y": y, "text": ln, "size": 22, "align": "c"})
+            _draw_dark(canvas, 40, y, ln, 22, bold=True, align="c", cx=240)
             y += 30
-    specs.append({"x": 40, "cx": 240, "y": _py(718), "text": _meta_segments(item, with_weekday=False),
-                  "size": 15, "align": "c", "dim": True})
-    _draw_white(canvas, specs)
+    _draw_dark(canvas, 40, _py(718), _meta_segments(item, with_weekday=False),
+               15, fill=META_GRAY, stroke=0, align="c", cx=240)
 
 
 # ==================================================================
@@ -408,19 +415,17 @@ def _l02(canvas, item) -> None:
 
 
 def _l04(canvas, item) -> None:
-    """电影字幕：居中字幕 + 底部渐变（282→480）。"""
-    _scrim(canvas, 0, 212, 800, 480 - 212, 0, 235, ramp_px=170)
-    specs = []
+    """电影字幕：居中黑字 + 底部米白渐变（212→480）。"""
+    _scrim(canvas, 0, 212, 800, 480 - 212, 0, 237, ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
         lines = _wrap_lines(canvas, caption, _get_font(22), 640, 2)
         y = 382
         for ln in lines:
-            specs.append({"x": 80, "cx": _lx(400), "y": y, "text": ln, "size": 22, "align": "c"})
+            _draw_dark(canvas, 80, y, ln, 22, bold=True, align="c", cx=_lx(400))
             y += 30
-    specs.append({"x": 80, "cx": _lx(400), "y": 424, "text": _meta_segments(item, with_weekday=False),
-                  "size": 14, "align": "c", "dim": True})
-    _draw_white(canvas, specs)
+    _draw_dark(canvas, 80, 424, _meta_segments(item, with_weekday=False),
+               14, fill=META_GRAY, stroke=0, align="c", cx=_lx(400))
 
 
 def _l05(canvas, item) -> None:
@@ -462,8 +467,8 @@ def _l06(canvas, item) -> None:
 
 
 def _l07(canvas, item) -> None:
-    """落款钤印：文案/日期右对齐收在右下 + 底部渐变，末尾竖排小篆印。"""
-    _scrim(canvas, 0, 168, 800, 480 - 168, 0, 235, ramp_px=170)
+    """落款钤印：黑字文案/日期右对齐收在右下 + 底部米白渐变，末尾竖排小篆印。"""
+    _scrim(canvas, 0, 168, 800, 480 - 168, 0, 237, ramp_px=170, rgb=VEIL_RGB)
     seal_x1 = int(_lx(736))
     text_r = seal_x1                            # 无城市→无印章，文字直接顶右缘
     if _city(item):
@@ -474,12 +479,11 @@ def _l07(canvas, item) -> None:
     caption = item.get("side") or ""
     if caption:
         fitted = _fit_text(d, caption, font_cap, text_r - text_l)
-        w = d.textlength(fitted, font=font_cap)
-        _draw_white(canvas, [{"x": text_r - w, "y": 338, "text": fitted, "size": 21}])
+        _draw_dark(canvas, 0, 338, fitted, 21, bold=True, align="r", cx=text_r)
     meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
     if meta:
-        w = d.textlength(meta, font=_get_font(14))
-        _draw_white(canvas, [{"x": text_r - w, "y": 380, "text": meta, "size": 14, "dim": True}])
+        _draw_dark(canvas, 0, 380, meta, 14, fill=META_GRAY, stroke=0,
+                   align="r", cx=text_r)
     if _city(item):
         _seal(canvas, seal_x1 - 42, 338, 42, 61, _city(item),
               vertical=True, glyph_px=20)
