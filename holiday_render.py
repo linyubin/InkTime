@@ -102,9 +102,19 @@ def holiday_reserve(template: str, orientation: str, layout_id: str = "") -> Dic
 
 # ========== 绘制原语 ==========
 
+def _band_text(canvas: Image.Image, xy: Tuple[float, float], s: str, size: int,
+               fill: Tuple[int, int, int], anchor: Optional[str] = None) -> None:
+    """实色底（横幅/题头/竖带）上的文字：与文本框同口径——配置字体 + 同色
+    0.4 细描边加粗，无偏移影（黑影在白字上会糊成"另一种字体"的观感，
+    2026-09-13 用户反馈后与 render_daily_photo 卡片文字画法对齐）。"""
+    ImageDraw.Draw(canvas).text(xy, s, font=_get_font(size), fill=fill,
+                                anchor=anchor, stroke_width=0.4, stroke_fill=fill)
+
+
 def _shadow_text(canvas: Image.Image, xy: Tuple[float, float], s: str, size: int,
                  fill: Tuple[int, int, int], anchor: Optional[str] = None) -> None:
-    """文字一次绘制：黑色偏移 2px 模拟投影 + 主色（无深色描边铁律）。"""
+    """文字一次绘制：黑色偏移 2px 模拟投影 + 主色（无深色描边铁律）。
+    仅保留给压在照片上的文字（书法款回退字形）；实色底一律用 _band_text。"""
     d = ImageDraw.Draw(canvas)
     x, y = xy
     d.text((x, y + 2), s, font=_get_font(size), fill=(0, 0, 0), anchor=anchor)
@@ -141,15 +151,16 @@ def _glyph(canvas: Image.Image, hexcode: str, cx: float, cy: float,
     return True
 
 
-def _seal_shou(canvas: Image.Image, x1: int, y0: int, banner_h: int) -> None:
-    """「壽」白文印：白底圆角方章 + 小篆壽字形（红，缺字形回退字体），贴横幅右端。"""
+def _seal_shou(canvas: Image.Image, cx: int, y0: int, banner_h: int) -> None:
+    """「壽」白文印：白底圆角方章 + 小篆壽字形（红，缺字形回退字体），
+    水平居中于 cx（2026-09-13 用户反馈：寿印应在红带居中）。"""
     side = max(44, banner_h - 12)
-    x0, y0 = x1 - 12 - side, y0 + (banner_h - side) // 2
+    x0, y0 = cx - side // 2, y0 + (banner_h - side) // 2
     d = ImageDraw.Draw(canvas)
     d.rounded_rectangle((x0, y0, x0 + side, y0 + side), radius=8, fill=WHITE)
-    if not _glyph(canvas, "58FD", x0 + side / 2, y0 + side / 2,
+    if not _glyph(canvas, "58FD", cx, y0 + side / 2,
                   int(side * 0.78), SEAL_RED):
-        d.text((x0 + side / 2, y0 + side / 2), "寿", font=_get_font(int(side * 0.62)),
+        d.text((cx, y0 + side / 2), "寿", font=_get_font(int(side * 0.62)),
                fill=SEAL_RED, anchor="mm")
 
 
@@ -240,13 +251,13 @@ def _banner_text_pair(canvas: Image.Image, box: Tuple[int, int, int, int],
     xl, xr = _vis_x("portrait" if canvas.width == CANVAS_W_P else "landscape", canvas.width)
     tx0 = max(x0, xl) + 22
     tx1 = min(x1, xr) - 22 - ornament_w
-    _shadow_text(canvas, (tx0, ymid), name, ns, name_fill, anchor="lm")
+    _band_text(canvas, (tx0, ymid), name, ns, name_fill, anchor="lm")
     if greeting:
         d = ImageDraw.Draw(canvas)
         max_w = (tx1 - tx0) - 20 - d.textlength(name, font=_get_font(ns))
         if max_w > 60:
             greeting = _fit_text(d, greeting, _get_font(gs), max_w)
-            _shadow_text(canvas, (tx1, ymid + 1), greeting, gs, greet_fill, anchor="rm")
+            _band_text(canvas, (tx1, ymid + 1), greeting, gs, greet_fill, anchor="rm")
 
 
 def _banner_zone(o: str, placement: Dict[str, int],
@@ -313,24 +324,38 @@ def _t_child_wave(canvas: Image.Image, o: str, layout_id: str,
     d.rectangle((0, top, W, top + BANNER_RADIUS), fill=ACCENT_YELLOW)
     for cx in range(0, W + 22, 22):
         d.ellipse((cx - 11, top + h - 11, cx + 11, top + h + 11), fill=ACCENT_YELLOW)
-    _shadow_text(canvas, (W // 2, top + 7), holiday["name"], 28, SEAL_RED, anchor="ma")
+    _band_text(canvas, (W // 2, top + 7), holiday["name"], 28, SEAL_RED, anchor="ma")
     if holiday.get("greeting"):
-        _shadow_text(canvas, (W // 2, top + 42), holiday["greeting"], 14,
-                     WHITE, anchor="ma")
+        _band_text(canvas, (W // 2, top + 42), holiday["greeting"], 14,
+                   WHITE, anchor="ma")
 
 
 def _t_elder_ribbon(canvas: Image.Image, o: str, layout_id: str,
                     holiday: Dict[str, Any]) -> None:
-    """T3-A 横幅寿印：红横幅 + 右端白底红文寿章（右缘锚可视区）。"""
+    """T3-A 横幅寿印：红横幅 + 居中白底红文寿章，名居左、祝福语居右
+    （2026-09-13 用户反馈：寿印应在红带居中）。三段各自适配避让。"""
     W, top = _canvas_w(o), _top(o)
     box = _banner_zone(o, {"mode": "default"})
-    ns, gs = (30, 16) if o == "portrait" else (26, 15)
+    x0, y0, x1, y1 = box
+    bh = y1 - y0
+    ns, gs = (26, 15) if o == "portrait" else (24, 14)
     _draw_banner(canvas, box, SEAL_RED)
-    _, xr = _vis_x(o, W)
-    bh = box[3] - box[1]
-    _seal_shou(canvas, xr if o == "landscape" else box[2], top, bh)
-    _banner_text_pair(canvas, box, holiday["name"], holiday.get("greeting", ""),
-                      ns, gs, WHITE, WHITE_DIM, ornament_w=max(44, bh - 12) + 24)
+    xl, xr = _vis_x(o, W)
+    side = max(44, bh - 12)
+    scx = (x0 + x1) // 2
+    _seal_shou(canvas, scx, y0, bh)
+    ymid = (y0 + y1) // 2 - 2
+    d = ImageDraw.Draw(canvas)
+    name = holiday["name"]
+    name_max = scx - side // 2 - 14 - (max(x0, xl) + 22)
+    name = _fit_text(d, name, _get_font(ns), max(60, name_max))
+    _band_text(canvas, (max(x0, xl) + 22, ymid), name, ns, WHITE, anchor="lm")
+    greet = holiday.get("greeting", "")
+    if greet:
+        tx1 = min(x1, xr) - 18
+        greet_max = tx1 - (scx + side // 2 + 14) - 28
+        greet = _fit_text(d, greet, _get_font(gs), max(60, greet_max))
+        _band_text(canvas, (tx1, ymid + 1), greet, gs, WHITE_DIM, anchor="rm")
 
 
 def _t_elder_calligraphy(canvas: Image.Image, o: str, layout_id: str,
@@ -346,8 +371,12 @@ def _t_elder_calligraphy(canvas: Image.Image, o: str, layout_id: str,
     cx = _dodge_x(canvas, o, layout_id, max(fs, pw), top,
                   top + int(fs * 1.15) + 56,
                   alt_slot=bool(holiday.get("_alt_slot")))
-    d.text((cx + 6, top + 6), "壽", font=_get_font(fs), fill=WHITE, anchor="ma")
-    d.text((cx, top), "壽", font=_get_font(fs), fill=SEAL_RED, anchor="ma")
+    # 大「壽」用小篆字形（白影错位 + 红字，2026-09-13 用户反馈），缺字形回退字体
+    gsz = int(fs * 1.05)
+    if not _glyph(canvas, "58FD", cx + 6, top + 6 + gsz / 2, gsz, WHITE):
+        d.text((cx + 6, top + 6), "壽", font=_get_font(fs), fill=WHITE, anchor="ma")
+    if not _glyph(canvas, "58FD", cx, top + gsz / 2, gsz, SEAL_RED):
+        d.text((cx, top), "壽", font=_get_font(fs), fill=SEAL_RED, anchor="ma")
     if greet:
         px = max(_vis_x(o, W)[0] + 8, min(_vis_x(o, W)[1] - 8 - pw, cx - pw // 2))
         d.rounded_rectangle((px, top + int(fs * 1.12), px + pw,
@@ -433,8 +462,8 @@ def _t_anniversary_hearts(canvas: Image.Image, o: str, layout_id: str,
     if holiday.get("greeting"):
         label = f"{label} · {holiday['greeting']}"
     ns = 20 if o == "portrait" else 18
-    _shadow_text(canvas, (W / 2, (box[1] + box[3]) / 2), label, ns, WHITE,
-                 anchor="mm")
+    _band_text(canvas, (W / 2, (box[1] + box[3]) / 2), label, ns, WHITE,
+               anchor="mm")
     for cx in range(24, W, 48):
         _heart(canvas, cx, box[3] + 8, 18, SEAL_RED)
 
@@ -451,19 +480,19 @@ def _t_header_strip(canvas: Image.Image, o: str, holiday: Dict[str, Any],
         x0, x1 = 40, 216
         d.rounded_rectangle((x0, 0, x1, 40), radius=14, fill=SEAL_RED)
         d.rectangle((x0, 26, x1, 40), fill=SEAL_RED)
-        _shadow_text(canvas, ((x0 + x1) / 2, 15), holiday["name"], 17, WHITE,
-                     anchor="mm")
+        _band_text(canvas, ((x0 + x1) / 2, 15), holiday["name"], 17, WHITE,
+                   anchor="mm")
         if holiday.get("greeting"):
-            _shadow_text(canvas, ((x0 + x1) / 2, 31), holiday["greeting"], 10,
-                         WHITE_DIM, anchor="mm")
+            _band_text(canvas, ((x0 + x1) / 2, 31), holiday["greeting"], 10,
+                       WHITE_DIM, anchor="mm")
     else:  # L06 挂签
         x0, x1 = 40, 370
         d.rounded_rectangle((x0, 0, x1, 40), radius=14, fill=SEAL_RED)
         d.rectangle((x0, 26, x1, 40), fill=SEAL_RED)
-        _shadow_text(canvas, (x0 + 20, 20), holiday["name"], 20, WHITE, anchor="lm")
+        _band_text(canvas, (x0 + 20, 20), holiday["name"], 20, WHITE, anchor="lm")
         if holiday.get("greeting"):
-            _shadow_text(canvas, (x1 - 20, 21), holiday["greeting"], 12,
-                         WHITE_DIM, anchor="rm")
+            _band_text(canvas, (x1 - 20, 21), holiday["greeting"], 12,
+                       WHITE_DIM, anchor="rm")
 
 
 def _t_p05_band(canvas: Image.Image, o: str, holiday: Dict[str, Any],
@@ -477,8 +506,8 @@ def _t_p05_band(canvas: Image.Image, o: str, holiday: Dict[str, Any],
     name = holiday["name"][:6]
     cx_name, cx_greet = bx0 + 46, bx0 + 24
     for i, ch in enumerate(name):
-        _shadow_text(canvas, (cx_name, by0 + 22 + i * 38), ch, 28, WHITE,
-                     anchor="mm")
+        _band_text(canvas, (cx_name, by0 + 22 + i * 38), ch, 28, WHITE,
+                   anchor="mm")
     greet = holiday.get("greeting", "")[:12]
     if greet:
         for i, ch in enumerate(greet):
