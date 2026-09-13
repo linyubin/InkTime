@@ -248,6 +248,9 @@ HOLIDAYS_FILE = "./holidays.json"
 # 模型必须支持图像输入。MODEL 或 API_URL 留空视为未启用，
 # 未启用/调用失败时：选片按现有算法、描述用分析期 side_caption、祝福语用 holidays.json 手写的。
 HOLIDAY_AI_ENABLED = False
+# 成品图质检：渲染完每张后发给模型检查贴图缺陷（遮主体/压文字/错位截断），
+# 换位重试仍不过则该张不叠加装饰（fail-open：调用失败不影响每日出图）
+HOLIDAY_AI_QA = True
 HOLIDAY_AI_API_URL  = ""   # 例: https://open.bigmodel.cn/api/paas/v4 或 http://127.0.0.1:11434/api/chat
 HOLIDAY_AI_API_KEY  = ""
 HOLIDAY_AI_MODEL    = ""   # 例: glm-4.6v / qwen-vl-plus 等视觉模型

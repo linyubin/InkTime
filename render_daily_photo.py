@@ -1666,6 +1666,24 @@ def main():
         # 渲染成完整成品图（照片 + 文案 + 日期 + 地点 [+ 节日庆祝层]）
         img = render_image(chosen, holiday=holiday)
 
+        # AI 质检（2026-09-13）：成品图发给视觉大模型检查贴图缺陷；
+        # shift=换槽位重渲染复检，复检不过或 drop=本张不叠加装饰（fail-open）
+        holiday_skipped = False
+        if holiday and holiday_ai.enabled() and bool(getattr(cfg, "HOLIDAY_AI_QA", True)):
+            verdict = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
+            if not verdict["ok"]:
+                print(f"[HOLIDAY-QA] 缺陷: {verdict['problems']} → {verdict['action']}")
+                if verdict["action"] == "shift":
+                    img = render_image(chosen, holiday=dict(holiday, _alt_slot=True))
+                    v2 = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
+                    if not v2["ok"]:
+                        print("[HOLIDAY-QA] 换位复检仍未通过，本张不叠加装饰")
+                        img = render_image(chosen, holiday=None)
+                        holiday_skipped = True
+                else:  # drop
+                    img = render_image(chosen, holiday=None)
+                    holiday_skipped = True
+
         # 朝向决策：render_image 已把实际渲染朝向写入 canvas.info，不再为判定朝向
         # 而第二次完整加载原图。
         render_orientation = img.info.get("render_orientation")
@@ -1724,6 +1742,8 @@ def main():
         }
         if holiday:
             sidecar["holiday"] = holiday["name"]
+            if holiday_skipped:
+                sidecar["holiday_skipped"] = True
         sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
         sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
         print(f"[OK] 已生成 sidecar: {sidecar_path} ({sidecar})")

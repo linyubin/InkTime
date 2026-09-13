@@ -47,6 +47,25 @@ def enabled() -> bool:
 
 # ========== 图片编码 ==========
 
+def _image_to_b64_from_img(img: Image.Image, max_edge: int) -> Optional[str]:
+    """PIL 图直接缩放编码（供质检用：成品画布不走磁盘路径）。"""
+    try:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        long_edge = max(w, h)
+        if long_edge > max_edge:
+            scale = max_edge / long_edge
+            img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                             Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        print(f"[HOLIDAY-QA] ⚠️ 成品图编码失败: {e}")
+        return None
+
+
 def _image_to_b64(path: str, max_edge: int) -> Optional[str]:
     """读图 → EXIF 纠偏 → RGB → 长边缩放 → JPEG base64。损坏图返回 None 跳过。"""
     try:
@@ -156,6 +175,48 @@ def _call_vlm(images_b64: List[str], prompt: str) -> Optional[str]:
     if isinstance(content, list):  # 部分网关把 content 拆成分段数组
         content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
     return str(content or "")
+
+
+def qa_check(img: Image.Image, holiday: Dict[str, Any], layout_id: str) -> Dict[str, Any]:
+    """
+    成品图质检（2026-09-13 用户需求）：把叠加节日层之后的渲染图发给视觉大模型，
+    检查装饰缺陷（遮主体/压文字/错位截断）。
+    返回 {"ok": bool, "action": "keep"|"shift"|"drop", "problems": [...]}。
+    未启用 / 调用失败 / 解析失败一律 fail-open（ok=True），绝不阻塞每日流程。
+    """
+    if not enabled() or not bool(getattr(cfg, "HOLIDAY_AI_QA", True)):
+        return {"ok": True, "action": "keep", "problems": []}
+    prompt = (
+        "这是电子墨水屏相框的节日渲染成品图，图中红色/黄色的节日装饰"
+        f"（横幅、印章、圆环、文字带等）是程序叠加的。今天是「{holiday['name']}」，"
+        f"装饰模板 {holiday.get('template')}，文字版式 {layout_id or '旧版底部卡片'}。\n"
+        "请只检查以下三类缺陷，不要评价照片本身的美术水准、也不要评价版式设计：\n"
+        "1) 节日装饰遮挡了照片中人物的面部或完整的主要主体；\n"
+        "2) 节日装饰与图中已有的文字卡片/文字内容相互重叠；\n"
+        "3) 节日装饰自身文字与图形明显错位、被画布边缘裁断。\n"
+        "严格只输出一个 JSON 对象，不要任何其他文字：\n"
+        '{"ok": true或false, "problems": ["缺陷简述，没有则空数组"], '
+        '"action": "keep"或"shift"或"drop"}\n'
+        'action 含义：keep=无缺陷；shift=装饰与主体或文字冲突，换一个位置重画即可；'
+        'drop=无法靠移动解决，这张建议不叠加装饰。'
+    )
+    b64 = _image_to_b64_from_img(img, int(getattr(cfg, "HOLIDAY_AI_IMAGE_MAX_EDGE", 512) or 512))
+    if b64 is None:
+        return {"ok": True, "action": "keep", "problems": []}
+    try:
+        raw = _call_vlm([b64], prompt)
+    except Exception as e:
+        print(f"[HOLIDAY-QA] ⚠️ 质检调用失败（不阻塞）: {e}")
+        return {"ok": True, "action": "keep", "problems": []}
+    data = _extract_json(raw or "")
+    if not data or not isinstance(data.get("ok"), bool):
+        print(f"[HOLIDAY-QA] ⚠️ 质检返回不可解析（不阻塞）: {str(raw)[:120]}")
+        return {"ok": True, "action": "keep", "problems": []}
+    action = str(data.get("action") or "keep")
+    if action not in ("keep", "shift", "drop"):
+        action = "keep" if data["ok"] else "drop"
+    problems = [str(p) for p in data.get("problems", []) if p][:3]
+    return {"ok": bool(data["ok"]), "action": action, "problems": problems}
 
 
 def select_and_describe(candidates: List[Dict[str, Any]],

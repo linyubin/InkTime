@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
@@ -120,14 +121,36 @@ def _heart(canvas: Image.Image, cx: float, cy: float, r: float,
                (cx, cy + r)], fill=color)
 
 
+_SEAL_GLYPH_DIR = Path(__file__).resolve().parent / "seal_glyphs"
+
+
+def _glyph(canvas: Image.Image, hexcode: str, cx: float, cy: float,
+           size: int, color: Tuple[int, int, int]) -> bool:
+    """贴小篆字形（seal_glyphs/{hex}.png，透明底白字形）；缺文件返回 False
+    由调用方回退字体。color≠WHITE 时重着色（白字形→指定色，alpha 不变）。"""
+    p = _SEAL_GLYPH_DIR / f"{hexcode}.png"
+    if not p.exists():
+        return False
+    g = Image.open(p).convert("RGBA").resize((size, size), Image.LANCZOS)
+    if color != WHITE:
+        r, g2, b, a = g.split()
+        solid = Image.new("RGBA", g.size, color + (0,))
+        solid.putalpha(a)
+        g = solid
+    canvas.paste(g, (int(cx - size / 2), int(cy - size / 2)), g)
+    return True
+
+
 def _seal_shou(canvas: Image.Image, x1: int, y0: int, banner_h: int) -> None:
-    """「寿」字白文印：白底圆角方章 + 红字，贴横幅右端（x1 为右缘）。"""
+    """「壽」白文印：白底圆角方章 + 小篆壽字形（红，缺字形回退字体），贴横幅右端。"""
     side = max(44, banner_h - 12)
     x0, y0 = x1 - 12 - side, y0 + (banner_h - side) // 2
     d = ImageDraw.Draw(canvas)
     d.rounded_rectangle((x0, y0, x0 + side, y0 + side), radius=8, fill=WHITE)
-    d.text((x0 + side / 2, y0 + side / 2), "寿", font=_get_font(int(side * 0.62)),
-           fill=SEAL_RED, anchor="mm")
+    if not _glyph(canvas, "58FD", x0 + side / 2, y0 + side / 2,
+                  int(side * 0.78), SEAL_RED):
+        d.text((x0 + side / 2, y0 + side / 2), "寿", font=_get_font(int(side * 0.62)),
+               fill=SEAL_RED, anchor="mm")
 
 
 def _cake(canvas: Image.Image, x1: int, y0: int, banner_h: int) -> None:
@@ -159,24 +182,32 @@ def _overlap_area(a: Tuple[int, int, int, int],
 
 
 def _dodge_x(canvas: Image.Image, o: str, layout_id: str,
-             item_w: int, y0: int, y1: int) -> int:
-    """在可视区的左/中/右三个锚位里，选与主体框 + 版式占位区重叠最小的。
-    平局确定性：中 > 左 > 右。返回选中槽位的中心 x。"""
+             item_w: int, y0: int, y1: int,
+             alt_slot: bool = False) -> int:
+    """在可视区的左/中/右三个锚位里选落位：
+    - 版式文本占位区（LAYOUT_ZONES）为硬否决——任何重叠直接出局（文本永不遮挡）；
+    - 主体框为软优先分（重叠越小越好）；
+    - 全部被否决时退回与占位区重叠最小者；平局确定性：中 > 左 > 右；
+    - alt_slot=True 时取次优（AI-QA 换位重试用）。
+    item_w 应取该模板在 (y0,y1) 内最宽元素的宽度（含下方胶囊）。"""
     W = _canvas_w(o)
     xl, xr = _vis_x(o, W)
     cands = [(xl + xr) // 2, xl + 18 + item_w // 2, xr - 18 - item_w // 2]
-    zones: List[Tuple[int, int, int, int]] = list(LAYOUT_ZONES.get(layout_id, []))
+    layout_zones = LAYOUT_ZONES.get(layout_id, [])
     subject = canvas.info.get("subject_box") if hasattr(canvas, "info") else None
-    if subject:
-        zones = zones + [tuple(subject)]
-    best, best_score = cands[0], None
-    for cx in cands:
+
+    ranked = []
+    for i, cx in enumerate(cands):
         rect = (int(cx - item_w / 2), y0, int(cx + item_w / 2), y1)
-        score = sum(_overlap_area(rect, z) for z in zones)
-        if best_score is None or score < best_score:
-            best, best_score = cx, score
-    # 钳回可视区
-    return max(xl + item_w // 2, min(xr - item_w // 2, best))
+        veto = any(_overlap_area(rect, z) > 1 for z in layout_zones)
+        subj = _overlap_area(rect, tuple(subject)) if subject else 0.0
+        ranked.append((veto, subj, i, cx))
+    ranked.sort(key=lambda t: (t[0], t[1], t[2]))
+    pick = ranked[1] if (alt_slot and len(ranked) > 1) else ranked[0]
+    if pick[0]:
+        print(f"[HOLIDAY] ⚠️ {layout_id} 三个锚位均与文本区冲突，取重叠最小者")
+    cx = pick[3]
+    return max(xl + item_w // 2, min(xr - item_w // 2, cx))
 
 
 # ========== 横幅族（通用 / 长辈 / 成人生日共用骨架） ==========
@@ -308,13 +339,16 @@ def _t_elder_calligraphy(canvas: Image.Image, o: str, layout_id: str,
     槽位避让：主体框/版式占位重叠最小的左/中/右位。"""
     W, top = _canvas_w(o), _top(o)
     fs = 120 if o == "portrait" else 96
-    cx = _dodge_x(canvas, o, layout_id, fs, top, top + int(fs * 1.15) + 56)
+    greet = holiday.get("greeting", "")
     d = ImageDraw.Draw(canvas)
+    # 胶囊比字形宽，避让宽度取二者较大者，防止胶囊压到版式文本区
+    pw = int(d.textlength(greet, font=_get_font(18))) + 40 if greet else 0
+    cx = _dodge_x(canvas, o, layout_id, max(fs, pw), top,
+                  top + int(fs * 1.15) + 56,
+                  alt_slot=bool(holiday.get("_alt_slot")))
     d.text((cx + 6, top + 6), "壽", font=_get_font(fs), fill=WHITE, anchor="ma")
     d.text((cx, top), "壽", font=_get_font(fs), fill=SEAL_RED, anchor="ma")
-    greet = holiday.get("greeting", "")
     if greet:
-        pw = int(d.textlength(greet, font=_get_font(18))) + 40
         px = max(_vis_x(o, W)[0] + 8, min(_vis_x(o, W)[1] - 8 - pw, cx - pw // 2))
         d.rounded_rectangle((px, top + int(fs * 1.12), px + pw,
                              top + int(fs * 1.12) + 42), radius=21, fill=WHITE)
@@ -345,8 +379,6 @@ def _t_adult_editorial(canvas: Image.Image, o: str, layout_id: str,
     d.rectangle((0, top + h, W, top + h + 4), fill=ACCENT_YELLOW)
     xl, xr = _vis_x(o, W)
     ns = 28 if o == "portrait" else 24
-    _shadow_text(canvas, (xl + 22, (2 * top + h) // 2 - 2), holiday["name"],
-                 ns, SEAL_RED, anchor="lm")
     greet = holiday.get("greeting", "")
     d2 = ImageDraw.Draw(canvas)
     if greet:
@@ -355,8 +387,11 @@ def _t_adult_editorial(canvas: Image.Image, o: str, layout_id: str,
             right = greet
     else:
         right = "HAPPY  BIRTHDAY"
-    _shadow_text(canvas, (xr - 22, (2 * top + h) // 2), right, 14,
-                 (0, 0, 0), anchor="rm")
+    # 白底上不用黑色偏移影（会成重影），改同色 0.3 描边加粗——与版式 _draw_dark 同口径
+    d2.text((xl + 22, (2 * top + h) // 2 - 2), holiday["name"], font=_get_font(ns),
+            fill=SEAL_RED, anchor="lm", stroke_width=0.3, stroke_fill=SEAL_RED)
+    d2.text((xr - 22, (2 * top + h) // 2), right, font=_get_font(14),
+            fill=(0, 0, 0), anchor="rm", stroke_width=0.3, stroke_fill=(0, 0, 0))
 
 
 def _t_anniversary_rings(canvas: Image.Image, o: str, layout_id: str,
@@ -366,17 +401,19 @@ def _t_anniversary_rings(canvas: Image.Image, o: str, layout_id: str,
     d = ImageDraw.Draw(canvas)
     ring_d, stroke, overlap = 52, 9, 24
     pair_w = ring_d + overlap
-    cx = _dodge_x(canvas, o, layout_id, pair_w + 20, top, top + 130)
+    label = holiday["name"]
+    if holiday.get("greeting"):
+        label = f"{label} · {holiday['greeting']}"
+    pw = int(d.textlength(label, font=_get_font(17))) + 36
+    # 胶囊比戒环对宽，避让宽度取二者较大者
+    cx = _dodge_x(canvas, o, layout_id, max(pair_w + 20, pw),
+                  top, top + 130, alt_slot=bool(holiday.get("_alt_slot")))
     px0 = cx - pair_w / 2
     cy = top + 16 + ring_d // 2
     d.ellipse((px0, cy - ring_d / 2, px0 + ring_d, cy + ring_d / 2),
               outline=SEAL_RED, width=stroke)
     d.ellipse((px0 + overlap, cy - ring_d / 2, px0 + overlap + ring_d,
                cy + ring_d / 2), outline=ACCENT_YELLOW, width=stroke)
-    label = holiday["name"]
-    if holiday.get("greeting"):
-        label = f"{label} · {holiday['greeting']}"
-    pw = int(d.textlength(label, font=_get_font(17))) + 36
     ph = 42
     py = cy + ring_d // 2 + 14
     px = max(_vis_x(o, W)[0] + 8, min(_vis_x(o, W)[1] - 8 - pw, cx - pw / 2))
@@ -404,18 +441,29 @@ def _t_anniversary_hearts(canvas: Image.Image, o: str, layout_id: str,
 
 # ========== 版式冲突的匹配式变体 ==========
 
-def _t_header_strip(canvas: Image.Image, o: str, holiday: Dict[str, Any]) -> None:
-    """L02/L06 变体：与版式顶边（y=40）齐平的通栏细横带，像版式自己的刊头。
-    名左 / 祝福右，黄线收底；不蛋糕不寿章，保持一条干净的结构线。"""
-    W = _canvas_w(o)
+def _t_header_strip(canvas: Image.Image, o: str, holiday: Dict[str, Any],
+                   layout_id: str) -> None:
+    """L02/L06 变体：红色红头与版式部件（信息栏/挂签）同宽同位、顶边齐平，
+    读作该部件自带的红色题头，而非独立悬浮的带子。
+    L06 挂签宽 40..370 单行文字；L02 信息栏宽 40..216 两行居中。"""
     d = ImageDraw.Draw(canvas)
-    d.rectangle((0, 0, W, 36), fill=SEAL_RED)
-    d.rectangle((0, 36, W, 40), fill=ACCENT_YELLOW)
-    xl, xr = _vis_x(o, W)
-    _shadow_text(canvas, (xl + 22, 18), holiday["name"], 20, WHITE, anchor="lm")
-    if holiday.get("greeting"):
-        _shadow_text(canvas, (xr - 22, 19), holiday["greeting"], 13,
-                     WHITE_DIM, anchor="rm")
+    if layout_id == "L02":
+        x0, x1 = 40, 216
+        d.rounded_rectangle((x0, 0, x1, 40), radius=14, fill=SEAL_RED)
+        d.rectangle((x0, 26, x1, 40), fill=SEAL_RED)
+        _shadow_text(canvas, ((x0 + x1) / 2, 15), holiday["name"], 17, WHITE,
+                     anchor="mm")
+        if holiday.get("greeting"):
+            _shadow_text(canvas, ((x0 + x1) / 2, 31), holiday["greeting"], 10,
+                         WHITE_DIM, anchor="mm")
+    else:  # L06 挂签
+        x0, x1 = 40, 370
+        d.rounded_rectangle((x0, 0, x1, 40), radius=14, fill=SEAL_RED)
+        d.rectangle((x0, 26, x1, 40), fill=SEAL_RED)
+        _shadow_text(canvas, (x0 + 20, 20), holiday["name"], 20, WHITE, anchor="lm")
+        if holiday.get("greeting"):
+            _shadow_text(canvas, (x1 - 20, 21), holiday["greeting"], 12,
+                         WHITE_DIM, anchor="rm")
 
 
 def _t_p05_band(canvas: Image.Image, o: str, holiday: Dict[str, Any],
@@ -440,8 +488,9 @@ def _t_p05_band(canvas: Image.Image, o: str, holiday: Dict[str, Any],
     if tpl == "elder_ribbon":
         d.rounded_rectangle((bx0 + 10, by1 - 58, bx1 - 10, by1 - 10),
                             radius=8, fill=WHITE)
-        d.text(((bx0 + bx1) / 2, by1 - 34), "寿", font=_get_font(30),
-               fill=SEAL_RED, anchor="mm")
+        if not _glyph(canvas, "58FD", (bx0 + bx1) / 2, by1 - 34, 36, SEAL_RED):
+            d.text(((bx0 + bx1) / 2, by1 - 34), "寿", font=_get_font(30),
+                   fill=SEAL_RED, anchor="mm")
     elif tpl == "adult_cake":
         _cake(canvas, bx1 - 4, by1 - 52, 44)
     d.rectangle((bx0, by1 - 8, bx1, by1), fill=ACCENT_YELLOW)
@@ -473,7 +522,7 @@ def apply_holiday_layer(canvas: Image.Image, layout_id: str, orientation: str,
         fn = _TEMPLATES.get(tpl, _t_general_ribbon)
         fit = LAYOUT_FIT.get(layout_id) if tpl in BANNER_FAMILY else None
         if fit == "strip":
-            _t_header_strip(canvas, orientation, holiday)
+            _t_header_strip(canvas, orientation, holiday, layout_id)
         elif fit == "p05_band":
             _t_p05_band(canvas, orientation, holiday, tpl)
         else:

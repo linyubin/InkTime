@@ -176,7 +176,8 @@ def _pick_real_photos(n: int = 3) -> List[Dict[str, Any]]:
     """从 photos.db 挑 n 张真实照片（有主体框、路径可解析），复现性用固定种子。"""
     import random
     rows = [r for r in rdp.load_sim_rows()
-            if r.get("subjects_json") and str(r.get("date") or "").count("-") >= 2]
+            if r.get("subjects_json") and str(r.get("date") or "").count("-") >= 2
+            and str(r.get("city") or "").strip()]  # 带 city：P05/L07 钤印才会渲染
     random.seed(20260913)
     random.shuffle(rows)
     picked, seen = [], set()
@@ -263,7 +264,7 @@ def render_samples(entries: list) -> None:
         ("P05", "elder_calligraphy"),
         ("L02", "general_ribbon"), ("L02", "elder_ribbon"),
         ("L06", "general_ribbon"), ("L06", "adult_cake"),
-        ("L06", "anniversary_rings"),
+        ("L06", "anniversary_rings"), ("L02", "anniversary_rings"),
     ]
     for k, (layout, tpl) in enumerate(conflicts):
         orient = "portrait" if layout.startswith("P") else "landscape"
@@ -277,8 +278,8 @@ def _loaded_size(item: Dict[str, Any]) -> str:
 
 
 def _placement_note(layout: str) -> str:
-    return {"L02": "让位：元素右移 x≥240", "L06": "让位：元素右移 x≥390",
-            "P05": "让位：右缘截短 x≤370"}.get(layout, "")
+    return {"L02": "匹配变体：栏宽红色题头", "L06": "匹配变体：挂签宽红色题头",
+            "P05": "匹配变体：左侧竖排节日带"}.get(layout, "")
 
 
 # ========== 4. AI 连通性（可选）==========
@@ -317,6 +318,21 @@ def validate_ai() -> None:
     finally:
         for c in cands:
             Path(c["path"]).unlink(missing_ok=True)
+
+    # AI 质检（QA）：成品图发给模型查贴图缺陷（用户 2026-09-13 需求）
+    if samples and holiday_ai.enabled():
+        try:
+            from PIL import Image as _Img
+            probe = _Img.open(io.BytesIO(base64.b64decode(samples[0]["rgb_b64"])))
+            qa_holiday = {"name": "春节", "greeting": "新春快乐", "template": "general_ribbon"}
+            t0 = time.time()
+            verdict = holiday_ai.qa_check(probe, qa_holiday, "P01")
+            detail = f"耗时 {time.time() - t0:.1f}s action={verdict['action']}"
+            if verdict["problems"]:
+                detail += " problems=" + "；".join(verdict["problems"])
+            record("AI", f"质检(QA)回程 {('通过' if verdict['ok'] else '检出缺陷')}", True, detail)
+        except Exception as e:
+            record("AI", f"质检(QA)异常: {type(e).__name__}: {e}", False)
 
 
 # ========== HTML 报告 ==========
