@@ -25,9 +25,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import config as cfg
 
-# 实现的模板 ID（与 holiday_render.py 对齐；未知值回落 general_ribbon）
-KNOWN_TEMPLATES = ("general_ribbon", "child_birthday", "elder_birthday",
-                   "adult_birthday", "anniversary")
+# 实现的模板 ID（与 holiday_render.py 对齐；未知值回落 general_ribbon）。
+# 2026-09-13 改版：生日/纪念日模板细分出双方案（用户从提案页选定）。
+KNOWN_TEMPLATES = ("general_ribbon",
+                   "child_bunting", "child_wave",
+                   "elder_ribbon", "elder_calligraphy",
+                   "adult_cake", "adult_editorial",
+                   "anniversary_rings", "anniversary_hearts")
+
+# 旧配置里的粗粒度 ID 自动映射到改版后用户选定的默认款
+TEMPLATE_ALIASES = {
+    "child_birthday": "child_bunting",
+    "elder_birthday": "elder_ribbon",
+    "adult_birthday": "adult_cake",
+    "anniversary": "anniversary_rings",
+}
 
 DEFAULT_TEMPLATE = "general_ribbon"
 
@@ -117,8 +129,9 @@ def load_holidays(path: Optional[Path] = None) -> List[Dict[str, Any]]:
             "ai_hint": str(raw.get("ai_hint") or "").strip(),
             "leap": bool(raw.get("leap", False)),
         }
+        entry["template"] = TEMPLATE_ALIASES.get(entry["template"], entry["template"])
         if entry["template"] not in KNOWN_TEMPLATES:
-            print(f"[HOLIDAY] ⚠️ {name}: 未知模板 \"{entry['template']}\"，回退 {DEFAULT_TEMPLATE}")
+            print(f"[HOLIDAY] ⚠️ {name}: 未知模板 \"{raw.get('template')}\"，回退 {DEFAULT_TEMPLATE}")
             entry["template"] = DEFAULT_TEMPLATE
         if special:
             if calendar != "lunar":

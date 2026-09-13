@@ -965,8 +965,9 @@ def _pick_layout_for(item: Dict[str, Any], orientation: str, img: Image.Image,
 
 
 def _cover_crop(img: Image.Image, canvas_w: int, canvas_h: int,
-                item: Dict[str, Any], reserves: Dict[str, int]) -> Image.Image:
-    """全出血 cover 裁切，避让区按所选版式的 CROP_RESERVES 四向传入。"""
+                item: Dict[str, Any], reserves: Dict[str, int]) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
+    """全出血 cover 裁切，避让区按所选版式的 CROP_RESERVES 四向传入。
+    返回 (裁切图, (draw_w, draw_h, left, top))，供主体画布坐标换算复用。"""
     img_w, img_h = img.size
     scale = max(canvas_w / img_w, canvas_h / img_h)
     draw_w = max(canvas_w, math.ceil(img_w * scale))
@@ -978,7 +979,26 @@ def _cover_crop(img: Image.Image, canvas_w: int, canvas_h: int,
         top_reserve=reserves.get("top", 0),
         left_reserve=reserves.get("left", 0),
         right_reserve=reserves.get("right", 0))
-    return img_resized.crop((left, top, left + canvas_w, top + canvas_h))
+    return (img_resized.crop((left, top, left + canvas_w, top + canvas_h)),
+            (draw_w, draw_h, left, top))
+
+
+def _subject_box_on_canvas(item: Dict[str, Any], draw_w: int, draw_h: int,
+                           left: int, top: int, canvas_w: int, canvas_h: int) -> Optional[Tuple[int, int, int, int]]:
+    """最大主体的画布坐标框（节日层避让用）。裁切窗口把归一化主体框映射到画布，
+    越界部分钳到画布内；无主体返回 None。"""
+    from layout_strategy import largest_subject
+    sub = largest_subject(item.get("subjects_json", ""))
+    if not sub or "bbox" not in sub:
+        return None
+    x0, y0, x1, y1 = sub["bbox"]
+    bx0 = max(0, min(canvas_w, int(x0 * draw_w - left)))
+    by0 = max(0, min(canvas_h, int(y0 * draw_h - top)))
+    bx1 = max(0, min(canvas_w, int(x1 * draw_w - left)))
+    by1 = max(0, min(canvas_h, int(y1 * draw_h - top)))
+    if bx1 <= bx0 or by1 <= by0:
+        return None
+    return (bx0, by0, bx1, by1)
 
 
 def _render_with_layout(item: Dict[str, Any], img: Image.Image,
@@ -988,9 +1008,21 @@ def _render_with_layout(item: Dict[str, Any], img: Image.Image,
     import render_layouts
     from layout_strategy import CROP_RESERVES
     layout, info = _pick_layout_for(item, orientation, img, _forced_layout())
+    reserves = dict(CROP_RESERVES.get(layout, {}))
+    if holiday:
+        # 节日层顶部的实色占位区并入裁切避让：主体尽量不被横幅/旗语压住
+        # （2026-09-13 改版；书法大字/双戒等悬浮元素走渲染期 Subject 槽位避让）
+        import holiday_render
+        top_zone = holiday_render.holiday_top_reserve(holiday["template"], orientation)
+        if top_zone:
+            reserves["top"] = max(reserves.get("top", 0), top_zone)
+    cropped, (draw_w, draw_h, left, top) = _cover_crop(
+        img, canvas_w, canvas_h, item, reserves)
     canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
-    canvas.paste(_cover_crop(img, canvas_w, canvas_h, item,
-                             CROP_RESERVES.get(layout, {})), (0, 0))
+    canvas.paste(cropped, (0, 0))
+    if holiday:
+        canvas.info["subject_box"] = _subject_box_on_canvas(
+            item, draw_w, draw_h, left, top, canvas_w, canvas_h)
     render_layouts.render_layout(canvas, layout, item)
     if holiday:
         # 节日层在版式文字层之上、gamma/抖动之前（2026-09-12 节假日模式，

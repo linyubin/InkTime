@@ -84,16 +84,19 @@ def validate_matching(entries: list) -> None:
         record("匹配", f"{d} → {'不命中' if not expect else expect}"
                        f"{'' if ok else f'（实际: {actual}）'}",
                ok, note)
-    # 模板字段
-    for d, tpl in [(dt.date(2026, 6, 1), "child_birthday"),
-                   (dt.date(2027, 3, 5), "elder_birthday"),
-                   (dt.date(2026, 11, 11), "adult_birthday"),
-                   (dt.date(2026, 5, 20), "anniversary")]:
+    # 模板字段（2026-09-13 改版：9 模板 ID）
+    for d, tpl in [(dt.date(2026, 6, 1), "child_bunting"),
+                   (dt.date(2027, 6, 18), "child_wave"),
+                   (dt.date(2027, 3, 5), "elder_calligraphy"),
+                   (dt.date(2026, 8, 20), "elder_ribbon"),
+                   (dt.date(2026, 11, 11), "adult_editorial"),
+                   (dt.date(2026, 5, 20), "anniversary_rings"),
+                   (dt.date(2026, 2, 14), "anniversary_hearts")]:
         hit = holidays_mod.get_today_holiday(d, entries)
         record("匹配", f"{d} 模板字段 = {tpl}", hit and hit["template"] == tpl)
         npass += hit and hit["template"] == tpl
-    rate = npass / (len(truth) + 4)
-    record("匹配", f"匹配验证总通过率 {npass}/{len(truth) + 4}", rate == 1.0)
+    rate = npass / (len(truth) + 7)
+    record("匹配", f"匹配验证总通过率 {npass}/{len(truth) + 7}", rate == 1.0)
 
 
 def yearly_scan(entries: list) -> dict:
@@ -150,6 +153,25 @@ def _jpg_b64(img: Image.Image, quality: int = 82) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+ALL_TEMPLATES = ("general_ribbon", "child_bunting", "child_wave",
+                 "elder_ribbon", "elder_calligraphy", "adult_cake",
+                 "adult_editorial", "anniversary_rings", "anniversary_hearts")
+
+_TPL_CN = {
+    "general_ribbon": "春节", "child_bunting": "女儿的生日", "child_wave": "女儿的生日",
+    "elder_ribbon": "爸爸70大寿", "elder_calligraphy": "爸爸70大寿",
+    "adult_cake": "我的生日", "adult_editorial": "我的生日",
+    "anniversary_rings": "结婚纪念日", "anniversary_hearts": "情人节",
+}
+_TPL_GREET = {
+    "general_ribbon": "新春快乐 阖家团圆", "child_bunting": "生日快乐",
+    "child_wave": "生日快乐", "elder_ribbon": "福如东海 寿比南山",
+    "elder_calligraphy": "福如东海 寿比南山", "adult_cake": "又长大一岁",
+    "adult_editorial": "又长大一岁", "anniversary_rings": "永结同心",
+    "anniversary_hearts": "余生请多指教",
+}
+
+
 def render_samples(entries: list) -> None:
     print("== 3. 模板样张（RGB + 四色抖动）==")
     photo = make_test_photo()
@@ -161,46 +183,34 @@ def render_samples(entries: list) -> None:
     }
     matrix = {
         "portrait": (rdp.CANVAS_WIDTH, rdp.CANVAS_HEIGHT, "P01",
-                     [("P05", "general_ribbon"), ("P05", "anniversary"),
-                      ("P10", "general_ribbon"), ("P10", "anniversary")]),
+                     [("P05", "general_ribbon"), ("P05", "anniversary_rings"),
+                      ("P10", "general_ribbon"), ("P10", "child_wave")]),
         "landscape": (int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_WIDTH", 800)),
                       int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_HEIGHT", 480)), "L01",
-                      [("L02", "general_ribbon"), ("L02", "anniversary"),
-                       ("L06", "general_ribbon"), ("L06", "anniversary"),
+                      [("L02", "general_ribbon"), ("L02", "child_bunting"),
+                       ("L06", "general_ribbon"), ("L06", "child_bunting"),
                        ("L07", "general_ribbon")]),
     }
     for orient, (cw, ch, base, extras) in matrix.items():
-        layout_tpl = [(base, t) for t in
-                      ("general_ribbon", "child_birthday", "elder_birthday",
-                       "adult_birthday", "anniversary")] + extras
+        layout_tpl = [(base, t) for t in ALL_TEMPLATES] + extras
         for layout, tpl in layout_tpl:
-            holiday = {"name": "春节" if tpl.startswith("general") else _tpl_cn(tpl),
-                       "greeting": _tpl_greeting(tpl),
+            holiday = {"name": _TPL_CN[tpl], "greeting": _TPL_GREET[tpl],
                        "template": tpl, "ai_hint": "测试"}
             canvas = Image.new("RGB", (cw, ch), (255, 255, 255))
             canvas.paste(_cover(photo, cw, ch), (0, 0))
+            # 模拟裁切期主体画布坐标（全图 cover、主体位于中左），驱动槽位避让
+            canvas.info["subject_box"] = (int(cw * 0.26), int(ch * 0.30),
+                                          int(cw * 0.42), int(ch * 0.72))
             render_layouts.render_layout(canvas, layout, item)
             holiday_render.apply_holiday_layer(canvas, layout, orient, holiday)
             dithered = rdp.quantize_four_color(canvas)
             samples.append({
-                "title": f"{orient[:1].upper()}{orient[1:]} · {layout} · {holiday['name']}（{tpl}）",
+                "title": f"{orient[:1].upper()}{orient[1:]} · {layout} · {_TPL_CN[tpl]}（{tpl}）",
                 "rgb_b64": _jpg_b64(canvas),
                 "dith_b64": _jpg_b64(dithered.convert("RGB"), 90),
                 "note": _placement_note(layout),
             })
             print(f"  · {orient} {layout} {tpl} 渲染完成")
-
-
-def _tpl_cn(tpl: str) -> str:
-    return {"child_birthday": "女儿的生日", "elder_birthday": "爸爸70大寿",
-            "adult_birthday": "我的生日", "anniversary": "结婚纪念日",
-            "general_ribbon": "春节"}.get(tpl, "春节")
-
-
-def _tpl_greeting(tpl: str) -> str:
-    return {"general_ribbon": "新春快乐 阖家团圆", "child_birthday": "生日快乐",
-            "elder_birthday": "福如东海 寿比南山", "adult_birthday": "又长大一岁",
-            "anniversary": "永结同心"}.get(tpl, "")
 
 
 def _placement_note(layout: str) -> str:

@@ -135,6 +135,20 @@ HOLIDAY_PLACEMENT = {
 
 ### 5.3 作用范围
 
+#### 5.3.0 改版（2026-09-13，提案页 docs/holiday-template-showcase-2026-09-13 选定）
+
+模板从 5 款细分为 9 款（旧 ID 保留别名映射）：`general_ribbon`(T1-A)、
+`child_bunting`(T2-B)/`child_wave`(T2-E)、`elder_ribbon`(T3-A)/`elder_calligraphy`(T3-B)、
+`adult_cake`(T4-A)/`adult_editorial`(T4-D)、`anniversary_rings`(T5-B)/`anniversary_hearts`(T5-E)。
+三项强化：
+
+1. **对齐**：文字全部改 PIL 锚点（lm/rm/ma/mm）光学居中；
+2. **主体遮挡**：实色顶带模板的占位高度经 `holiday_top_reserve()` 并入裁切避让
+   （主体裁切时自动避开横幅）；书法大字/双戒等悬浮元素渲染期读
+   `canvas.info["subject_box"]`（由 `_subject_box_on_canvas()` 把主体框映射到画布坐标），
+   在左/中/右锚位选与主体 + 版式占位区（`LAYOUT_ZONES`）重叠最小的槽位（`_dodge_x`）；
+3. **相框遮罩**：横屏贴边元素统一按可视区（`_vis_x`）锚定，竖屏按可视顶（`_top`）。
+
 装饰烙进**当日渲染批次的所有照片**（photo_0 ~ photo_{N-1}）。设备默认显示 photo_0，
 手动 `/fetch?idx=N` 切换到任何一张看到的都是带装饰的版本——满足"切换的那张也要有"
 且无需新增按需渲染机制。

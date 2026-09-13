@@ -109,7 +109,9 @@ def largest_subject(subjects_json: str) -> Optional[Dict[str, float]]:
         area = max(0.0, bw) * max(0.0, bh)
         w = conf * weights[label] * area
         if w > best_w:
-            best_w, best = w, {"cx": cx, "cy": cy, "area": area}
+            best_w, best = w, {"cx": cx, "cy": cy, "area": area,
+                               "bbox": (cx - bw / 2, cy - bh / 2,
+                                        cx + bw / 2, cy + bh / 2)}
     return best
 
 

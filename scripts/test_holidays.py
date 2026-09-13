@@ -112,6 +112,14 @@ def main() -> None:
     check("template 缺省为 general_ribbon", h["template"] == DEFAULT_TEMPLATE)
     check("ai_hint 缺省回退 name", get_today_holiday(D(2026, 10, 3), entries)["ai_hint"] == "A")
 
+    print("== 旧模板 ID 别名映射 ==")
+    entries = make_entries({"holidays": [
+        {"name": "儿童节", "calendar": "solar", "start": "6-1", "template": "child_birthday"},
+        {"name": "结婚纪念日", "calendar": "solar", "start": "5-20", "template": "anniversary"},
+    ]})
+    check("child_birthday → child_bunting", entries[0]["template"] == "child_bunting")
+    check("anniversary → anniversary_rings", entries[1]["template"] == "anniversary_rings")
+
     print("== 容错降级 ==")
     check("文件不存在 → 空表", load_holidays(Path("/nonexistent/x.json")) == [])
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
