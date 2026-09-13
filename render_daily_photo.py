@@ -1010,12 +1010,13 @@ def _render_with_layout(item: Dict[str, Any], img: Image.Image,
     layout, info = _pick_layout_for(item, orientation, img, _forced_layout())
     reserves = dict(CROP_RESERVES.get(layout, {}))
     if holiday:
-        # 节日层顶部的实色占位区并入裁切避让：主体尽量不被横幅/旗语压住
-        # （2026-09-13 改版；书法大字/双戒等悬浮元素走渲染期 Subject 槽位避让）
+        # 节日层实色占位区并入裁切避让（top/left）：主体尽量不被横幅压住，
+        # P05 竖排带占左侧（2026-09-13 改版；书法大字/双戒走渲染期槽位避让）
         import holiday_render
-        top_zone = holiday_render.holiday_top_reserve(holiday["template"], orientation)
-        if top_zone:
-            reserves["top"] = max(reserves.get("top", 0), top_zone)
+        hr = holiday_render.holiday_reserve(holiday["template"], orientation, layout)
+        for k in ("top", "left", "right", "bottom"):
+            if hr.get(k):
+                reserves[k] = max(reserves.get(k, 0), hr[k])
     cropped, (draw_w, draw_h, left, top) = _cover_crop(
         img, canvas_w, canvas_h, item, reserves)
     canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))

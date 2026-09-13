@@ -172,45 +172,108 @@ _TPL_GREET = {
 }
 
 
+def _pick_real_photos(n: int = 3) -> List[Dict[str, Any]]:
+    """从 photos.db 挑 n 张真实照片（有主体框、路径可解析），复现性用固定种子。"""
+    import random
+    rows = [r for r in rdp.load_sim_rows()
+            if r.get("subjects_json") and str(r.get("date") or "").count("-") >= 2]
+    random.seed(20260913)
+    random.shuffle(rows)
+    picked, seen = [], set()
+    for r in rows:
+        try:
+            img = rdp._resolve_and_load_image(r)
+        except Exception:
+            continue
+        key = Path(str(r["path"])).name
+        if key in seen:
+            continue
+        seen.add(key)
+        r["_loaded_img"] = img
+        picked.append(r)
+        if len(picked) >= n:
+            break
+    return picked
+
+
+def _render_case(item: Dict[str, Any], layout: str, tpl: str, orient: str,
+                 photo_tag: str) -> None:
+    """真实管线渲染单张样张：加载 → 节日避让区并入裁切 → 主体框映射 →
+    版式文字层 → 节日层 → 抖动。"""
+    from layout_strategy import CROP_RESERVES
+    holiday = {"name": _TPL_CN[tpl], "greeting": _TPL_GREET[tpl],
+               "template": tpl, "ai_hint": "测试"}
+    if orient == "portrait":
+        cw, ch = rdp.CANVAS_WIDTH, rdp.CANVAS_HEIGHT
+    else:
+        cw = int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
+        ch = int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
+    reserves = dict(CROP_RESERVES.get(layout, {}))
+    hr = holiday_render.holiday_reserve(tpl, orient, layout)
+    for k in ("top", "left", "right", "bottom"):
+        if hr.get(k):
+            reserves[k] = max(reserves.get(k, 0), hr[k])
+    cropped, (dw, dh, left, top) = rdp._cover_crop(
+        item["_loaded_img"], cw, ch, item, reserves)
+    canvas = Image.new("RGB", (cw, ch), (255, 255, 255))
+    canvas.paste(cropped, (0, 0))
+    canvas.info["subject_box"] = rdp._subject_box_on_canvas(
+        item, dw, dh, left, top, cw, ch)
+    render_layouts.render_layout(canvas, layout, item)
+    holiday_render.apply_holiday_layer(canvas, layout, orient, holiday)
+    dithered = rdp.quantize_four_color(canvas)
+    sb = canvas.info.get("subject_box")
+    note = _placement_note(layout)
+    if sb:
+        note = (note + "；" if note else "") + "主体槽位避让生效"
+    samples.append({
+        "title": f"{orient[:1].upper()}{orient[1:]} · {layout} · {_TPL_CN[tpl]}（{tpl}）· {photo_tag}",
+        "rgb_b64": _jpg_b64(canvas),
+        "dith_b64": _jpg_b64(dithered.convert("RGB"), 90),
+        "note": note,
+    })
+    print(f"  · {orient} {layout} {tpl} [{photo_tag}] 渲染完成")
+
+
 def render_samples(entries: list) -> None:
-    print("== 3. 模板样张（RGB + 四色抖动）==")
-    photo = make_test_photo()
-    item = {
-        "path": "synthetic", "date": "2027-02-06", "side": "全家在爷爷家吃年夜饭，孩子们在院子里放烟花",
-        "city": "厦门市", "lat": None, "lon": None, "memory": 92,
-        "subjects_json": json.dumps([
-            {"label": "person", "conf": 0.9, "bbox": [0.32, 0.5, 0.12, 0.24]}]),
-    }
-    matrix = {
-        "portrait": (rdp.CANVAS_WIDTH, rdp.CANVAS_HEIGHT, "P01",
-                     [("P05", "general_ribbon"), ("P05", "anniversary_rings"),
-                      ("P10", "general_ribbon"), ("P10", "child_wave")]),
-        "landscape": (int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_WIDTH", 800)),
-                      int(getattr(rdp.cfg, "LANDSCAPE_CANVAS_HEIGHT", 480)), "L01",
-                      [("L02", "general_ribbon"), ("L02", "child_bunting"),
-                       ("L06", "general_ribbon"), ("L06", "child_bunting"),
-                       ("L07", "general_ribbon")]),
-    }
-    for orient, (cw, ch, base, extras) in matrix.items():
-        layout_tpl = [(base, t) for t in ALL_TEMPLATES] + extras
-        for layout, tpl in layout_tpl:
-            holiday = {"name": _TPL_CN[tpl], "greeting": _TPL_GREET[tpl],
-                       "template": tpl, "ai_hint": "测试"}
-            canvas = Image.new("RGB", (cw, ch), (255, 255, 255))
-            canvas.paste(_cover(photo, cw, ch), (0, 0))
-            # 模拟裁切期主体画布坐标（全图 cover、主体位于中左），驱动槽位避让
-            canvas.info["subject_box"] = (int(cw * 0.26), int(ch * 0.30),
-                                          int(cw * 0.42), int(ch * 0.72))
-            render_layouts.render_layout(canvas, layout, item)
-            holiday_render.apply_holiday_layer(canvas, layout, orient, holiday)
-            dithered = rdp.quantize_four_color(canvas)
-            samples.append({
-                "title": f"{orient[:1].upper()}{orient[1:]} · {layout} · {_TPL_CN[tpl]}（{tpl}）",
-                "rgb_b64": _jpg_b64(canvas),
-                "dith_b64": _jpg_b64(dithered.convert("RGB"), 90),
-                "note": _placement_note(layout),
-            })
-            print(f"  · {orient} {layout} {tpl} 渲染完成")
+    """真实照片样张：3 张实拍图轮转承载 9 模板 × 2 朝向 + 冲突版式变体。"""
+    print("== 3. 模板样张（真实照片，RGB + 四色抖动）==")
+    photos = _pick_real_photos(3)
+    if not photos:
+        print("  ⚠️ 无可解析真实照片，回退合成图")
+        fake = {"path": "synthetic", "date": "2027-02-06", "side": "测试",
+                "city": "厦门市", "subjects_json": json.dumps([
+                    {"label": "person", "conf": 0.9, "bbox": [0.32, 0.5, 0.12, 0.24]}])}
+        fake["_loaded_img"] = make_test_photo()
+        photos = [fake]
+    for i, p in enumerate(photos):
+        print(f"  底图 {i + 1}: {Path(str(p['path'])).name} "
+              f"({_loaded_size(p)})")
+
+    # 基础矩阵：9 模板 × 2 朝向，底图轮转
+    for i, tpl in enumerate(ALL_TEMPLATES):
+        _render_case(photos[i % len(photos)], "P01", tpl, "portrait",
+                     f"底图{i % len(photos) + 1}")
+        _render_case(photos[(i + 1) % len(photos)], "L01", tpl, "landscape",
+                     f"底图{(i + 1) % len(photos) + 1}")
+    # 冲突版式的匹配式变体 + 槽位避让
+    conflicts = [
+        ("P05", "general_ribbon"), ("P05", "elder_ribbon"),
+        ("P05", "adult_cake"), ("P05", "child_wave"),
+        ("P05", "elder_calligraphy"),
+        ("L02", "general_ribbon"), ("L02", "elder_ribbon"),
+        ("L06", "general_ribbon"), ("L06", "adult_cake"),
+        ("L06", "anniversary_rings"),
+    ]
+    for k, (layout, tpl) in enumerate(conflicts):
+        orient = "portrait" if layout.startswith("P") else "landscape"
+        _render_case(photos[k % len(photos)], layout, tpl, orient,
+                     f"底图{k % len(photos) + 1}")
+
+
+def _loaded_size(item: Dict[str, Any]) -> str:
+    img = item["_loaded_img"]
+    return f"{img.width}×{img.height}"
 
 
 def _placement_note(layout: str) -> str:

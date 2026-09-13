@@ -39,12 +39,13 @@ BANNER_RADIUS = 16
 YELLOW_LINE_H = 6                    # 横幅下沿黄色饰线
 WHITE_GAP_H = 2                      # 黄饰线上的白色分隔线
 
-# 顶部实色元素放置让位（版式占位时的横幅位移，画布坐标系）
-HOLIDAY_PLACEMENT: Dict[str, Dict[str, int]] = {
-    "L02": {"mode": "right", "x0": 240},
-    "L06": {"mode": "right", "x0": 390},
-    "P05": {"mode": "left", "x1": 370},
-}
+# 版式冲突时的匹配式变体（2026-09-13 二次改版：废除位移/截短式让位）。
+# 横幅族在 L02/L06 上改为与版式顶边齐平的通栏细横带（strip），
+# 在 P05 上改为与右侧题签对称的左侧竖排节日带（p05_band）；
+# 书法大字/双戒走 _dodge_x 真避让，不在此列。
+LAYOUT_FIT: Dict[str, str] = {"L02": "strip", "L06": "strip", "P05": "p05_band"}
+BANNER_FAMILY = {"general_ribbon", "elder_ribbon", "adult_cake",
+                 "child_wave", "anniversary_hearts"}
 
 # 版式自身占用的顶部区域（启发式，画布坐标；供悬浮元素槽位避让）
 LAYOUT_ZONES: Dict[str, List[Tuple[int, int, int, int]]] = {
@@ -74,21 +75,28 @@ def _vis_x(o: str, W: int) -> Tuple[int, int]:
     return (0, W) if o == "portrait" else (INSET, W - INSET)
 
 
-def holiday_top_reserve(template: str, orientation: str) -> int:
-    """模板顶部实色占位高度（画布顶往下算），供裁切避让。None 表示不占位。"""
+def holiday_reserve(template: str, orientation: str, layout_id: str = "") -> Dict[str, int]:
+    """模板 + 版式的裁切避让区（画布坐标系）。返回 {"top": px, "left": px} 子集。
+    实色顶带占顶部（冲突版式上变细横带后只占 44px）；P05 竖排带占左侧；
+    书法大字/双戒不占裁切区（渲染期槽位避让）。"""
+    fit = LAYOUT_FIT.get(layout_id) if template in BANNER_FAMILY else None
+    if fit == "strip":
+        return {"top": 44}
+    if fit == "p05_band":
+        return {"left": 96} if orientation == "portrait" else {}
     top = _top(orientation)
     if template in ("general_ribbon", "elder_ribbon", "adult_cake"):
         h = BANNER_H_P if orientation == "portrait" else BANNER_H_L
-        return top + h + YELLOW_LINE_H + 2
+        return {"top": top + h + YELLOW_LINE_H + 2}
     if template == "child_wave":
-        return top + 64 + 13
+        return {"top": top + 64 + 13}
     if template == "child_bunting":
-        return top + 36
+        return {"top": top + 36}
     if template == "adult_editorial":
-        return top + 60
+        return {"top": top + 60}
     if template == "anniversary_hearts":
-        return top + 60 + 18
-    return 0  # elder_calligraphy / anniversary_rings：渲染期槽位避让，不占裁切区
+        return {"top": top + 60 + 18}
+    return {}  # elder_calligraphy / anniversary_rings
 
 
 # ========== 绘制原语 ==========
@@ -223,21 +231,21 @@ def _banner_zone(o: str, placement: Dict[str, int],
     return (x0, top, x1, top + h)
 
 
-# ========== 九套模板 ==========
+# ========== 九套模板（统一签名 canvas, o, layout_id, holiday） ==========
 
-def _t_general_ribbon(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_general_ribbon(canvas: Image.Image, o: str, layout_id: str,
                       holiday: Dict[str, Any]) -> None:
     """T1-A 刊头横幅：红横幅 + 黄白双色饰线 + 名左/祝福右。"""
-    box = _banner_zone(o, placement)
+    box = _banner_zone(o, {"mode": "default"})
     ns, gs = (30, 17) if o == "portrait" else (26, 15)
     _draw_banner(canvas, box, SEAL_RED, dual_underline=True)
     _banner_text_pair(canvas, box, holiday["name"], holiday.get("greeting", ""),
                       ns, gs, WHITE, WHITE_DIM)
 
 
-def _t_child_bunting(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_child_bunting(canvas: Image.Image, o: str, layout_id: str,
                      holiday: Dict[str, Any]) -> None:
-    """T2-B 彩旗派对：顶部红黄三角旗一排 + 左上白底名牌。"""
+    """T2-B 彩旗派对：顶部红黄三角旗一排 + 白底名牌（L02/L06 上名牌翻右侧）。"""
     W, top = _canvas_w(o), _top(o)
     d = ImageDraw.Draw(canvas)
     d.rectangle((0, top + 2, W, top + 6), fill=WHITE)
@@ -254,8 +262,8 @@ def _t_child_bunting(canvas: Image.Image, o: str, placement: Dict[str, int],
     tag_w = 32 + max(d.textlength(name, font=_get_font(20)),
                      d.textlength(f"{greet} · 又一岁啦", font=_get_font(13))
                      if greet else 0)
-    # L02 左栏 / L06 顶签占位时名牌翻到右侧（与横幅族同一张让位表）
-    tx = (xr - 18 - tag_w) if placement.get("mode") == "right" else (xl + 18)
+    # L02 左栏 / L06 顶签占位时名牌翻到右侧（旗帜本身不与其冲突）
+    tx = (xr - 18 - tag_w) if layout_id in ("L02", "L06") else (xl + 18)
     d.rounded_rectangle((tx, top + 40, tx + tag_w, top + 106), radius=12, fill=WHITE)
     d.text((tx + 16, top + 50), name, font=_get_font(20), fill=SEAL_RED, anchor="la")
     if greet:
@@ -263,7 +271,7 @@ def _t_child_bunting(canvas: Image.Image, o: str, placement: Dict[str, int],
                fill=(0, 0, 0), anchor="la")
 
 
-def _t_child_wave(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_child_wave(canvas: Image.Image, o: str, layout_id: str,
                   holiday: Dict[str, Any]) -> None:
     """T2-E 波浪黄幅：黄色横幅 + 底边一圈半圆波浪（像蛋糕花边），居中两行。"""
     W, top = _canvas_w(o), _top(o)
@@ -280,11 +288,11 @@ def _t_child_wave(canvas: Image.Image, o: str, placement: Dict[str, int],
                      WHITE, anchor="ma")
 
 
-def _t_elder_ribbon(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_elder_ribbon(canvas: Image.Image, o: str, layout_id: str,
                     holiday: Dict[str, Any]) -> None:
     """T3-A 横幅寿印：红横幅 + 右端白底红文寿章（右缘锚可视区）。"""
     W, top = _canvas_w(o), _top(o)
-    box = _banner_zone(o, placement)
+    box = _banner_zone(o, {"mode": "default"})
     ns, gs = (30, 16) if o == "portrait" else (26, 15)
     _draw_banner(canvas, box, SEAL_RED)
     _, xr = _vis_x(o, W)
@@ -294,13 +302,13 @@ def _t_elder_ribbon(canvas: Image.Image, o: str, placement: Dict[str, int],
                       ns, gs, WHITE, WHITE_DIM, ornament_w=max(44, bh - 12) + 24)
 
 
-def _t_elder_calligraphy(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_elder_calligraphy(canvas: Image.Image, o: str, layout_id: str,
                          holiday: Dict[str, Any]) -> None:
     """T3-B 大字中堂：书法大「壽」白影压图 + 下方白胶囊对联句。
     槽位避让：主体框/版式占位重叠最小的左/中/右位。"""
     W, top = _canvas_w(o), _top(o)
     fs = 120 if o == "portrait" else 96
-    cx = _dodge_x(canvas, o, "", fs, top, top + int(fs * 1.15) + 56)
+    cx = _dodge_x(canvas, o, layout_id, fs, top, top + int(fs * 1.15) + 56)
     d = ImageDraw.Draw(canvas)
     d.text((cx + 6, top + 6), "壽", font=_get_font(fs), fill=WHITE, anchor="ma")
     d.text((cx, top), "壽", font=_get_font(fs), fill=SEAL_RED, anchor="ma")
@@ -314,11 +322,11 @@ def _t_elder_calligraphy(canvas: Image.Image, o: str, placement: Dict[str, int],
                font=_get_font(18), fill=SEAL_RED, anchor="mm")
 
 
-def _t_adult_cake(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_adult_cake(canvas: Image.Image, o: str, layout_id: str,
                   holiday: Dict[str, Any]) -> None:
     """T4-A 横幅蛋糕：红横幅 + 右端白蛋糕剪影（右缘锚可视区）。"""
     W, top = _canvas_w(o), _top(o)
-    box = _banner_zone(o, placement)
+    box = _banner_zone(o, {"mode": "default"})
     ns, gs = (30, 16) if o == "portrait" else (26, 15)
     _draw_banner(canvas, box, SEAL_RED)
     _, xr = _vis_x(o, W)
@@ -327,7 +335,7 @@ def _t_adult_cake(canvas: Image.Image, o: str, placement: Dict[str, int],
                       ns, gs, WHITE, WHITE_DIM, ornament_w=46 + 24)
 
 
-def _t_adult_editorial(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_adult_editorial(canvas: Image.Image, o: str, layout_id: str,
                        holiday: Dict[str, Any]) -> None:
     """T4-D 杂志刊头：白色刊头条，左红字大标题、右黑色小字英文字距排开，黄线收边。"""
     W, top = _canvas_w(o), _top(o)
@@ -351,14 +359,14 @@ def _t_adult_editorial(canvas: Image.Image, o: str, placement: Dict[str, int],
                  (0, 0, 0), anchor="rm")
 
 
-def _t_anniversary_rings(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_anniversary_rings(canvas: Image.Image, o: str, layout_id: str,
                          holiday: Dict[str, Any]) -> None:
     """T5-B 双戒相扣：红黄两枚交叠圆环 + 白胶囊横批。槽位避让同大字中堂。"""
     W, top = _canvas_w(o), _top(o)
     d = ImageDraw.Draw(canvas)
     ring_d, stroke, overlap = 52, 9, 24
     pair_w = ring_d + overlap
-    cx = _dodge_x(canvas, o, "", pair_w + 20, top, top + 130)
+    cx = _dodge_x(canvas, o, layout_id, pair_w + 20, top, top + 130)
     px0 = cx - pair_w / 2
     cy = top + 16 + ring_d // 2
     d.ellipse((px0, cy - ring_d / 2, px0 + ring_d, cy + ring_d / 2),
@@ -377,12 +385,12 @@ def _t_anniversary_rings(canvas: Image.Image, o: str, placement: Dict[str, int],
            fill=SEAL_RED, anchor="mm")
 
 
-def _t_anniversary_hearts(canvas: Image.Image, o: str, placement: Dict[str, int],
+def _t_anniversary_hearts(canvas: Image.Image, o: str, layout_id: str,
                           holiday: Dict[str, Any]) -> None:
     """T5-E 心形旗语：红色横带 + 居中白字 + 底边一排悬垂小红心。"""
     W, top = _canvas_w(o), _top(o)
     h = 60 if o == "portrait" else 52
-    box = _banner_zone(o, placement, h_p=h, h_l=h)
+    box = (0, top, W, top + h)
     _draw_banner(canvas, box, SEAL_RED)
     label = holiday["name"]
     if holiday.get("greeting"):
@@ -392,6 +400,51 @@ def _t_anniversary_hearts(canvas: Image.Image, o: str, placement: Dict[str, int]
                  anchor="mm")
     for cx in range(24, W, 48):
         _heart(canvas, cx, box[3] + 8, 18, SEAL_RED)
+
+
+# ========== 版式冲突的匹配式变体 ==========
+
+def _t_header_strip(canvas: Image.Image, o: str, holiday: Dict[str, Any]) -> None:
+    """L02/L06 变体：与版式顶边（y=40）齐平的通栏细横带，像版式自己的刊头。
+    名左 / 祝福右，黄线收底；不蛋糕不寿章，保持一条干净的结构线。"""
+    W = _canvas_w(o)
+    d = ImageDraw.Draw(canvas)
+    d.rectangle((0, 0, W, 36), fill=SEAL_RED)
+    d.rectangle((0, 36, W, 40), fill=ACCENT_YELLOW)
+    xl, xr = _vis_x(o, W)
+    _shadow_text(canvas, (xl + 22, 18), holiday["name"], 20, WHITE, anchor="lm")
+    if holiday.get("greeting"):
+        _shadow_text(canvas, (xr - 22, 19), holiday["greeting"], 13,
+                     WHITE_DIM, anchor="rm")
+
+
+def _t_p05_band(canvas: Image.Image, o: str, holiday: Dict[str, Any],
+                tpl: str) -> None:
+    """P05 变体：与右侧竖排题签对称的左侧竖排节日带（红底白竖字 + 黄色收尾）。
+    长辈款带白寿章收底、成人生日款带白蛋糕收底；其余纯文字收尾。
+    竖排惯例：名在右列（大），祝福在左列（小、次级白）。"""
+    d = ImageDraw.Draw(canvas)
+    bx0, bx1, by0, by1 = 16, 88, 56, 400
+    d.rectangle((bx0, by0, bx1, by1), fill=SEAL_RED)
+    name = holiday["name"][:6]
+    cx_name, cx_greet = bx0 + 46, bx0 + 24
+    for i, ch in enumerate(name):
+        _shadow_text(canvas, (cx_name, by0 + 22 + i * 38), ch, 28, WHITE,
+                     anchor="mm")
+    greet = holiday.get("greeting", "")[:12]
+    if greet:
+        for i, ch in enumerate(greet):
+            d.text((cx_greet, by0 + 24 + i * 21), ch, font=_get_font(16),
+                   fill=WHITE_DIM, anchor="mm")
+    # 收尾装饰
+    if tpl == "elder_ribbon":
+        d.rounded_rectangle((bx0 + 10, by1 - 58, bx1 - 10, by1 - 10),
+                            radius=8, fill=WHITE)
+        d.text(((bx0 + bx1) / 2, by1 - 34), "寿", font=_get_font(30),
+               fill=SEAL_RED, anchor="mm")
+    elif tpl == "adult_cake":
+        _cake(canvas, bx1 - 4, by1 - 52, 44)
+    d.rectangle((bx0, by1 - 8, bx1, by1), fill=ACCENT_YELLOW)
 
 
 _TEMPLATES = {
@@ -412,10 +465,18 @@ def apply_holiday_layer(canvas: Image.Image, layout_id: str, orientation: str,
     """
     在版式文字层之上叠加节日庆祝元素。任何异常都不应中断每日渲染——
     失败打印警告并跳过（保留无装饰画面）。
+    版式冲突（L02/L06/P05）时横幅族切换为匹配式变体（细横带/竖排带），
+    其余模板照常（书法大字/双戒内部已做槽位避让）。
     """
     try:
-        placement = HOLIDAY_PLACEMENT.get(layout_id, {"mode": "default"})
-        fn = _TEMPLATES.get(holiday.get("template", ""), _t_general_ribbon)
-        fn(canvas, orientation, placement, holiday)
+        tpl = holiday.get("template", "")
+        fn = _TEMPLATES.get(tpl, _t_general_ribbon)
+        fit = LAYOUT_FIT.get(layout_id) if tpl in BANNER_FAMILY else None
+        if fit == "strip":
+            _t_header_strip(canvas, orientation, holiday)
+        elif fit == "p05_band":
+            _t_p05_band(canvas, orientation, holiday, tpl)
+        else:
+            fn(canvas, orientation, layout_id, holiday)
     except Exception as e:
         print(f"[HOLIDAY] ⚠️ 节日层绘制失败（{e}），本张按无装饰处理")
