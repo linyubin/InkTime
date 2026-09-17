@@ -195,7 +195,7 @@
       <p class="shot-idea"><span class="label">设计思路</span>沿用现网底部毛玻璃卡的信息架构（文案在上、日期/地点分列左右）作为对照基线；改良点是卡片整体锚进相框安全区，四角圆角完整不再被遮。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
         <li>白色叠加 alpha 180（≥150 抖动干净），文字纯黑 + 同色 0.3px 描边模拟加粗</li>
-        <li>卡片高度随文案行数自适应：行数 × 30 + 上下边距</li>
+        <li>单行纪律：文案 24px，最多约 16 汉字 + 2 标点，超出省略号截断（本款不适合多行）；日期行参考 P03（18px 灰色不加粗）</li>
         <li>bottom_reserve = 130 让裁切主动避让卡片</li>
       </ul>
     </figcaption>
@@ -275,7 +275,7 @@
       <div class="shot-title">全幅字幕</div>
       <p class="shot-idea"><span class="label">设计思路</span>居中电影字幕式：文案与日期地点沿中轴收在底部渐变上，完全对称、没有任何几何卡片，画面的「完整感」最好。居中排版对中文长句也最宽容，左右不破相。</p>
       <ul class="shot-notes"><span class="label">落地要点</span>
-        <li>与 P03/P08 同款渐变：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 85% 米白后平推过相框遮挡区，黑字加粗居中、行高 30、最多两行</li>
+        <li>与 P03/P08 同款渐变：文字上方 170px 处全透明、smoothstep 平滑升至文字顶 85% 米白后平推过相框遮挡区，黑字加粗居中；单行纪律：文案 24px、最多约 16 汉字 + 2 标点，超出省略号截断</li>
         <li>适合对称构图与合影；日期地点合并一行居中 15px</li>
       </ul>
     </figcaption>

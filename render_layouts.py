@@ -278,25 +278,23 @@ def _city(item: Dict[str, Any]) -> str:
 def _p01(canvas, item) -> None:
     """底部玻璃卡·基线：卡片自适应文案行数，锚进可视区。"""
     caption = item.get("side") or ""
-    font_cap = _get_font(28)
-    lines = _wrap_lines(canvas, caption, font_cap, 428, 2) if caption else []
-    card_h = 14 + len(lines) * 36 + 30 + 16 if lines else 64
+    font_cap = _get_font(24)
     y1 = _py(750)
-    y0 = y1 - card_h
+    y0 = y1 - 92
     _glass(canvas, (10, y0, 470, y1), radius=16, alpha=184, blur=12)
     d = ImageDraw.Draw(canvas)
-    y = y0 + 14
-    for ln in lines:
-        d.text((24, y), ln, font=font_cap, fill=BLACK,
+    if caption:
+        # 单行纪律：最多约 16 汉字 + 2 标点，超出省略号截断（本款不适合多行）
+        fitted = _fit_text(d, caption, font_cap, 432)
+        d.text((24, y0 + 12), fitted, font=font_cap, fill=BLACK,
                stroke_width=0.3, stroke_fill=BLACK)
-        y += 36
-    row_y = y1 - 42
+    row_y = y1 - 40
     left_meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    _draw_dark(canvas, 24, row_y, left_meta, 22)
+    _draw_dark(canvas, 24, row_y, left_meta, 18, fill=META_GRAY, stroke=0)
     city = _city(item)
     if city:
-        cw = d.textlength(city, font=_get_font(22))
-        _draw_dark(canvas, 456 - cw, row_y, city, 22)
+        cw = d.textlength(city, font=_get_font(18))
+        _draw_dark(canvas, 456 - cw, row_y, city, 18, fill=META_GRAY, stroke=0)
 
 
 def _p03(canvas, item) -> None:
@@ -358,17 +356,15 @@ def _p08(canvas, item) -> None:
 
 def _p10(canvas, item) -> None:
     """全幅字幕：中轴对称黑字收在底部米白渐变上（506→800）。"""
-    _scrim(canvas, 0, int(_py(496)), 480, 800 - int(_py(496)), 0, VEIL_ALPHA,
+    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(28), 416, 2)
-        y = _py(662)
-        for ln in lines:
-            _draw_dark(canvas, 40, y, ln, 28, bold=True, align="c", cx=240)
-            y += 36
-    _draw_dark(canvas, 40, _py(740), _meta_segments(item, with_weekday=False),
-               17, fill=META_GRAY, stroke=0, align="c", cx=240)
+        # 单行纪律：最多约 16 汉字 + 2 标点，超出省略号截断（本款不适合多行）
+        fitted = _fit_text(ImageDraw.Draw(canvas), caption, _get_font(24), 432)
+        _draw_dark(canvas, 24, _py(676), fitted, 24, bold=True, align="c", cx=240)
+    _draw_dark(canvas, 24, _py(736), _meta_segments(item, with_weekday=False),
+               19, fill=META_GRAY, stroke=0, align="c", cx=240)
 
 
 # ==================================================================
