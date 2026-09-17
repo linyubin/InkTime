@@ -1,0 +1,246 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>版式字号增大对比 · 12 款</title><style>
+  @font-face { font-family:'LXGW'; src:url('../layout-showcase-2026-09-11/font/LXGWHeartSerifMN.ttf'); font-display:swap; }
+  body { font-family:'LXGW','Noto Serif CJK SC',serif; background:#f5f2ec; color:#2b2620; margin:0; padding-bottom:60px; }
+  header { background:#211d18; color:#f2ede4; padding:30px 5vw; }
+  header h1 { font-size:24px; margin:0 0 10px; }
+  header p { color:#b9b0a2; font-size:13.5px; line-height:1.9; margin:4px 0; max-width:1000px; }
+  header .verdict { color:#dcb400; }
+  main { padding:26px 5vw; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(560px,1fr)); gap:24px; }
+  .card { background:#fff; border-radius:12px; padding:14px 16px; box-shadow:0 4px 16px rgba(43,38,32,.12); margin:0; }
+  .head { display:flex; align-items:center; gap:10px; }
+  .badge { color:#fff; border-radius:6px; padding:2px 10px; font-weight:700; }
+  .badge.p { background:#c80000; } .badge.l { background:#211d18; }
+  .lname { font-weight:700; }
+  .capflag { margin-left:auto; font-size:12px; color:#3d7d46; }
+  .capflag.warn { color:#c80000; }
+  .chips { margin:10px 0; display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { background:#f2ede3; border:1px solid #e4ddd0; border-radius:6px; padding:2px 9px; font-size:12px; }
+  .chip b { color:#c80000; }
+  .imgs { display:flex; gap:12px; }
+  .imgs div { flex:1; text-align:center; }
+  .imgs img { max-width:100%; border-radius:6px; }
+  figcaption { font-size:11.5px; color:#9a9184; margin-top:4px; }
+  details { margin-top:8px; }
+  summary { font-size:12px; color:#6f675c; cursor:pointer; }
+  .note { font-size:12.5px; color:#6f675c; line-height:1.7; margin:8px 0 0; }
+  footer { text-align:center; color:#9a9184; font-size:12px; margin-top:36px; }
+</style></head><body>
+<header><h1>版式字号增大对比 · 12 款全部调整</h1>
+<p>设备 480×800 面板约 128 PPI，相框观看距离 1–3 米，原字号（文案 22px / 日期 14–19px）折算可读性确实偏小。
+本轮<strong>全部 12 款均增大</strong>：竖屏文案普遍 22→26/28，日期行普遍提到 17–22px，P08 大日期 84→96；
+随字号同步微调了卡片高度、渐变起点等几何。</p>
+<p class="verdict">验证结论：12 款全部适合增大，其中 9 款无限制；3 款受版式几何约束有上限——
+P05 竖排题签（签宽限两列，且为短句设计，超 18 字截断）、L05 报纸横条（条高限单行）、
+L02 左侧信息栏（栏宽限每行 6 字）。这 3 款也已增大到各自上限。</p>
+<p>以下对比用 26 字长文案做压力测试（验证折行/截断行为），左改前右改后，均带四色抖动。</p>
+</header>
+<main><div class="grid">
+<figure class="card">
+  <div class="head"><span class="badge p">P01</span>
+    <span class="lname">底部玻璃卡</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>22 → 28</b></span><span class="chip">日期行 <b>19 → 22</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_P01_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_P01_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_P01_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_P01_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">卡片高度随字号自适应增高，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge p">P03</span>
+    <span class="lname">角落手记</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>22 → 26</b></span><span class="chip">日期行 <b>15 → 18</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_P03_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_P03_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_P03_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_P03_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">渐变起点随文案上移 20px，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge p">P05</span>
+    <span class="lname">竖排题签·钤印</span>
+    <span class="capflag warn">⚠ 有几何上限</span></div>
+  <div class="chips"><span class="chip">竖排文案 <b>20 → 24</b></span><span class="chip">印面篆字 <b>26 → 28</b></span><span class="chip">日期行 <b>15 → 17</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_P05_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_P05_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_P05_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_P05_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">⚠ 受签面宽度限制：24px 已是两列上限；本款为短句设计，文案超过约 18 字会截断</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge p">P08</span>
+    <span class="lname">大字日期</span>
+    <span class="capflag warn">⚠ 有几何上限</span></div>
+  <div class="chips"><span class="chip">大日期 <b>84 → 96</b></span><span class="chip">年份 <b>20 → 22</b></span><span class="chip">文案 <b>18 → 24</b></span><span class="chip">日期行 <b>14 → 17</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_P08_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_P08_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_P08_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_P08_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">文案区宽 268px 两行为限，超长截断（本款文案是次要元素）</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge p">P10</span>
+    <span class="lname">全幅字幕</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>22 → 28</b></span><span class="chip">日期行 <b>15 → 17</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_P10_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_P10_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_P10_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_P10_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">渐变起点随文案上移 10px，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L01</span>
+    <span class="lname">底部玻璃卡</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>22 → 26</b></span><span class="chip">日期行 <b>18 → 22</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L01_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L01_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L01_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L01_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L02</span>
+    <span class="lname">左侧信息栏</span>
+    <span class="capflag warn">⚠ 有几何上限</span></div>
+  <div class="chips"><span class="chip">日期 <b>24 → 28</b></span><span class="chip">文案 <b>18 → 22</b></span><span class="chip">星期 <b>13 → 15</b></span><span class="chip">城市 <b>14 → 16</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L02_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L02_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L02_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L02_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">⚠ 受栏宽 176px 限制：文案每行 6 字，再大长文案会超出栏高</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L04</span>
+    <span class="lname">电影字幕</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>22 → 26</b></span><span class="chip">日期行 <b>14 → 17</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L04_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L04_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L04_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L04_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">渐变起点上移 8px，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L05</span>
+    <span class="lname">报纸横条</span>
+    <span class="capflag warn">⚠ 有几何上限</span></div>
+  <div class="chips"><span class="chip">日期 <b>21 → 24</b></span><span class="chip">文案 <b>15 → 18</b></span><span class="chip">城市 <b>13 → 15</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L05_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L05_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L05_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L05_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">⚠ 受条高 70px 限制：文案保持单行纪律（超长省略号），18px 已接近上限</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L06</span>
+    <span class="lname">顶签悬挂</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">日期 <b>25 → 28</b></span><span class="chip">文案 <b>16 → 20</b></span><span class="chip">星期 <b>12 → 15</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L06_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L06_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L06_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L06_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">挂签加高 138 → 154px，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L07</span>
+    <span class="lname">落款钤印</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">文案 <b>21 → 25</b></span><span class="chip">日期行 <b>14 → 17</b></span><span class="chip">印章 <b>42×61 → 46×70</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L07_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L07_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L07_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L07_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">印章随之加大，篆字 20 → 24px，无限制</p>
+</figure>
+<figure class="card">
+  <div class="head"><span class="badge l">L10</span>
+    <span class="lname">中央铭牌</span>
+    <span class="capflag ">✓ 无限制</span></div>
+  <div class="chips"><span class="chip">日期 <b>19 → 24</b></span><span class="chip">文案 <b>14 → 18</b></span></div>
+  <div class="imgs">
+    <div><img src="img/old_L10_dither.png"><figcaption>改前 · 抖动</figcaption></div>
+    <div><img src="img/new_L10_dither.png"><figcaption>改后 · 抖动</figcaption></div>
+  </div>
+  <details><summary>渲染原图（未抖动）</summary>
+    <div class="imgs">
+      <div><img src="img/old_L10_rgb.png"><figcaption>改前 · 渲染</figcaption></div>
+      <div><img src="img/new_L10_rgb.png"><figcaption>改后 · 渲染</figcaption></div>
+    </div>
+  </details>
+  <p class="note">铭牌加宽 280 → 328、加高 96 → 114px，无限制</p>
+</figure></div></main>
+<footer>字号压力测试文案：「台阶尽头站着个看风景的人，晚风把一整天的燥热都吹散了。」（26 字）</footer>
+</body></html>

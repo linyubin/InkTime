@@ -278,9 +278,9 @@ def _city(item: Dict[str, Any]) -> str:
 def _p01(canvas, item) -> None:
     """底部玻璃卡·基线：卡片自适应文案行数，锚进可视区。"""
     caption = item.get("side") or ""
-    font_cap = _get_font(22)
-    lines = _wrap_lines(canvas, caption, font_cap, 432, 2) if caption else []
-    card_h = 15 + len(lines) * 30 + 27 + 14 if lines else 55
+    font_cap = _get_font(28)
+    lines = _wrap_lines(canvas, caption, font_cap, 428, 2) if caption else []
+    card_h = 14 + len(lines) * 36 + 30 + 16 if lines else 64
     y1 = _py(750)
     y0 = y1 - card_h
     _glass(canvas, (10, y0, 470, y1), radius=16, alpha=184, blur=12)
@@ -289,28 +289,28 @@ def _p01(canvas, item) -> None:
     for ln in lines:
         d.text((24, y), ln, font=font_cap, fill=BLACK,
                stroke_width=0.3, stroke_fill=BLACK)
-        y += 30
-    row_y = y1 - 36
+        y += 36
+    row_y = y1 - 42
     left_meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    _draw_dark(canvas, 24, row_y, left_meta, 19)
+    _draw_dark(canvas, 24, row_y, left_meta, 22)
     city = _city(item)
     if city:
-        cw = d.textlength(city, font=_get_font(19))
-        _draw_dark(canvas, 456 - cw, row_y, city, 19)
+        cw = d.textlength(city, font=_get_font(22))
+        _draw_dark(canvas, 456 - cw, row_y, city, 22)
 
 
 def _p03(canvas, item) -> None:
     """角落手记：左对齐黑字加粗 + 底部米白渐变（514→800，文字顶到位）。"""
-    _scrim(canvas, 0, int(_py(514)), 480, 800 - int(_py(514)), 0, VEIL_ALPHA,
+    _scrim(canvas, 0, int(_py(494)), 480, 800 - int(_py(494)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(22), 420, 2)
-        y = _py(684)
+        lines = _wrap_lines(canvas, caption, _get_font(26), 424, 2)
+        y = _py(660)
         for ln in lines:
-            _draw_dark(canvas, 28, y, ln, 22, bold=True)
-            y += 30
-    _draw_dark(canvas, 28, _py(724), _meta_segments(item), 15,
+            _draw_dark(canvas, 28, y, ln, 26, bold=True)
+            y += 34
+    _draw_dark(canvas, 28, _py(738), _meta_segments(item), 18,
                fill=META_GRAY, stroke=0)
 
 
@@ -318,22 +318,22 @@ def _p05(canvas, item) -> None:
     """竖排题签·钤印：右侧半透明签面竖排文案，等宽横排小篆印章。"""
     _glass(canvas, (382, int(_py(56)), 454, int(_py(352))), radius=8, alpha=184, blur=10)
     caption = item.get("side") or ""
-    font_v = _get_font(20)
+    font_v = _get_font(24)
     d = ImageDraw.Draw(canvas)
     if caption:
-        col_h, pitch = 280, 28
+        col_h, pitch, col_gap = 280, 31, 31
         per_col = col_h // pitch
         cols = [caption[i:i + per_col] for i in range(0, min(len(caption), per_col * 2), per_col)]
         for ci, col in enumerate(cols):
-            col_cx = 428 - ci * 28          # 传统竖排：从右往左列
+            col_cx = 429 - ci * col_gap     # 传统竖排：从右往左列
             y0 = _py(64)
             for j, ch in enumerate(col):
                 d.text((col_cx, y0 + pitch / 2 + j * pitch), ch,
                        font=font_v, fill=BLACK, anchor="mm")
     _seal(canvas, 382, int(_py(356)), 72, 44, _city(item),
-          vertical=False, glyph_px=26)
-    _draw_white(canvas, [{"x": 24, "y": _py(724),
-                          "text": _meta_segments(item, with_weekday=True), "size": 15, "dim": True}])
+          vertical=False, glyph_px=28)
+    _draw_dark(canvas, 24, _py(724), _meta_segments(item, with_weekday=True), 17,
+               fill=META_GRAY, stroke=0)
 
 
 def _p08(canvas, item) -> None:
@@ -341,34 +341,34 @@ def _p08(canvas, item) -> None:
     _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     full, year, rest = _date_parts(item)
-    _draw_dark(canvas, 452, _py(540), year, 20, align="r", cx=452, bold=True)
-    _draw_dark(canvas, 456, _py(562), rest, 84, align="r", cx=456,
-               bold=True, stroke=1.2)
-    _draw_dark(canvas, 452, _py(656),
+    _draw_dark(canvas, 452, _py(532), year, 22, align="r", cx=452, bold=True)
+    _draw_dark(canvas, 456, _py(554), rest, 96, align="r", cx=456,
+               bold=True, stroke=1.4)
+    _draw_dark(canvas, 452, _py(658),
                " · ".join(x for x in (weekday_cn(item.get("date", "")), _city(item)) if x),
-               14, fill=META_GRAY, stroke=0, align="r", cx=452)
+               17, fill=META_GRAY, stroke=0, align="r", cx=452)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(18), 230, 2)
-        y = _py(700)
+        lines = _wrap_lines(canvas, caption, _get_font(24), 268, 2)
+        y = _py(692)
         for ln in lines:
-            _draw_dark(canvas, 24, y, ln, 18, bold=True)
-            y += 27
+            _draw_dark(canvas, 24, y, ln, 24, bold=True)
+            y += 34
 
 
 def _p10(canvas, item) -> None:
     """全幅字幕：中轴对称黑字收在底部米白渐变上（506→800）。"""
-    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, VEIL_ALPHA,
+    _scrim(canvas, 0, int(_py(496)), 480, 800 - int(_py(496)), 0, VEIL_ALPHA,
            ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(22), 400, 2)
-        y = _py(676)
+        lines = _wrap_lines(canvas, caption, _get_font(28), 416, 2)
+        y = _py(662)
         for ln in lines:
-            _draw_dark(canvas, 40, y, ln, 22, bold=True, align="c", cx=240)
-            y += 30
-    _draw_dark(canvas, 40, _py(718), _meta_segments(item, with_weekday=False),
-               15, fill=META_GRAY, stroke=0, align="c", cx=240)
+            _draw_dark(canvas, 40, y, ln, 28, bold=True, align="c", cx=240)
+            y += 36
+    _draw_dark(canvas, 40, _py(740), _meta_segments(item, with_weekday=False),
+               17, fill=META_GRAY, stroke=0, align="c", cx=240)
 
 
 # ==================================================================
@@ -382,18 +382,18 @@ def _l01(canvas, item) -> None:
     d = ImageDraw.Draw(canvas)
     x0 = _lx(68)
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(22), 664, 2)
-        y = 376
+        lines = _wrap_lines(canvas, caption, _get_font(26), 660, 2)
+        y = 372
         for ln in lines:
-            d.text((x0, y), ln, font=_get_font(22), fill=BLACK,
+            d.text((x0, y), ln, font=_get_font(26), fill=BLACK,
                    stroke_width=0.3, stroke_fill=BLACK)
-            y += 28
+            y += 32
     left_meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    _draw_dark(canvas, x0, 436, left_meta, 18)
+    _draw_dark(canvas, x0, 438, left_meta, 22)
     city = _city(item)
     if city:
-        cw = d.textlength(city, font=_get_font(18))
-        _draw_dark(canvas, _lx(736) - cw, 436, city, 18)
+        cw = d.textlength(city, font=_get_font(22))
+        _draw_dark(canvas, _lx(736) - cw, 438, city, 22)
 
 
 def _l02(canvas, item) -> None:
@@ -401,71 +401,71 @@ def _l02(canvas, item) -> None:
     x0 = int(_lx(40))
     _glass(canvas, (x0, 40, x0 + 176, 440), radius=14, alpha=184, blur=12)
     full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(58), 62, full, 24, stroke=0.5)
+    _draw_dark(canvas, _lx(58), 58, full, 28, stroke=0.5)
     wd = weekday_cn(item.get("date", ""))
     if wd:
-        _draw_dark(canvas, _lx(58), 96, wd, 13, fill=GRAY_TEXT, stroke=0)
+        _draw_dark(canvas, _lx(58), 96, wd, 15, fill=GRAY_TEXT, stroke=0)
     ImageDraw.Draw(canvas).rectangle((_lx(58), 122, _lx(58) + 28, 125), fill=SEAL_RED)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(18), 142, 9)
-        y = 138
+        lines = _wrap_lines(canvas, caption, _get_font(22), 142, 8)
+        y = 140
         for ln in lines:
-            _draw_dark(canvas, _lx(58), y, ln, 18)
-            y += 27
-    _draw_dark(canvas, _lx(58), 412, _city(item), 14, fill=GRAY_TEXT, stroke=0)
+            _draw_dark(canvas, _lx(58), y, ln, 22)
+            y += 30
+    _draw_dark(canvas, _lx(58), 412, _city(item), 16, fill=GRAY_TEXT, stroke=0)
 
 
 def _l04(canvas, item) -> None:
     """电影字幕：居中黑字 + 底部米白渐变（212→480）。"""
-    _scrim(canvas, 0, 212, 800, 480 - 212, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
+    _scrim(canvas, 0, 204, 800, 480 - 204, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(22), 640, 2)
-        y = 382
+        lines = _wrap_lines(canvas, caption, _get_font(26), 660, 2)
+        y = 372
         for ln in lines:
-            _draw_dark(canvas, 80, y, ln, 22, bold=True, align="c", cx=_lx(400))
-            y += 30
-    _draw_dark(canvas, 80, 424, _meta_segments(item, with_weekday=False),
-               14, fill=META_GRAY, stroke=0, align="c", cx=_lx(400))
+            _draw_dark(canvas, 80, y, ln, 26, bold=True, align="c", cx=_lx(400))
+            y += 34
+    _draw_dark(canvas, 80, 442, _meta_segments(item, with_weekday=False),
+               17, fill=META_GRAY, stroke=0, align="c", cx=_lx(400))
 
 
 def _l05(canvas, item) -> None:
     """报纸横条：64px 实白条，日期—竖线—文案—城市从左到右。"""
     x0 = int(_lx(40))
-    _glass(canvas, (x0, 404, x0 + 720, 468), radius=10, alpha=255, blur=1,
+    _glass(canvas, (x0, 398, x0 + 720, 470), radius=10, alpha=255, blur=1,
            shadow=True, highlight=False)
     full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(64), 422, full, 21, stroke=0.5)
-    ImageDraw.Draw(canvas).rectangle((_lx(180), 422, _lx(180) + 1, 450), fill=GRAY_LINE)
+    _draw_dark(canvas, _lx(64), 417, full, 24, stroke=0.5)
+    ImageDraw.Draw(canvas).rectangle((_lx(186), 418, _lx(186) + 1, 450), fill=GRAY_LINE)
     caption = item.get("side") or ""
     if caption:
-        fitted = _fit_text(ImageDraw.Draw(canvas), caption, _get_font(15), 470)
-        _draw_dark(canvas, _lx(196), 427, fitted, 15, fill=(34, 34, 34), stroke=0)
+        fitted = _fit_text(ImageDraw.Draw(canvas), caption, _get_font(18), 458)
+        _draw_dark(canvas, _lx(202), 424, fitted, 18, fill=(34, 34, 34), stroke=0)
     city = _city(item)
     if city:
         d = ImageDraw.Draw(canvas)
-        cw = d.textlength(city, font=_get_font(13))
-        _draw_dark(canvas, _lx(736) - cw, 429, city, 13, fill=GRAY_TEXT, stroke=0)
+        cw = d.textlength(city, font=_get_font(15))
+        _draw_dark(canvas, _lx(736) - cw, 426, city, 15, fill=GRAY_TEXT, stroke=0)
 
 
 def _l06(canvas, item) -> None:
     """顶签悬挂：可视区顶边垂下挂签。"""
     x0 = int(_lx(40))
-    _glass(canvas, (x0, 40, x0 + 330, 178), radius=14, alpha=184, blur=12)
+    _glass(canvas, (x0, 40, x0 + 330, 194), radius=14, alpha=184, blur=12)
     full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(60), 56, full, 25, stroke=0.5)
+    _draw_dark(canvas, _lx(60), 54, full, 28, stroke=0.5)
     wd = weekday_cn(item.get("date", ""))
     if wd:
-        _draw_dark(canvas, _lx(60), 92, wd, 12, fill=GRAY_TEXT, stroke=0)
-    ImageDraw.Draw(canvas).rectangle((_lx(60), 114, _lx(60) + 30, 117), fill=SEAL_RED)
+        _draw_dark(canvas, _lx(60), 92, wd, 15, fill=GRAY_TEXT, stroke=0)
+    ImageDraw.Draw(canvas).rectangle((_lx(60), 116, _lx(60) + 30, 119), fill=SEAL_RED)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(16), 290, 2)
-        y = 126
+        lines = _wrap_lines(canvas, caption, _get_font(20), 290, 2)
+        y = 130
         for ln in lines:
-            _draw_dark(canvas, _lx(60), y, ln, 16)
-            y += 24
+            _draw_dark(canvas, _lx(60), y, ln, 20)
+            y += 28
 
 
 def _l07(canvas, item) -> None:
@@ -474,41 +474,41 @@ def _l07(canvas, item) -> None:
     seal_x1 = int(_lx(736))
     text_r = seal_x1                            # 无城市→无印章，文字直接顶右缘
     if _city(item):
-        text_r = seal_x1 - 42 - 10              # 文字给竖排印章让位
+        text_r = seal_x1 - 46 - 10              # 文字给竖排印章让位
     text_l = int(_lx(40)) + 10                 # 文字左界
-    font_cap = _get_font(21)
+    font_cap = _get_font(25)
     d = ImageDraw.Draw(canvas)
     caption = item.get("side") or ""
     if caption:
         fitted = _fit_text(d, caption, font_cap, text_r - text_l)
-        _draw_dark(canvas, 0, 338, fitted, 21, bold=True, align="r", cx=text_r)
+        _draw_dark(canvas, 0, 334, fitted, 25, bold=True, align="r", cx=text_r)
     meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
     if meta:
-        _draw_dark(canvas, 0, 380, meta, 14, fill=META_GRAY, stroke=0,
+        _draw_dark(canvas, 0, 382, meta, 17, fill=META_GRAY, stroke=0,
                    align="r", cx=text_r)
     if _city(item):
-        _seal(canvas, seal_x1 - 42, 338, 42, 61, _city(item),
-              vertical=True, glyph_px=20)
+        _seal(canvas, seal_x1 - 46, 334, 46, 70, _city(item),
+              vertical=True, glyph_px=24)
 
 
 def _l10(canvas, item) -> None:
     """中央铭牌：底部居中实白铭牌（博物馆仪式感）。"""
-    _glass(canvas, (_lx(260), 374, _lx(540), 470), radius=14, alpha=255, blur=1,
+    _glass(canvas, (_lx(236), 360, _lx(564), 474), radius=14, alpha=255, blur=1,
            shadow=True, highlight=False)
     full, _, _ = _date_parts(item)
     cx = _lx(400)
     d = ImageDraw.Draw(canvas)
-    fw = d.textlength(full, font=_get_font(19))
-    _draw_dark(canvas, cx - fw / 2, 383, full, 19, stroke=0.5)
-    d.rectangle((cx - 15, 418, cx + 15, 420), fill=SEAL_RED)
+    fw = d.textlength(full, font=_get_font(24))
+    _draw_dark(canvas, cx - fw / 2, 376, full, 24, stroke=0.5)
+    d.rectangle((cx - 16, 410, cx + 16, 412), fill=SEAL_RED)
     caption = item.get("side") or ""
     if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(14), 256, 2)
-        y = 428
+        lines = _wrap_lines(canvas, caption, _get_font(18), 300, 2)
+        y = 422
         for ln in lines:
-            lw = d.textlength(ln, font=_get_font(14))
-            _draw_dark(canvas, cx - lw / 2, y, ln, 14, fill=(51, 51, 51), stroke=0)
-            y += 21
+            lw = d.textlength(ln, font=_get_font(18))
+            _draw_dark(canvas, cx - lw / 2, y, ln, 18, fill=(51, 51, 51), stroke=0)
+            y += 24
 
 
 PORTRAIT_RENDERERS = {"P01": _p01, "P03": _p03, "P05": _p05,
