@@ -483,7 +483,7 @@
   <h3>④ 决策规则</h3>
   <ol>
     <li><strong>兜底回落</strong>：亮度估计失败、图像异常 → 直接基线 P01 / L01（对任何照片都成立）；subjects_json 为空不算异常，按「无主体」正常打分。</li>
-    <li><strong>硬否决先于得分</strong>：会压到主体的版式（P05 压右侧主体、L02 压左侧主体、L06 压上部主体）直接排除；<strong>无城市时 P05/L07 整体排除</strong>（红章无内容可镌，2026-09-12）——主体不被遮挡优先级最高。</li>
+    <li><strong>硬否决先于得分</strong>：会压到主体的版式（P05 压右侧主体、L02 压左侧主体、L06 压上部主体）直接排除；<strong>无城市时 P05/L07 整体排除</strong>（红章无内容可镌，2026-09-12）；<strong>文案超过约 16 汉字 + 2 标点时 P01/P10/P05 排除</strong>（这三款对长文案省略号截断，长文案导向支持折行的版式，2026-09-13）——主体不被遮挡优先级最高。</li>
     <li><strong>argmax + 确定性平局</strong>：取总分最高者；同分时用 <code>hash(照片路径 + 拍摄日期)</code> 挑选——同一照片每次渲染永远得到同一版式（刷屏不跳变），不同照片之间分布均匀、不刻板。</li>
     <li><strong>回落</strong>：最高分 ≤ 0（所有候选都被否决或不合适）→ 基线。</li>
     <li><strong>分布校验</strong>：上线后统计各版式实际占比，期望每款 10–25%；偏离过多只调分数权重，不动规则结构。2026-09-12 首轮 50 张随机回归：基线合计 64% → 调平后 30%，12/14 款被激活（已按此定稿上方权重）。</li>
@@ -509,7 +509,8 @@ def pick_layout(item, ori, white_ratio):
           "P08": .9*(cx&lt;.4) + .6*(I&gt;.45 and S&lt;.12) + .3*(item["memory_score"]&gt;=85) - .8*(cx&gt;.6),
           "P10": 1.0*sym + .6*(S&gt;=.12 and abs(cx-.5)&lt;.15) + .4*lo - .4*(cy&gt;.65),
         }
-        veto = {"P05": cx &gt; .6 or not city}
+        veto = {"P05": cx &gt; .6 or not city or n_chars &gt; 18,
+                "P01": n_chars &gt; 18, "P10": n_chars &gt; 18}
         base = "P01"
     else:
         sc = {
@@ -528,7 +529,7 @@ def pick_layout(item, ori, white_ratio):
         if bad: sc[k] = -9.0
     top = max(sc.values())
     if top &lt;= 0: return base
-    best = sorted(k for k, v in sc.items() if v == top)
+    sym, n_chars = abs(cx-.5)&lt;.08 and S&gt;=.08, disp_width(item["side"])
     if len(best) == 1: return best[0]
     h = hashlib.md5(f"{item['path']}|{item['date']}".encode()).hexdigest()
     return best[int(h, 16) % len(best)]

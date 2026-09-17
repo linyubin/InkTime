@@ -16,6 +16,7 @@
   竖屏 P01/P03/P05/P08/P10（480×800）
   横屏 L01/L02/L04/L05/L06/L07/L10（800×480）
 无城市时否决带钤印的 P05/L07（红章无内容可镌，2026-09-12）。
+文案显示宽度超过约 16 汉字 + 2 标点时否决单行款 P01/P10/P05（2026-09-13）。
 """
 
 from __future__ import annotations
@@ -52,6 +53,10 @@ CROP_RESERVES: Dict[str, Dict[str, int]] = {
     "L07": {"bottom": 150},
     "L10": {"bottom": 140},
 }
+
+# 单行版式（P01/P10/P05）的文案显示宽度上限：约 16 汉字 + 2 标点。
+# 全宽字符计 1、半宽计 0.5；超限时选型硬否决这三款（它们会对长文案省略号截断）。
+CAPTION_SINGLE_LINE_MAX = 18.0
 
 # 高低调阈值（predicted_white_ratio，与 choose_gamma 同一口径）
 HIGH_KEY = 0.55
@@ -115,6 +120,11 @@ def largest_subject(subjects_json: str) -> Optional[Dict[str, float]]:
     return best
 
 
+def _display_width(text: str) -> float:
+    """文案显示宽度：全宽字符（CJK/全角标点）计 1，半宽计 0.5。"""
+    return sum(1.0 if ord(ch) > 0x2E7F else 0.5 for ch in str(text or ""))
+
+
 def extract_signals(item: Dict[str, Any], white_ratio: float) -> Dict[str, Any]:
     """汇总选型信号（供打分与验证报告使用）。"""
     sub = largest_subject(item.get("subjects_json", ""))
@@ -130,6 +140,7 @@ def extract_signals(item: Dict[str, Any], white_ratio: float) -> Dict[str, Any]:
         "has_subject": sub is not None,
         "cx": cx,
         "cy": cy,
+        "caption_w": _display_width(item.get("side", "")),
         "city_ok": bool(str(item.get("city") or "").strip()),
         "sym": abs(cx - 0.5) < 0.08 and S >= 0.08,
         "tags": tags,
@@ -175,8 +186,13 @@ def _score_landscape(g: Dict[str, Any]) -> Dict[str, float]:
 
 
 _VETO_PORTRAIT = {
-    # P05 题签占右侧 → 右侧有主体就否决；无城市时钤印无内容可镌 → 否决
-    "P05": lambda g: g["cx"] > .6 or not g["city_ok"],
+    # P01/P10 文案单行纪律（约 16 汉字 + 2 标点）、P05 题签两列约 18 字：
+    # 超长文案一律避开这三款，导向支持折行的版式（2026-09-13）
+    "P01": lambda g: g["caption_w"] > CAPTION_SINGLE_LINE_MAX,
+    "P10": lambda g: g["caption_w"] > CAPTION_SINGLE_LINE_MAX,
+    # P05 题签占右侧 → 右侧有主体就否决；无城市/超长文案 → 否决
+    "P05": lambda g: g["cx"] > .6 or not g["city_ok"]
+           or g["caption_w"] > CAPTION_SINGLE_LINE_MAX,
 }
 _VETO_LANDSCAPE = {
     # L02 信息栏占左侧；L06 顶签占上部
