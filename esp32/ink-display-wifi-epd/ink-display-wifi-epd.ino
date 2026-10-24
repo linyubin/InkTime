@@ -1967,16 +1967,23 @@ static void registerDeviceWithServer() {
   hp.trim();
   String url  = (hp.startsWith("http://") || hp.startsWith("https://") ? hp : ("http://" + hp))
                 + "/api/device_register/" + key;
-
-  HTTPClient http;
-  http.begin(url);
-  http.setTimeout(5000);
-  http.addHeader("Content-Type", "application/json");
   String body = String("{\"port\":80,\"alwayson\":") + (g_alwaysOnMode ? "true" : "false") + "}";
-  int code = http.POST(body);
-  http.end();
 
-  DBG_PRINTF("[AON] 设备注册 %s code=%d\n", url.c_str(), code);
+  // 两次尝试；结果写入 g_fetchLog（/log 页与 server 控制台可见），无串口也能排查
+  int code = 0;
+  for (int attempt = 1; attempt <= 2; ++attempt) {
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(5000);
+    http.addHeader("Content-Type", "application/json");
+    code = http.POST(body);
+    http.end();
+    DBG_PRINTF("[AON] 设备注册 %s 尝试%d code=%d\n", url.c_str(), attempt, code);
+    pushLog(&g_fetchLog, String("[AON] register try") + attempt + " code=" + code + " " + url);
+    if (code == HTTP_CODE_OK) break;
+    if (attempt < 2) delay(2000);
+  }
+
   journalEvent(code == HTTP_CODE_OK ? EV_AON : EV_HTTP, "register code=%d ip=%s",
                code, WiFi.localIP().toString().c_str());
 }

@@ -1749,6 +1749,34 @@ def api_device_home_status():
     })
 
 
+@app.post("/api/device/set_endpoint")
+def api_device_set_endpoint():
+    """手动指定设备地址（写入与 /api/device_register 相同的 endpoint.json）。
+
+    设备自动注册失败时的兜底：注册成功后设备会以真实连接源覆盖此记录。
+    """
+    ip = str(request.form.get("ip", "")).strip()
+    try:
+        port = int(request.form.get("port", "80") or 80)
+    except (TypeError, ValueError):
+        port = 80
+    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or not (1 <= port <= 65535):
+        return jsonify({"error": "IP 或端口格式不正确"}), 400
+
+    old = _load_device_endpoint()
+    rec = {"ip": ip, "port": port,
+           "alwayson": bool(old.get("alwayson")),
+           "ts": datetime.now().isoformat(timespec="seconds"),
+           "manual": True}
+    try:
+        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        DEVICE_ENDPOINT_FILE.write_text(
+            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        return jsonify({"error": f"写入失败：{e}"}), 500
+    return jsonify({"ok": True, "endpoint": rec})
+
+
 @app.get("/api/device/console_status")
 def api_device_console_status():
     """注册信息 + 设备在线探测 + 设备状态（控制台页面加载/刷新时拉取）。"""
