@@ -43,3 +43,9 @@ scripts/sync_db_to_pi.py
 *.pdf
 /.zcode//.cache/
 holidays.json
+
+# 运行时缓存（缩略图 / 模拟渲染缓存）
+/.cache/
+
+# 废弃脚本备份（与 *.bak* 同性质）
+*.deprecated_*
