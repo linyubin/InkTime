@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkTime 相框设备</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.45);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --warn: #ffd08a;
+      --danger: #ff9c9c;
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0; padding:0 0 60px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{ max-width: 1180px; margin: 26px auto 30px; padding: 0 18px; }
+    h1{ font-size: 21px; margin: 0 0 6px; letter-spacing: 0.2px; }
+    h1 .home-link{ font-size: 12.5px; font-weight: 400; margin-left: 12px; }
+    h1 .home-link a{ color: var(--accent); text-decoration: none; }
+    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+
+    /* ── 状态条 ── */
+    .bar{
+      display:flex; flex-wrap:wrap; gap: 8px 14px; align-items:center;
+      font-size: 12.5px; color: var(--muted);
+      background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+    }
+    .bar b{ color: var(--text); font-weight: 600; }
+    .dot{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; vertical-align:1px; }
+    .dot.on{ background: var(--accent2); box-shadow: 0 0 8px rgba(156,255,214,0.8); }
+    .dot.off{ background: var(--danger); box-shadow: 0 0 8px rgba(255,122,122,0.7); }
+    .pill{
+      font-size: 10.5px; padding: 2px 8px; border-radius: 999px;
+      background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.14); color: var(--muted);
+      white-space: nowrap;
+    }
+    .pill.on{ color: var(--accent2); border-color: rgba(156,255,214,0.5); }
+    .pill.off{ color: var(--muted2); }
+    .pill.warn{ color: var(--warn); border-color: rgba(255,208,138,0.4); }
+
+    button{
+      padding: 7px 14px; font-size: 13px; color: var(--text); cursor: pointer;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px; outline: none;
+    }
+    button:hover{ background: rgba(255,255,255,0.14); }
+    button:disabled{ opacity: .45; cursor: not-allowed; }
+    button.primary{
+      background: linear-gradient(135deg, rgba(138,180,255,0.35), rgba(156,255,214,0.28));
+      border-color: rgba(138,180,255,0.55); font-weight: 600;
+    }
+    button.danger{ border-color: rgba(255,140,140,0.5); color: var(--danger); }
+
+    /* ── 卡片 ── */
+    .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+    .card{
+      background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 16px; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+    }
+    .card.wide{ grid-column: 1 / -1; }
+    .card-title{ font-size: 14.5px; font-weight: 600; margin-bottom: 4px; }
+    .card-desc{ font-size: 11.5px; color: var(--muted2); margin-bottom: 10px; line-height: 1.55; }
+
+    label.f{ display:block; font-size: 11.5px; color: var(--muted); margin: 10px 0 4px; }
+    input[type=text], input[type=number], input[type=password], select{
+      width:100%; padding: 7px 10px; font-size: 12.5px; color: var(--text);
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px; outline: none;
+    }
+    select option{ background:#14161c; color:#eee; }
+    .row2{ display:flex; gap:10px; }
+    .row2 > div{ flex:1; min-width:0; }
+    .wifi-slot{ border:1px dashed rgba(255,255,255,0.16); border-radius: 10px; padding: 2px 12px 10px; margin-top: 10px; }
+    .wifi-slot .slot-name{ font-size: 11.5px; color: var(--muted2); margin-top: 8px; }
+    .cb{ display:flex; align-items:center; gap:7px; font-size: 12px; color: var(--muted); margin: 12px 0 2px; cursor:pointer; }
+    .cb input{ accent-color: var(--accent); }
+    .btn-row{ display:flex; gap:8px; margin-top: 12px; flex-wrap:wrap; }
+    .btn-row button{ flex:1; white-space:nowrap; }
+
+    .state-row{ display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; font-size: 12.5px; color: var(--muted); margin: 10px 0; }
+    .state-row b{ color: var(--text); }
+    .mini-note{ font-size: 11px; color: var(--muted2); line-height: 1.55; margin-top: 8px; }
+
+    .section-title{ font-size: 15px; font-weight: 600; margin: 22px 0 10px; }
+    .oplog{
+      min-height: 64px; max-height: 300px; overflow:auto; font-size: 11px; line-height: 1.65;
+      color: var(--muted); background: rgba(0,0,0,0.45); border:1px solid var(--line);
+      border-radius: 10px; padding: 8px 10px; white-space: pre-wrap; word-break: break-all;
+    }
+    .hide{ display:none; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>📟 相框设备
+    <span class="home-link"><a href="/">← 返回首页</a></span>
+  </h1>
+  <p class="subtitle">墨水屏相框远程控制台（原设备自带 WebUI 的代理整合）。设备需处于手动唤醒窗口或常开模式——上线后会自动注册到本服务器，休眠后显示离线。</p>
+
+  <div class="bar" id="status-bar">
+    <span id="status-main"><span class="dot off"></span>正在探测设备…</span>
+    <span id="status-pills"></span>
+    <span style="flex:1"></span>
+    <span id="reg-info" class="pill"></span>
+    <button onclick="loadStatus()">↻ 刷新状态</button>
+  </div>
+
+  <div class="grid">
+    <!-- ── 网络与刷新配置 ── -->
+    <div class="card wide">
+      <div class="card-title">📶 网络与刷新配置</div>
+      <div class="card-desc">WiFi 密码留空 = 保持原密码；SSID 留空 = 删除该组。保存后设备会自动重启生效；改动 WiFi 后若连不上，需到设备旁按 RST 进 AP 配网（InkTime-xxxx / 12345678）。</div>
+
+      <div class="row2">
+        <div><button class="act" onclick="scanWifi(this)">📡 扫描周围网络（约 3 秒）</button></div>
+        <div style="align-self:center;font-size:11.5px;color:var(--muted2)" id="scan-cnt"></div>
+      </div>
+
+      {% for i in range(3) %}
+      <div class="wifi-slot">
+        <div class="slot-name">WiFi 配置 {{ i + 1 }}{% if i == 0 %}（主配置）{% endif %}<span id="wifi-cur-{{ i }}"></span></div>
+        <div class="row2">
+          <div>
+            <label class="f">从扫描列表选择</label>
+            <select id="scan-{{ i }}" onchange="document.getElementById('ssid{{ i }}').value=this.value">
+              <option value="">（扫描后选择）</option>
+            </select>
+          </div>
+          <div>
+            <label class="f">SSID</label>
+            <input type="text" id="ssid{{ i }}" placeholder="WiFi 名称（留空删除该组）">
+          </div>
+        </div>
+        <label class="f">密码</label>
+        <input type="password" id="pass{{ i }}" placeholder="不填 = 保持原密码">
+      </div>
+      {% endfor %}
+
+      <div class="row2">
+        <div>
+          <label class="f">服务器地址 (host:port)</label>
+          <input type="text" id="hostport" placeholder="192.168.1.100:8765">
+        </div>
+        <div>
+          <label class="f">每日刷新时间</label>
+          <select id="hour">{% for h in range(24) %}<option value="{{ h }}">{{ h }} 点</option>{% endfor %}</select>
+        </div>
+        <div>
+          <label class="f">时区</label>
+          <select id="tz">{% for t in range(-12, 15) %}<option value="{{ t }}">UTC{{ '+' if t >= 0 else '' }}{{ t }}</option>{% endfor %}</select>
+        </div>
+      </div>
+      <label class="cb"><input type="checkbox" id="rot180"> 竖屏画面旋转 180°</label>
+      <div class="btn-row">
+        <button class="primary act" onclick="saveConfig(this)">💾 保存并重启设备</button>
+      </div>
+    </div>
+
+    <!-- ── 图片拉取 ── -->
+    <div class="card">
+      <div class="card-title">🖼 图片拉取</div>
+      <div class="card-desc">手动拉取当日批次中指定编号的照片并渲染刷屏（photo_0 = 评分最高 / latest / LAN 推送画面）。</div>
+      <label class="f">照片编号</label>
+      <select id="fetch-idx">
+        {% for i in range(quantity) %}<option value="{{ i }}">photo_{{ i }}</option>{% endfor %}
+      </select>
+      <div class="btn-row">
+        <button class="primary act" onclick="doFetch(this)">📥 拉取并渲染</button>
+      </div>
+      <div class="mini-note">拉取 + 渲染约 10-40 秒，完成后日志会输出到页面底部。</div>
+    </div>
+
+    <!-- ── Debug / 常开 ── -->
+    <div class="card">
+      <div class="card-title">🔧 Debug / 常开</div>
+      <div class="card-desc">Debug：延长唤醒窗口（30 分钟无操作自动休眠）。常开：设备不休眠，Web 常驻、LAN 推送可用（NVS 持久化，重启仍生效）。</div>
+      <div class="state-row">
+        <span>Debug 模式：<b id="dbg-state">—</b></span>
+        <button class="act" id="dbg-btn" onclick="debugToggle(this)"></button>
+      </div>
+      <div class="state-row">
+        <span>常开模式：<b id="aon-state">—</b></span>
+        <button class="act" id="aon-btn" onclick="aonToggle(this)"></button>
+      </div>
+      <div class="mini-note">退出 Debug 后设备进入深度休眠（常开开启中则保持常开）；关闭常开后按窗口规则休眠，恢复每日定时唤醒。</div>
+    </div>
+
+    <!-- ── 屏幕测试 ── -->
+    <div class="card">
+      <div class="card-title">📺 屏幕显示测试</div>
+      <div class="card-desc">发送黑 / 白 / 红 / 黄 四色横带测试图案，验证墨水屏与四色渲染。</div>
+      <div class="btn-row">
+        <button class="primary act" onclick="screenTest(this)">🎨 发送 4 色测试条</button>
+      </div>
+      <div class="mini-note">刷新约 12-16 秒，期间日志显示在页面底部。</div>
+    </div>
+
+    <!-- ── 舵机标定与测试 ── -->
+    <div class="card wide">
+      <div class="card-title">🎯 舵机标定与测试</div>
+      <div class="card-desc">填入当前值 → 测试竖屏 / 测试横屏验证 → 满意后保存。测试用表单当前值；保存后舵机功能启用，每日刷新自动旋转。</div>
+      <div class="row2">
+        <div>
+          <label class="f">竖屏角度 (°)</label>
+          <input type="number" step="0.1" id="sv-p">
+        </div>
+        <div>
+          <label class="f">横屏角度 (°)</label>
+          <input type="number" step="0.1" id="sv-l">
+        </div>
+        <div>
+          <label class="f">转动速度 (°/s)</label>
+          <input type="number" step="1" id="sv-spd">
+        </div>
+      </div>
+      <label class="cb"><input type="checkbox" id="sv-inv"> 横屏画面方向反转</label>
+      <label class="cb"><input type="checkbox" id="sv-rot180"> 竖屏画面旋转 180°（与网络配置共享）</label>
+      <div class="btn-row">
+        <button class="act" onclick="servoTestOri('portrait', this)">🧪 测试竖屏</button>
+        <button class="act" onclick="servoTestOri('landscape', this)">🧪 测试横屏</button>
+        <button class="primary act" onclick="servoSave(this)">💾 保存标定</button>
+      </div>
+
+      <div class="card-title" style="margin-top:18px">🧭 位置校正</div>
+      <div class="card-desc">若舵机实际朝向与记录不符（断电 / 卡死 / 人手拨动过），目视选择真实朝向后校正：固件刷新记录并重拉 photo_0 自愈。</div>
+      <div class="row2">
+        <div>
+          <label class="f">记录的朝向</label>
+          <input type="text" id="sv-last-ori" readonly>
+        </div>
+        <div>
+          <label class="f">舵机当前真实朝向</label>
+          <select id="sv-actual">
+            <option value="portrait">竖屏 (portrait)</option>
+            <option value="landscape">横屏 (landscape)</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="act" onclick="servoSync(this)">🧭 校正并重新渲染</button>
+      </div>
+
+      <div class="card-title" style="margin-top:18px">⚙ 简单转动测试</div>
+      <div class="card-desc">纯转动验证，不刷屏、不保存（装相框时找物理 home 位用）。</div>
+      <div class="row2">
+        <div>
+          <label class="f">目标角度 (°)</label>
+          <input type="number" step="1" id="rt-angle" value="0">
+        </div>
+        <div>
+          <label class="f">速度 (°/s)</label>
+          <input type="number" step="1" id="rt-speed">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="act" onclick="servoRotate(this)">🔄 转动到该角度</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">操作日志</div>
+  <div id="op-log" class="oplog">（暂无操作）</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ST = null;   // 最近一次 /api/device/console_status 载荷
+
+function log(line){
+  const el = $('op-log');
+  const ts = new Date().toTimeString().slice(0, 8);
+  if (el.textContent.startsWith('（暂无操作）')) el.textContent = '';
+  el.textContent += `[${ts}] ${line}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function post(url, data, btn){
+  const fd = new FormData();
+  for (const k in data) fd.append(k, data[k]);
+  const t = btn ? btn.textContent : '';
+  if (btn){ btn.disabled = true; btn.textContent = '执行中…'; }
+  try{
+    const r = await fetch(url, { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  } finally {
+    if (btn){ btn.textContent = t; }
+  }
+}
+
+function fmtUptime(ms){
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return `${d}天${h}小时${m}分`;
+  if (h) return `${h}小时${m}分`;
+  return `${m}分${Math.floor(s % 60)}秒`;
+}
+
+function pill(txt, cls){ return `<span class="pill ${cls || ''}">${txt}</span> `; }
+
+function setActDisabled(dis){
+  document.querySelectorAll('button.act').forEach(b => { b.disabled = dis; });
+}
+
+async function loadStatus(){
+  try{
+    const r = await fetch('/api/device/console_status');
+    ST = await r.json();
+  }catch(e){
+    ST = { online: false, registered: false, device: null, error: '请求失败: ' + e, endpoint: {} };
+  }
+  renderStatus();
+}
+
+function renderStatus(){
+  const d = ST.device;
+  const ep = ST.endpoint || {};
+  $('reg-info').textContent = ST.registered
+    ? `注册 ${ep.ip}:${ep.port}${ep.alwayson ? ' · 常开' : ''} · ${ep.ts || ''}`
+    : '设备未注册';
+
+  if (ST.online && d){
+    $('status-main').innerHTML =
+      `<span class="dot on"></span>已连接 <b>${d.ip}</b>` +
+      ` · 信号 ${d.rssi}dBm · 运行 ${fmtUptime(d.uptime_ms)}` +
+      ` · 空闲内存 ${(d.heap / 1024).toFixed(0)}KB`;
+    $('status-pills').innerHTML =
+      pill(d.debug ? 'Debug 开' : 'Debug 关', d.debug ? 'on' : 'off') +
+      pill(d.alwayson ? '常开 开' : '常开 关', d.alwayson ? 'on' : 'off') +
+      pill(d.epd ? '屏幕已连接' : '屏幕未检测到', d.epd ? 'on' : 'warn') +
+      pill(d.sv_cal ? '舵机已标定' : '舵机未标定', d.sv_cal ? 'on' : 'warn') +
+      (d.last_orientation ? pill('朝向 ' + d.last_orientation, '') : '');
+    $('dbg-state').textContent = d.debug ? '开启' : '关闭';
+    $('dbg-btn').textContent = d.debug ? '退出 Debug（休眠）' : '开启 Debug';
+    $('aon-state').textContent = d.alwayson ? '开启' : '关闭';
+    $('aon-btn').textContent = d.alwayson ? '关闭常开模式' : '开启常开模式';
+    // 预填表单（只在值为空时填，避免覆盖用户正在编辑的内容）
+    for (let i = 0; i < 3; ++i){
+      if (!$(`ssid${i}`).value) $(`ssid${i}`).value = (d.wifi && d.wifi[i] && d.wifi[i].ssid) || '';
+      const cur = (d.wifi && d.active_wifi === i) ? ' · 当前连接' : '';
+      $('wifi-cur-' + i).textContent = cur;
+    }
+    if (!$('hostport').value) $('hostport').value = d.hostport || '';
+    $('hour').value = d.hour;
+    $('tz').value = d.tz;
+    $('rot180').checked = !!d.rot180;
+    if ($('sv-p').value === '') $('sv-p').value = d.sv_p_deg;
+    if ($('sv-l').value === '') $('sv-l').value = d.sv_l_deg;
+    if ($('sv-spd').value === '') $('sv-spd').value = d.sv_speed;
+    $('sv-inv').checked = !!d.ls_inv;
+    $('sv-rot180').checked = !!d.rot180;
+    $('sv-last-ori').value = d.last_orientation || '（空 · 首次开机）';
+    if (!$('rt-speed').value) $('rt-speed').value = d.sv_speed;
+    setActDisabled(false);
+  } else {
+    $('status-main').innerHTML = `<span class="dot off"></span>设备离线`;
+    $('status-pills').innerHTML = '';
+    $('dbg-state').textContent = '—';
+    $('aon-state').textContent = '—';
+    $('dbg-btn').textContent = '开启 Debug';
+    $('aon-btn').textContent = '开启常开模式';
+    $('wifi-cur-0').textContent = $('wifi-cur-1').textContent = $('wifi-cur-2').textContent = '';
+    $('sv-last-ori').value = '';
+    setActDisabled(true);
+  }
+  if (ST.error) log('⚠️ ' + ST.error);
+}
+
+// ── 扫描 / 配置 ──
+async function scanWifi(btn){
+  $('scan-cnt').textContent = '扫描中…';
+  try{
+    const r = await fetch('/api/device/scan');
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    const nets = j.networks || [];
+    for (let i = 0; i < 3; ++i){
+      const sel = $('scan-' + i);
+      sel.innerHTML = '<option value="">（扫描后选择）</option>' +
+        nets.map(n => `<option value="${n.ssid.replace(/"/g, '&quot;')}">${n.ssid}（${n.rssi}dBm）</option>`).join('');
+    }
+    $('scan-cnt').textContent = `扫描到 ${nets.length} 个网络`;
+    log(`📡 扫描到 ${nets.length} 个网络`);
+  }catch(e){
+    $('scan-cnt').textContent = '';
+    log('❌ 扫描失败：' + e.message);
+  }
+}
+
+async function saveConfig(btn){
+  const rot = $('rot180').checked ? '1' : '';
+  if (!confirm('保存配置并重启设备？\n若改动了 WiFi 且新网络不可用，需到设备旁按 RST 重新配网。')) return;
+  try{
+    const j = await post('/api/device/config', {
+      ssid0: $('ssid0').value, pass0: $('pass0').value,
+      ssid1: $('ssid1').value, pass1: $('pass1').value,
+      ssid2: $('ssid2').value, pass2: $('pass2').value,
+      hostport: $('hostport').value,
+      hour: $('hour').value, tz: $('tz').value, rot180: rot,
+    }, btn);
+    log('✅ ' + (j.message || '已保存，设备正在重启…'));
+    $('pass0').value = $('pass1').value = $('pass2').value = '';
+    setTimeout(loadStatus, 6000);
+  }catch(e){ log('❌ 保存失败：' + e.message); }
+}
+
+// ── 拉取 / 测试 ──
+async function doFetch(btn){
+  log(`📥 拉取 photo_${$('fetch-idx').value}（约 10-40 秒）…`);
+  try{
+    const j = await post('/api/device/fetch', { idx: $('fetch-idx').value }, btn);
+    log('---- 设备日志 ----\n' + j.log + '\n---- 拉取完成 ✅');
+    loadStatus();
+  }catch(e){ log('❌ 拉取失败：' + e.message); }
+}
+
+async function screenTest(btn){
+  log('🎨 发送 4 色测试条…');
+  try{
+    const j = await post('/api/device/screen_test', {}, btn);
+    log(j.log + '\n✅ 测试图案已发送');
+  }catch(e){ log('❌ 测试失败：' + e.message); }
+}
+
+// ── debug / 常开 ──
+async function debugToggle(btn){
+  const on = ST && ST.device && ST.device.debug;
+  if (on){
+    if (!confirm('退出 Debug 并让设备休眠？\n（常开模式开启中则设备保持常开）')) return;
+    await debugState('confirm_off', btn);
+  } else {
+    await debugState('on', btn);
+  }
+}
+async function aonToggle(btn){
+  const on = ST && ST.device && ST.device.alwayson;
+  if (on){
+    if (!confirm('关闭常开模式？设备稍后将按窗口规则休眠，恢复每日定时唤醒。')) return;
+    await debugState('aon_off', btn);
+  } else {
+    await debugState('aon_on', btn);
+  }
+}
+async function debugState(state, btn){
+  try{
+    await post('/api/device/debug', { state }, btn);
+    log(`🔧 已发送 debug 指令 state=${state}`);
+    if (ST && ST.device) ST.device.debug = state === 'on' ? true
+      : (state === 'confirm_off' ? false : ST.device.debug);
+    if (ST && ST.device) ST.device.alwayson = state === 'aon_on' ? true
+      : (state === 'aon_off' ? false : ST.device.alwayson);
+    renderStatus();
+    setTimeout(loadStatus, 1500);
+  }catch(e){ log('❌ 操作失败：' + e.message); }
+}
+
+// ── 舵机 ──
+function servoForm(){
+  return {
+    p_deg: $('sv-p').value, l_deg: $('sv-l').value, spd: $('sv-spd').value,
+    inv: $('sv-inv').checked ? '1' : '0',
+    rot180: $('sv-rot180').checked ? '1' : '0',
+  };
+}
+async function servoTestOri(ori, btn){
+  log(`🧪 标定测试 ${ori}（转舵机 + 拉标定卡渲染，约 15-20 秒）…`);
+  try{
+    const j = await post('/api/device/servo_test_ori', Object.assign({ ori }, servoForm()), btn);
+    log(j.log + '\n✅ 测试完成');
+    loadStatus();
+  }catch(e){ log('❌ 测试失败：' + e.message); }
+}
+async function servoSave(btn){
+  if (!confirm('保存标定并启用舵机？')) return;
+  try{
+    const j = await post('/api/device/servo_save', servoForm(), btn);
+    log((j.log ? j.log + '\n' : '') + '✅ 标定已保存，舵机功能已启用');
+    loadStatus();
+  }catch(e){ log('❌ 保存失败：' + e.message); }
+}
+async function servoSync(btn){
+  const a = $('sv-actual').value;
+  if (!confirm(`确认舵机当前真实朝向是「${a === 'portrait' ? '竖屏' : '横屏'}」？\n将刷新记录并重拉 photo_0（约 15-20 秒）。`)) return;
+  log(`🧭 位置校正 → ${a} …`);
+  try{
+    const j = await post('/api/device/servo_sync', { actual: a }, btn);
+    log(j.log + '\n✅ 校正完成');
+    loadStatus();
+  }catch(e){ log('❌ 校正失败：' + e.message); }
+}
+async function servoRotate(btn){
+  log(`⚙ 转动到 ${$('rt-angle').value}° …`);
+  try{
+    const j = await post('/api/device/servo_test', { angle: $('rt-angle').value, speed: $('rt-speed').value }, btn);
+    log(j.log);
+  }catch(e){ log('❌ 转动失败：' + e.message); }
+}
+
+loadStatus();
+</script>
+</body>
+</html>

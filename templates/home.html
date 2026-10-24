@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkTime Server</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.45);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --shadow: 0 18px 60px rgba(0,0,0,0.45);
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    body{
+      margin:0;
+      padding:0;
+      min-height:100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{ max-width: 1080px; margin: 40px auto 60px; padding: 0 18px; }
+    h1{ font-size: 26px; margin: 0 0 6px; letter-spacing: 0.3px; }
+    .subtitle{ font-size: 13px; color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
+    .subtitle .badge{
+      display:inline-block; margin-left:8px; padding:2px 10px; border-radius: 999px;
+      background: rgba(200,0,0,0.25); border:1px solid rgba(255,120,120,0.4);
+      color:#ffb4b4; font-size:12px;
+    }
+    .grid{
+      display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+    }
+    a.tile{
+      display:block; text-decoration:none; color:var(--text);
+      background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 18px 18px 16px; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+      transition: transform .15s ease, border-color .15s ease, background .15s ease;
+    }
+    a.tile:hover{ transform: translateY(-3px); border-color: rgba(138,180,255,0.45); background: var(--card); }
+    .tile .icon{ font-size: 26px; line-height: 1; margin-bottom: 10px; }
+    .tile .title{ font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+    .tile .title .hint{ font-size: 11px; color: var(--accent2); margin-left: 8px; font-weight: 400; }
+    .tile .desc{ font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+    .footer{
+      margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line);
+      font-size: 12px; color: var(--muted2); line-height: 1.8; word-break: break-all;
+    }
+    /* ── 相框设备卡片：在线状态 + 常开开关 + 上线检测 ── */
+    a.tile.offline{ opacity: .5; }
+    a.tile.offline .icon{ filter: grayscale(1); }
+    #dev-hint.on{ color: var(--accent2); }
+    #dev-hint.off{ color: var(--muted2); }
+    .tile-actions{ display:flex; gap:8px; margin-top:12px; }
+    .tile-actions button{
+      flex:1; padding:6px 8px; font-size:12px; white-space:nowrap; cursor:pointer;
+      color:var(--text); background:rgba(255,255,255,0.08);
+      border:1px solid rgba(255,255,255,0.18); border-radius:10px; outline:none;
+    }
+    .tile-actions button:hover{ background:rgba(255,255,255,0.14); }
+    .tile-actions button:disabled{ opacity:.4; cursor:not-allowed; }
+    .tile-actions button.aon-on{
+      background:linear-gradient(135deg, rgba(138,180,255,0.35), rgba(156,255,214,0.28));
+      border-color:rgba(138,180,255,0.55); font-weight:600;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>InkTime Server</h1>
+  <p class="subtitle">
+    今天是 {{ today }}{% if holiday %}<span class="badge">🎂 {{ holiday }}</span>{% endif %}<br>
+    照片数据库 + 版式工作台 + 选片推送，统一入口（原 8766 版式 WebUI 已合并至本端口）
+  </p>
+
+  <div class="grid">
+    <a class="tile" href="/select">
+      <div class="icon">🖼️</div>
+      <div class="title">选片推送<span class="hint">NEW</span></div>
+      <div class="desc">今日选中与候选照片预览、打分明细与库内属性，手动勾选后一键渲染推送到墨水屏。</div>
+    </a>
+    <a class="tile" href="/device" id="tile-device">
+      <div class="icon">📟</div>
+      <div class="title">相框设备<span class="hint" id="dev-hint">检测中…</span></div>
+      <div class="desc">墨水屏相框远程控制台：网络配置、图片拉取、屏幕/舵机测试。设备唤醒或常开时可用，可一键开关常开模式。</div>
+      <div class="tile-actions">
+        <button id="dev-aon" onclick="toggleAon(event)" disabled>常开 —</button>
+        <button id="dev-check" onclick="checkDevice(event)">↻ 检测上线</button>
+      </div>
+    </a>
+    {% if review_enabled %}
+    <a class="tile" href="/review">
+      <div class="icon">📚</div>
+      <div class="title">照片库</div>
+      <div class="desc">按回忆度 / 美观度 / 日期浏览全库评分与文案，点开单张可跑墨水屏模拟渲染。</div>
+    </a>
+    {% endif %}
+    <a class="tile" href="/manager">
+      <div class="icon">🗂️</div>
+      <div class="title">相册管理</div>
+      <div class="desc">DataTables 多维筛选（日期 / 目录 / 城市 / 类型 / 分数 / 上屏状态），原 8766 相册管理页。</div>
+    </a>
+    <a class="tile" href="/style-editor">
+      <div class="icon">🎨</div>
+      <div class="title">版式编辑器</div>
+      <div class="desc">元素级增删拖放编辑版式（P 系 / L 系），墨水屏预览与真机对照，改完直接落盘 layouts/*.json。</div>
+    </a>
+    <a class="tile" href="/devlog">
+      <div class="icon">🛰️</div>
+      <div class="title">设备日志</div>
+      <div class="desc">相框设备（ESP32）黑盒事件流水：唤醒、拉取、刷屏、舵机，供跨重启事故回查。</div>
+    </a>
+    <a class="tile" href="/files/">
+      <div class="icon">📦</div>
+      <div class="title">输出文件</div>
+      <div class="desc">photo_*.bin / latest.* / preview_*.png 渲染产物浏览，可核对每日批次与手动推送结果。</div>
+    </a>
+  </div>
+
+  <div class="footer">
+    DB：{{ db_path }}<br>
+    图片目录：{{ image_dir }}<br>
+    每日张数：{{ quantity }} · ESP32 拉取接口 /static/inktime/&lt;key&gt;/… · 授时 /static/inktime/&lt;key&gt;/time
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let devOnline = false, devAon = false;
+
+function renderDevice(j){
+  const tile = $('tile-device'), aon = $('dev-aon'), hint = $('dev-hint');
+  devOnline = !!(j && j.online);
+  devAon = !!(j && j.alwayson);
+  if (devOnline){
+    tile.classList.remove('offline');
+    hint.textContent = '在线 · ' + (j.ip || '');
+    hint.className = 'hint on';
+    aon.textContent = devAon ? '关闭常开' : '开启常开';
+    aon.className = devAon ? 'aon-on' : '';
+    aon.disabled = false;
+  } else {
+    tile.classList.add('offline');
+    hint.textContent = j && j.registered === false ? '离线 · 设备未注册' : '离线 · 已休眠';
+    hint.className = 'hint off';
+    aon.textContent = '开启常开';
+    aon.className = '';
+    aon.disabled = true;
+  }
+}
+
+// 上线检测：页面加载、每 30 秒、以及点击"检测上线"时各触发一次
+async function checkDevice(ev){
+  if (ev){ ev.preventDefault(); ev.stopPropagation(); }
+  const chk = $('dev-check');
+  chk.disabled = true;
+  const t = chk.textContent;
+  chk.textContent = '检测中…';
+  try{
+    const r = await fetch('/api/device/home_status');
+    renderDevice(await r.json());
+  }catch(e){
+    renderDevice({ online: false });
+  }finally{
+    chk.disabled = false;
+    chk.textContent = t;
+  }
+}
+
+// 常开开关：转发到设备的 debug 接口（state=aon_on|aon_off）
+async function toggleAon(ev){
+  ev.preventDefault(); ev.stopPropagation();
+  if (!devOnline) return;
+  const target = devAon ? 'aon_off' : 'aon_on';
+  const msg = devAon
+    ? '关闭常开模式？设备稍后将休眠，恢复每日定时唤醒。'
+    : '开启常开模式？设备将保持在线，控制台与 LAN 推送随时可用。';
+  if (!confirm(msg)) return;
+  const aon = $('dev-aon');
+  aon.disabled = true;
+  const t = aon.textContent;
+  aon.textContent = '切换中…';
+  try{
+    const fd = new FormData();
+    fd.append('state', target);
+    const r = await fetch('/api/device/debug', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  }catch(e){
+    alert('切换失败：' + e.message);
+  }
+  checkDevice();
+}
+
+checkDevice();
+setInterval(() => checkDevice(), 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkTime 选片推送</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.45);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --warn: #ffd08a;
+      --shadow: 0 18px 60px rgba(0,0,0,0.45);
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0; padding:0 0 120px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{ max-width: 1500px; margin: 26px auto 30px; padding: 0 18px; }
+    h1{ font-size: 21px; margin: 0 0 6px; letter-spacing: 0.2px; }
+    h1 .home-link{ font-size: 12.5px; font-weight: 400; margin-left: 12px; }
+    h1 .home-link a{ color: var(--accent); text-decoration: none; }
+    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+
+    .bar{
+      display:flex; flex-wrap:wrap; gap: 8px 16px; align-items:center;
+      font-size: 12.5px; color: var(--muted);
+      background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 10px 14px; margin: 14px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+    }
+    .bar b{ color: var(--text); font-weight: 600; }
+    .bar .warn{ color: var(--warn); }
+    button{
+      padding: 7px 14px; font-size: 13px; color: var(--text); cursor: pointer;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px; outline: none;
+    }
+    button:hover{ background: rgba(255,255,255,0.14); }
+    button:disabled{ opacity: .45; cursor: not-allowed; }
+    button.primary{
+      background: linear-gradient(135deg, rgba(138,180,255,0.35), rgba(156,255,214,0.28));
+      border-color: rgba(138,180,255,0.55); font-weight: 600;
+    }
+    select, input[type=text]{
+      padding: 6px 10px; font-size: 12.5px; color: var(--text);
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px; outline: none;
+    }
+    select option{ background:#14161c; color:#eee; }
+
+    .section-title{ font-size: 15px; font-weight: 600; margin: 22px 0 10px; }
+    .section-title .cnt{ font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
+    /* ── 今日选中（渲染批次）── */
+    #current-grid{
+      display:flex; flex-wrap:wrap; gap: 14px;
+    }
+    .cur-card{
+      width: 178px; background: var(--panel); border:1px solid var(--line);
+      border-radius: var(--radius); padding: 8px; box-shadow: var(--shadow2);
+    }
+    .cur-card img{ width:100%; border-radius: 8px; display:block; background:#111; min-height: 60px; }
+    .cur-card.landscape img{ aspect-ratio: 5/3; object-fit: contain; }
+    .cur-card.portrait img{ aspect-ratio: 3/5; object-fit: contain; }
+    .cur-meta{ font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.5; word-break: break-all; }
+    .cur-meta b{ color: var(--text); }
+    .cur-card .btn-row{ margin-top: 6px; display:flex; gap:6px; }
+    .cur-card button{ flex:1; padding: 5px 6px; font-size: 11.5px; }
+
+    /* ── 候选池 ── */
+    .cand-controls{
+      display:flex; flex-wrap:wrap; gap: 10px; align-items:center; margin: 0 0 12px;
+      font-size: 12.5px; color: var(--muted);
+    }
+    #cand-grid{
+      display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px;
+    }
+    .cand-card{
+      background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 10px; box-shadow: var(--shadow2); display:flex; flex-direction:column; gap:8px;
+      transition: border-color .15s ease;
+    }
+    .cand-card.in-selected{ border-color: rgba(156,255,214,0.65); }
+    .cand-card .imgwrap{ position:relative; }
+    .cand-card img{
+      width:100%; border-radius: 8px; display:block; background:#111; cursor: zoom-in;
+      aspect-ratio: 3/3.4; object-fit: cover;
+    }
+    .cand-card .rank{
+      position:absolute; top:6px; left:6px; font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+      background: rgba(0,0,0,0.55); color: var(--accent2); border:1px solid rgba(156,255,214,0.4);
+    }
+    .cand-card .used{
+      position:absolute; top:6px; right:6px; font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+      background: rgba(0,0,0,0.55); color: var(--warn); border:1px solid rgba(255,208,138,0.4);
+    }
+    .score-row{ display:flex; flex-wrap:wrap; gap:4px; }
+    .pill{
+      font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+      background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.14); color: var(--muted);
+      white-space: nowrap;
+    }
+    .pill.hi{ color:#0c0d10; background: var(--accent2); border-color: var(--accent2); font-weight:600; }
+    .pill.mem{ color: var(--accent); border-color: rgba(138,180,255,0.45); }
+    .pill.beauty{ color: #e6b3ff; border-color: rgba(230,179,255,0.4); }
+    .cand-title{ font-size: 12px; line-height: 1.45; color: var(--text); min-height: 17px; }
+    .cand-title .muted{ color: var(--muted); }
+    .cand-card details{ font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+    .cand-card details summary{ cursor: pointer; color: var(--muted2); font-size: 11px; }
+    .cand-card details b{ color: var(--text); font-weight: 600; }
+    .cand-card details .path-line{ word-break: break-all; color: var(--muted2); font-size: 10.5px; }
+    .cand-card .btn-row{ margin-top: auto; display:flex; gap:6px; }
+    .cand-card .btn-row button{ flex:1; padding: 6px 6px; font-size: 12px; }
+    .cand-card .btn-row button.added{
+      background: rgba(156,255,214,0.18); border-color: rgba(156,255,214,0.55); color: var(--accent2);
+    }
+
+    /* ── 底部选择托盘 ── */
+    #tray{
+      position: fixed; left:0; right:0; bottom:0; z-index: 50;
+      background: rgba(10,11,15,0.92); border-top: 1px solid var(--line);
+      backdrop-filter: blur(14px); box-shadow: 0 -10px 40px rgba(0,0,0,0.5);
+    }
+    #tray-inner{ max-width: 1500px; margin: 0 auto; padding: 10px 18px; }
+    #tray-items{ display:flex; flex-wrap:wrap; gap: 8px; align-items:center; min-height: 58px; }
+    .tray-item{
+      position:relative; width: 46px; height: 66px; border-radius: 8px; overflow: hidden;
+      border: 2px solid rgba(255,255,255,0.35); cursor: pointer; background:#111;
+    }
+    .tray-item img{ width:100%; height:100%; object-fit: cover; display:block; }
+    .tray-item .ord{
+      position:absolute; top:1px; left:1px; font-size: 10px; background: rgba(0,0,0,0.65);
+      color: var(--accent2); padding: 0 5px; border-radius: 0 0 6px 0;
+    }
+    .tray-item.zero{ border-color: var(--accent2); }
+    .tray-empty{ font-size: 12.5px; color: var(--muted2); }
+    #tray-actions{ display:flex; flex-wrap:wrap; gap: 12px; align-items:center; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+    #tray-actions label{ display:inline-flex; align-items:center; gap: 6px; cursor: pointer; }
+
+    /* ── 推送状态 ── */
+    #push-status{ display:none; margin-top: 10px; }
+    #push-status .prog{ font-size: 12.5px; color: var(--accent2); margin-bottom: 6px; }
+    #push-log{
+      max-height: 180px; overflow:auto; font-size: 11px; line-height: 1.6; color: var(--muted);
+      background: rgba(0,0,0,0.45); border:1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    #push-status.done .prog{ color: var(--accent2); }
+    #push-status.error .prog{ color: #ff9c9c; }
+
+    /* ── 大图查看 ── */
+    #lightbox{
+      display:none; position:fixed; inset:0; z-index:100; background: rgba(0,0,0,0.82);
+      align-items:center; justify-content:center; cursor: zoom-out; padding: 30px;
+    }
+    #lightbox img{ max-width: 92vw; max-height: 92vh; border-radius: 10px; box-shadow: var(--shadow); }
+
+    #loading{ font-size: 13px; color: var(--muted); padding: 30px 0; text-align:center; }
+    .empty-hint{ font-size: 12.5px; color: var(--muted2); padding: 14px 2px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🖼️ 选片推送
+    <span class="home-link"><a href="/">← 返回首页</a></span>
+  </h1>
+  <p class="subtitle">「今日选中」为 output/ 里当日管线渲染批次；「候选池」为实际使用月日中 memory&gt;阈值的照片（连拍去重后按最终得分排序）。勾选后一键重渲染落盘并推送，设备下次唤醒即拉取新批次。</p>
+
+  <div class="bar" id="info-bar">
+    <span id="info-text">加载中…</span>
+    <span style="flex:1"></span>
+    <button id="btn-refresh" onclick="loadOverview(true)">↻ 重新选片</button>
+  </div>
+
+  <div id="loading">正在加载选片数据（首次需扫描全库，约数秒）…</div>
+
+  <div id="main" style="display:none">
+    <div class="section-title">今日选中（当前渲染批次）<span class="cnt" id="current-cnt"></span></div>
+    <div id="current-grid"></div>
+
+    <div class="section-title">候选池<span class="cnt" id="cand-cnt"></span></div>
+    <div class="cand-controls">
+      <label>排序
+        <select id="sort-sel" onchange="renderCandidates()">
+          <option value="final">最终得分 ↓</option>
+          <option value="memory">回忆度 ↓</option>
+          <option value="beauty">美观度 ↓</option>
+          <option value="date">拍摄日期 ↓</option>
+        </select>
+      </label>
+      <label>筛选
+        <input type="text" id="filter-input" placeholder="日期 / 城市 / 类型 / 文案…" oninput="renderCandidates()" style="width: 210px">
+      </label>
+      <span id="filter-cnt" class="pill"></span>
+    </div>
+    <div id="cand-grid"></div>
+  </div>
+</div>
+
+<div id="tray">
+  <div id="tray-inner">
+    <div id="tray-items"></div>
+    <div id="tray-actions">
+      <span id="tray-count">已选 0 / {{ quantity }}</span>
+      <span class="pill">列表第 1 张 = photo_0 = latest.* = BLE 刷新画面</span>
+      <label><input type="checkbox" id="ble-cb" {% if ble_default %}checked{% endif %}> 推送后立即 BLE 刷新屏幕（约 2 分钟）</label>
+      <label><input type="checkbox" id="lan-cb"> 推送后立即 LAN 刷新（需设备常开模式）</label>
+      <span style="flex:1"></span>
+      <button id="btn-clear" onclick="clearSelection()">清空</button>
+      <button id="btn-push" class="primary" onclick="doPush()" disabled>推送到墨水屏</button>
+    </div>
+    <div id="push-status">
+      <div class="prog" id="push-prog"></div>
+      <div id="push-log" class="hide"></div>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" onclick="this.style.display='none'"><img id="lightbox-img" alt=""></div>
+
+<script>
+let OV = null;            // /api/select/overview 载荷
+let selected = [];        // 已勾选照片，按点击顺序；元素至少含 path/thumb_url
+let pollTimer = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+}[c]));
+const fmt = v => (v === null || v === undefined || v === '') ? '—' : v;
+
+function selectedPaths(){ return new Set(selected.map(s => s.path)); }
+
+async function loadOverview(refresh){
+  const btn = document.getElementById('btn-refresh');
+  btn.disabled = true;
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('main').style.display = 'none';
+  try{
+    const r = await fetch('/api/select/overview' + (refresh ? '?refresh=1' : ''));
+    const data = await r.json();
+    if(!r.ok || data.error){ throw new Error(data.error || ('HTTP ' + r.status)); }
+    OV = data;
+    renderAll();
+  }catch(e){
+    document.getElementById('loading').textContent = '加载失败：' + e.message + '（可点右上角重试）';
+  }finally{
+    btn.disabled = false;
+    if(OV) document.getElementById('loading').style.display = 'none';
+  }
+}
+
+function renderAll(){
+  renderInfo();
+  renderCurrent();
+  renderCandidates();
+  renderTray();
+  document.getElementById('main').style.display = 'block';
+  document.getElementById('loading').style.display = 'none';
+}
+
+function renderInfo(){
+  const info = OV.info || {};
+  const cur = OV.current || {};
+  const off = info.day_offset;
+  const offTxt = (off === null || off === undefined) ? '—' : (off === 0 ? '当天' : ('回溯 ' + (-off) + ' 天'));
+  let bits = [];
+  bits.push(`今天 <b>${esc(OV.today)}</b>`);
+  bits.push(`实际使用月日 <b>${esc(info.used_md || '—')}</b>（${offTxt}）`);
+  bits.push(`候选 <b>${OV.candidates_total}</b> 张（memory &gt; ${OV.threshold}）`);
+  if(info.elite_count !== undefined) bits.push(`精英 ${info.elite_count} 张（≥ ${OV.high_score_threshold}）`);
+  if(info.selection_mode) bits.push(`模式 <b>${esc(info.selection_mode)}</b>`);
+  if(OV.holiday) bits.push(`<span class="warn">🎂 ${esc(OV.holiday.name)}</span>`);
+  if(cur.generated){
+    bits.push(`当前批次生成于 <b>${esc(cur.generated)}</b>` + (cur.is_today ? '' : ' <span class="warn">⚠️ 非今日产物，可重新选片</span>'));
+  }
+  if(OV.candidates_truncated) bits.push(`<span class="warn">候选仅显示前 ${OV.candidates.length} 张</span>`);
+  document.getElementById('info-text').innerHTML = bits.join('<span style="opacity:.35"> · </span>');
+  document.getElementById('current-cnt').textContent = `${(cur.photos||[]).length} 张 · 槽位上限 ${OV.quantity}`;
+}
+
+function renderCurrent(){
+  const grid = document.getElementById('current-grid');
+  const photos = (OV.current && OV.current.photos) || [];
+  if(!photos.length){
+    grid.innerHTML = '<div class="empty-hint">output/ 里没有任何 photo_*.bin —— 尚未运行过每日渲染，可从下方候选池手动选。</div>';
+    return;
+  }
+  const sel = selectedPaths();
+  grid.innerHTML = photos.map(p => {
+    const inSel = p.db_path && sel.has(p.db_path);
+    const item = p.item || {};
+    const orient = p.orientation === 'landscape' ? 'landscape' : 'portrait';
+    return `
+    <div class="cur-card ${orient}">
+      ${p.preview_url ? `<img src="${esc(p.preview_url)}?t=${esc(OV.built_at)}" loading="lazy" onclick="showLightbox(this.src)" title="点击查看大图（墨水屏效果）">` : '<div class="empty-hint">无预览</div>'}
+      <div class="cur-meta">
+        <b>槽位 ${p.idx}</b> · ${esc(p.layout || '—')} · ${esc(p.orientation || '—')}<br>
+        ${esc(p.item && p.item.date ? p.item.date : '')} ${esc(item.city || '')}<br>
+        <span style="color:var(--muted2)">${esc((item.side || '').slice(0, 40))}</span>
+      </div>
+      <div class="btn-row">
+        ${p.db_path ? `<button data-path="${esc(p.db_path)}" onclick="toggleCurrent(this)" class="${inSel ? 'added' : ''}">${inSel ? '✓ 已选' : '加入选择'}</button>` : ''}
+        ${p.image_url ? `<button onclick="showLightbox('${esc(p.image_url)}')" title="看原图">原图</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleCurrent(btn){
+  const path = btn.dataset.path;
+  const cur = (OV.current.photos || []).find(p => p.db_path === path) || {};
+  toggleByPath(path, {
+    path,
+    thumb_url: cur.thumb_url || cur.image_url || '',
+    date: (cur.item && cur.item.date) || '',
+    label: '今日选中',
+  });
+  renderCurrent();
+}
+
+function candidateView(){
+  const kw = (document.getElementById('filter-input').value || '').trim().toLowerCase();
+  const sort = document.getElementById('sort-sel').value;
+  let arr = (OV.candidates || []).slice();
+  if(kw){
+    arr = arr.filter(c => [c.date, c.city, c.types && c.types.join('/'), c.caption, c.side, c.reason, c.path]
+      .some(v => String(v || '').toLowerCase().includes(kw)));
+  }
+  const key = {
+    final:  c => c.final || 0,
+    memory: c => c.memory ?? -1,
+    beauty: c => c.beauty ?? -1,
+    date:   c => c.date || '',
+  }[sort];
+  arr.sort((a, b) => {
+    const va = key(a), vb = key(b);
+    return va < vb ? 1 : va > vb ? -1 : 0;
+  });
+  return arr;
+}
+
+function renderCandidates(){
+  const arr = candidateView();
+  const sel = selectedPaths();
+  document.getElementById('cand-cnt').textContent =
+    `${arr.length} 张显示 / 共 ${OV.candidates_total} 张候选`;
+  document.getElementById('filter-cnt').textContent = arr.length + ' 张';
+
+  document.getElementById('cand-grid').innerHTML = arr.map((c, i) => {
+    const inSel = sel.has(c.path);
+    const w = c.weights || {};
+    return `
+    <div class="cand-card ${inSel ? 'in-selected' : ''}">
+      <div class="imgwrap">
+        <img src="${esc(c.thumb_url)}" loading="lazy" onclick="showLightbox('${esc(c.image_url)}')" alt="">
+        <span class="rank">#${i + 1} · ${c.final.toFixed(1)}</span>
+        ${c.used_at ? '<span class="used">已上屏</span>' : ''}
+      </div>
+      <div class="cand-title">
+        <b>${esc(c.date)}</b> <span class="muted">${esc(c.city || '—')}</span>
+        ${c.types && c.types.length ? ' · ' + esc(c.types.join('/')) : ''}
+      </div>
+      <div class="score-row">
+        <span class="pill mem">回忆 ${fmt(c.memory)}</span>
+        <span class="pill beauty">美观 ${fmt(c.beauty)}</span>
+        <span class="pill">展示 ${fmt(c.display)}</span>
+        ${c.final >= OV.high_score_threshold ? '<span class="pill hi">精英</span>' : ''}
+      </div>
+      <details>
+        <summary>明细（旁白 / 加权成分 / 属性）</summary>
+        ${c.side ? `<div>旁白：<b>${esc(c.side)}</b></div>` : ''}
+        ${c.caption ? `<div>主文案：${esc(c.caption)}</div>` : ''}
+        ${c.reason ? `<div>评分理由：${esc(c.reason)}</div>` : ''}
+        <div>加权：路径×${esc(w.path)} 类别×${esc(w.category)} 复用×${esc(w.recency)} 裁切×${esc(w.crop)} 竖屏×${esc(w.portrait)}</div>
+        <div>属性：${esc(c.width || '?')}×${esc(c.height || '?')} · ${esc(c.orientation_raw || '朝向未知')} · 上屏 ${esc(c.used_at || '从未')}</div>
+        ${c.exif_summary ? `<div>${esc(c.exif_summary)}</div>` : ''}
+        <div class="path-line">${esc(c.path)}</div>
+      </details>
+      <div class="btn-row">
+        <button class="${inSel ? 'added' : ''}" onclick="toggleCandidate(this)" data-path="${esc(c.path)}">${inSel ? '✓ 已选（点击移除）' : '加入选择'}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleCandidate(btn){
+  const c = (OV.candidates || []).find(x => x.path === btn.dataset.path);
+  if(!c) return;
+  toggleByPath(c.path, c);
+  renderCandidates();
+}
+
+function toggleByPath(path, meta){
+  const i = selected.findIndex(s => s.path === path);
+  if(i >= 0){
+    selected.splice(i, 1);
+  }else{
+    if(selected.length >= OV.quantity){
+      alert(`最多选择 ${OV.quantity} 张（相框槽位上限）`);
+      return;
+    }
+    selected.push(meta);
+  }
+  renderTray();
+}
+
+function renderTray(){
+  const box = document.getElementById('tray-items');
+  if(!selected.length){
+    box.innerHTML = '<div class="tray-empty">从上方点「加入选择」，第 1 张将占用 photo_0 / latest / BLE 画面</div>';
+  }else{
+    box.innerHTML = selected.map((s, i) => `
+      <div class="tray-item ${i === 0 ? 'zero' : ''}" onclick="removeAt(${i})" title="点击移除">
+        ${s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="">` : ''}
+        <span class="ord">${i === 0 ? '0★' : i}</span>
+      </div>`).join('');
+  }
+  document.getElementById('tray-count').textContent = `已选 ${selected.length} / ${OV.quantity}`;
+  document.getElementById('btn-push').disabled = !selected.length;
+}
+
+function removeAt(i){ selected.splice(i, 1); renderTray(); renderCandidates(); if(OV) renderCurrent(); }
+function clearSelection(){ selected = []; renderTray(); renderCandidates(); if(OV) renderCurrent(); }
+function showLightbox(src){
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').style.display = 'flex';
+}
+
+async function doPush(){
+  if(!selected.length) return;
+  if(!confirm(`将 ${selected.length} 张照片重渲染并替换当日批次？（顺序即槽位 0…${selected.length - 1}）`)) return;
+  const ble = document.getElementById('ble-cb').checked;
+  const lan = document.getElementById('lan-cb').checked;
+  try{
+    const r = await fetch('/api/select/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ paths: selected.map(s => s.path), ble, lan }),
+    });
+    const data = await r.json();
+    if(!r.ok || data.error){ throw new Error(data.error || ('HTTP ' + r.status)); }
+  }catch(e){
+    alert('推送启动失败：' + e.message);
+    return;
+  }
+  const st = document.getElementById('push-status');
+  st.style.display = 'block';
+  st.className = '';
+  document.getElementById('btn-push').disabled = true;
+  document.getElementById('push-log').textContent = '';
+  pollTimer = setInterval(pollPushStatus, 1500);
+  pollPushStatus();
+}
+
+async function pollPushStatus(){
+  let j;
+  try{
+    const r = await fetch('/api/select/push_status');
+    j = await r.json();
+  }catch(e){ return; }
+
+  const st = document.getElementById('push-status');
+  const prog = document.getElementById('push-prog');
+  const logBox = document.getElementById('push-log');
+  logBox.textContent = (j.log || []).join('\n');
+  logBox.scrollTop = logBox.scrollHeight;
+
+  if(j.state === 'running'){
+    const flags = [
+      j.lan ? '渲染完将 LAN 刷新' : '',
+      j.ble ? '渲染完将 BLE 刷新' : '',
+    ].filter(Boolean).join(' · ');
+    prog.textContent = `渲染中 ${j.done}/${j.total}${flags ? ' · ' + flags : ''}…`;
+  }else{
+    clearInterval(pollTimer);
+    pollTimer = null;
+    if(j.state === 'done'){
+      st.className = 'done';
+      prog.textContent = `✅ 推送完成（${j.total} 张已落盘，latest = photo_0）—— 设备下次唤醒即拉取新批次`;
+    }else{
+      st.className = 'error';
+      prog.textContent = '❌ 推送失败：' + (j.error || '未知错误');
+    }
+    document.getElementById('btn-push').disabled = !selected.length;
+    loadOverview(true);   // 推送会改写 output/，强制刷新“今日选中”
+  }
+}
+
+loadOverview(false);
+</script>
+</body>
+</html>

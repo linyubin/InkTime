@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from flask import Flask, abort, send_file, Response, request, redirect, g, render_template
+from flask import Flask, abort, send_file, Response, request, redirect, g, render_template, jsonify
 import mimetypes
 import sqlite3
 import json
@@ -166,6 +166,12 @@ def _load_all_md_list() -> list[str]:
     return md_list
 
 app = Flask(__name__)
+
+# ── 合并版式管理 WebUI（原 8766 端口的 webui.py）──────────────
+# webui.py 现以 Blueprint 提供：/manager（相册管理）、/style-editor（版式编辑器）、
+# /devlog（设备日志）等；/images 由本文件统一提供，blueprint 内不再重复注册。
+from webui import bp as webui_bp
+app.register_blueprint(webui_bp)
 
 
 def ensure_transfer_history() -> None:
@@ -793,9 +799,24 @@ def build_simulator_html(sim_rows, selected_img: str = ""):
 
 @app.get("/")
 def index():
-    if ENABLE_REVIEW_WEBUI:
-        return redirect("/review")
-    return Response("InkTime server running. WebUI disabled.", mimetype="text/plain; charset=utf-8")
+    """统一入口首页：分发照片库 / 选片推送 / 相册管理 / 版式编辑器 / 设备日志等子页。"""
+    holiday_name = ""
+    try:
+        from holidays import get_today_holiday
+        h = get_today_holiday(datetime.now().date())
+        if h:
+            holiday_name = str(h.get("name") or "")
+    except Exception:
+        holiday_name = ""
+    return render_template(
+        "home.html",
+        today=datetime.now().strftime("%Y-%m-%d"),
+        holiday=holiday_name,
+        db_path=str(DB_PATH),
+        image_dir=str(IMAGE_DIR),
+        quantity=DAILY_PHOTO_QUANTITY,
+        review_enabled=ENABLE_REVIEW_WEBUI,
+    )
 
 
 @app.get("/review")
@@ -1207,6 +1228,673 @@ def esp_device_log(key: str):
         _devlog_max_ls[key] = max_ls
 
     return f"OK n={accepted}", 200
+
+
+# ── 常开设备注册（LAN 推送目标）─────────────────────────────
+# ESP32 固件在 debug 页开启「常开模式」后不再休眠，上线时 POST 本接口
+# 登记自身（IP 取连接源地址，端口在 body 里）。选片推送勾选「LAN 刷新」
+# 时读这里的记录，HTTP 回调设备 /fetch?idx=0 触发拉取渲染。
+# 每次进入常开、以及常开期间每日刷新后设备都会重登，DHCP 换 IP 可自愈。
+
+DEVICE_ENDPOINT_FILE = DEVICE_LOG_DIR / "endpoint.json"
+
+
+def _load_device_endpoint() -> dict:
+    try:
+        rec = json.loads(DEVICE_ENDPOINT_FILE.read_text(encoding="utf-8"))
+        return rec if isinstance(rec, dict) else {}
+    except Exception:
+        return {}
+
+
+@app.post("/api/device_register/<key>")
+def esp_device_register(key: str):
+    if key != DOWNLOAD_KEY:
+        abort(404)
+
+    ip = request.remote_addr or ""
+    if not ip:
+        return "no ip", 400
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        port = int(body.get("port") or 80)
+    except (TypeError, ValueError):
+        port = 80
+    rec = {
+        "ip": ip,
+        "port": port,
+        "alwayson": bool(body.get("alwayson")),
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        DEVICE_ENDPOINT_FILE.write_text(
+            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        print(f"[device_register] write failed: {e}")
+        return "write failed", 500
+    print(f"[InkTime] device register: {rec['ip']}:{rec['port']} alwayson={rec['alwayson']}")
+    return "OK", 200
+
+
+# ── 选片推送（/select）───────────────────────────────────────
+# 展示"今日选中"（output/ 里当日管线渲染的批次）与"候选池"（used_md 当日
+# memory>阈值、连拍去重后按 final_score 排序的照片），支持勾选若干张手动
+# 重渲染落盘（photo_*.bin/json/path.txt + latest.*），可选触发 BLE 立即刷新；
+# ESP32 设备下次唤醒即拉取新批次。渲染复用 render_daily_photo.render_photo_to_bin，
+# 与每日管线产物完全一致。
+
+import subprocess
+import sys
+
+import requests
+
+SELECT_CANDIDATE_LIMIT = 120        # 候选池最多返回给前端的张数（按 final_score 截断）
+_SELECT_CACHE: dict[str, object] = {"built_at": 0.0, "payload": None}
+_SELECT_CACHE_TTL_SEC = 600.0       # load_sim_rows 全库扫描较慢（~秒级），10 分钟内复用
+_SELECT_CACHE_LOCK = threading.Lock()
+
+_BLE_PUSH_TIMEOUT_SEC = 300         # 与 inktime_daily.sh 的 PUSH_TIMEOUT 同量级，留足余量
+_LAN_PUSH_TIMEOUT_SEC = 180         # 设备拉取+渲染一轮约 10-40s，留足余量
+_PUSH_JOB: dict[str, object] = {
+    "state": "idle",                # idle | running | done | error
+    "total": 0,
+    "done": 0,
+    "ble": False,
+    "lan": False,
+    "log": [],
+    "photos": [],
+    "error": "",
+    "started": "",
+    "finished": "",
+}
+_PUSH_JOB_LOCK = threading.Lock()
+
+
+def _push_log(msg: str) -> None:
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    print(f"[select-push] {msg}")
+    with _PUSH_JOB_LOCK:
+        log = _PUSH_JOB.setdefault("log", [])
+        log.append(line)
+        if len(log) > 400:
+            del log[:-400]
+
+
+def _select_item_view(p: dict) -> dict | None:
+    """把 load_sim_rows 形状的候选照片序列化为选片页卡片数据（含得分明细）。"""
+    img_uri = _make_image_url(str(p["path"]))
+    if not img_uri:
+        return None
+
+    fs = p.get("_final_score")
+    if not fs:
+        fs = rdp.compute_final_score(p)
+        p["_final_score"] = fs
+    pb = rdp.compute_portrait_boost(p.get("type_raw", ""))
+    memory = p.get("memory")
+    beauty = p.get("beauty")
+
+    return {
+        "path": str(p["path"]),
+        "image_url": img_uri,
+        "thumb_url": "/images_thumb/" + img_uri[len("/images/"):],
+        "date": p.get("date") or "",
+        "memory": round(float(memory), 1) if memory is not None else None,
+        "beauty": round(float(beauty), 1) if beauty is not None else None,
+        "final": round(float(fs), 2),
+        "display": round(float(fs) * pb, 2),
+        # final_score 的加权成分，与每日管线 [SELECT] 日志同口径
+        "weights": {
+            "path": round(rdp.compute_path_weight(p["path"]), 2),
+            "category": round(rdp.compute_category_weight(p.get("type_raw", "")), 2),
+            "recency": round(rdp.compute_recency_penalty(p.get("used_at")), 2),
+            "crop": round(rdp.compute_crop_penalty(p.get("subjects_json", "")), 2),
+            "portrait": round(pb, 2),
+        },
+        "type_raw": p.get("type_raw") or "",
+        "types": parse_dirty_type(p.get("type_raw")),
+        "city": p.get("city") or "",
+        "caption": p.get("caption") or "",
+        "side": p.get("side") or "",
+        "reason": p.get("reason") or "",
+        "used_at": p.get("used_at") or "",
+        "width": p.get("width"),
+        "height": p.get("height"),
+        "orientation_raw": p.get("orientation_raw") or "",
+        "exif_summary": summarize_exif(p.get("exif_json")) if p.get("exif_json") else "",
+    }
+
+
+def _current_batch_view() -> dict:
+    """读取 output/ 里当前渲染批次（今日选中的落盘结果）。"""
+    photos = []
+    bin0 = BIN_OUTPUT_DIR / "photo_0.bin"
+    for idx in range(DAILY_PHOTO_QUANTITY):
+        bin_p = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
+        if not bin_p.exists():
+            continue
+
+        db_path = ""
+        pt = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
+        if pt.exists():
+            db_path = pt.read_text(encoding="utf-8").strip()
+
+        sidecar: dict = {}
+        sj = BIN_OUTPUT_DIR / f"photo_{idx}.json"
+        if sj.exists():
+            try:
+                sidecar = json.loads(sj.read_text(encoding="utf-8"))
+            except Exception:
+                sidecar = {}
+
+        img_uri = _make_image_url(db_path) if db_path else ""
+        preview_p = BIN_OUTPUT_DIR / f"preview_{idx}.png"
+        photos.append({
+            "idx": idx,
+            "db_path": db_path,
+            "image_url": img_uri,
+            "thumb_url": ("/images_thumb/" + img_uri[len("/images/"):]) if img_uri else "",
+            "preview_url": f"/files/preview_{idx}.png" if preview_p.exists() else "",
+            "orientation": sidecar.get("orientation", ""),
+            "layout": sidecar.get("layout", ""),
+            "holiday": sidecar.get("holiday", ""),
+            "item": dict(sidecar.get("item") or {}),
+            "generated": datetime.fromtimestamp(bin_p.stat().st_mtime).strftime("%m-%d %H:%M"),
+        })
+
+    generated = ""
+    is_today = False
+    if bin0.exists():
+        mtime = datetime.fromtimestamp(bin0.stat().st_mtime)
+        generated = mtime.isoformat(timespec="minutes")
+        is_today = mtime.date() == datetime.now().date()
+    return {"generated": generated, "is_today": is_today, "photos": photos}
+
+
+def _compute_selection_payload() -> dict:
+    """跑一次与每日管线同口径的选片：chosen 信息 + 候选池 + 当前批次。
+
+    候选池口径与 choose_photos_for_today 内部一致：
+    同一 used_md 月日内 memory>阈值 → 算 final_score → 连拍去重 → 按分排序。
+    """
+    today = datetime.now().date()
+    items = rdp.load_sim_rows()
+    photos, info = rdp.choose_photos_for_today(items, today, count=DAILY_PHOTO_QUANTITY)
+
+    threshold = float(rdp.MEMORY_THRESHOLD)
+    if info.get("fallback_global_max"):
+        # 兜底模式：全库按 final 排序即候选（choose_photos_for_today 已给全部 item 打分）
+        pool = sorted(items, key=lambda x: x.get("_final_score") or 0.0, reverse=True)
+    else:
+        by_md: dict[str, list] = {}
+        for it in items:
+            by_md.setdefault(it["md"], []).append(it)
+        pool = [p for p in by_md.get(str(info.get("used_md") or ""), [])
+                if p.get("memory", -1.0) > threshold]
+        for p in pool:
+            p["_final_score"] = rdp.compute_final_score(p)
+        pool.sort(key=lambda x: x["_final_score"], reverse=True)
+        if rdp.BURST_DEDUP_WINDOW_SEC > 0:
+            pool = rdp.dedup_bursts(pool, rdp.BURST_DEDUP_WINDOW_SEC)
+
+    candidates = []
+    for p in pool:
+        v = _select_item_view(p)
+        if v:
+            candidates.append(v)
+
+    holiday = None
+    try:
+        from holidays import get_today_holiday
+        h = get_today_holiday(today)
+        if h:
+            holiday = {"name": str(h.get("name") or ""), "template": str(h.get("template") or "")}
+    except Exception:
+        holiday = None
+
+    return {
+        "today": today.isoformat(),
+        "quantity": DAILY_PHOTO_QUANTITY,
+        "threshold": threshold,
+        "high_score_threshold": float(rdp.HIGH_SCORE_THRESHOLD),
+        "holiday": holiday,
+        "info": info,
+        "current": _current_batch_view(),
+        "candidates": candidates[:SELECT_CANDIDATE_LIMIT],
+        "candidates_total": len(candidates),
+        "candidates_truncated": len(candidates) > SELECT_CANDIDATE_LIMIT,
+        "built_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _get_selection_payload(force_refresh: bool = False) -> dict:
+    now = time.time()
+    with _SELECT_CACHE_LOCK:
+        if not force_refresh:
+            built_at = float(_SELECT_CACHE.get("built_at") or 0.0)
+            payload = _SELECT_CACHE.get("payload")
+            if payload and (now - built_at) < _SELECT_CACHE_TTL_SEC:
+                return payload
+    payload = _compute_selection_payload()
+    with _SELECT_CACHE_LOCK:
+        _SELECT_CACHE["built_at"] = time.time()
+        _SELECT_CACHE["payload"] = payload
+    return payload
+
+
+@app.get("/select")
+def select_page():
+    return render_template(
+        "select.html",
+        quantity=DAILY_PHOTO_QUANTITY,
+        ble_default=bool(getattr(cfg, "ENABLE_BLE_PUSH", False)),
+    )
+
+
+@app.get("/api/select/overview")
+def api_select_overview():
+    force = (request.args.get("refresh", "") or "").strip() in ("1", "true")
+    try:
+        payload = _get_selection_payload(force_refresh=force)
+    except Exception as e:
+        return jsonify({"error": f"选片计算失败: {e}"}), 500
+    return jsonify(payload)
+
+
+@app.post("/api/select/push")
+def api_select_push():
+    body = request.get_json(force=True, silent=True) or {}
+    raw_paths = body.get("paths") or []
+    if not isinstance(raw_paths, list) or not raw_paths:
+        return jsonify({"error": "paths 不能为空"}), 400
+
+    # 去重、保序、限量（ESP32 拉取接口只认 0..DAILY_PHOTO_QUANTITY-1 的槽位）
+    seen: set[str] = set()
+    paths: list[str] = []
+    for p in raw_paths:
+        s = unicodedata.normalize("NFC", str(p or "").strip())
+        if s and s not in seen:
+            seen.add(s)
+            paths.append(s)
+    if not paths:
+        return jsonify({"error": "paths 全为空"}), 400
+    if len(paths) > DAILY_PHOTO_QUANTITY:
+        return jsonify({"error": f"最多选择 {DAILY_PHOTO_QUANTITY} 张（相框槽位上限）"}), 400
+
+    ble = bool(body.get("ble"))
+    lan = bool(body.get("lan"))
+
+    with _PUSH_JOB_LOCK:
+        if _PUSH_JOB.get("state") == "running":
+            return jsonify({"error": "已有推送任务在进行中，请稍候"}), 409
+        _PUSH_JOB.update({
+            "state": "running",
+            "total": len(paths),
+            "done": 0,
+            "ble": ble,
+            "lan": lan,
+            "log": [],
+            "photos": [],
+            "error": "",
+            "started": datetime.now().isoformat(timespec="seconds"),
+            "finished": "",
+        })
+
+    threading.Thread(target=_run_push_job, args=(paths, ble, lan), daemon=True).start()
+    return jsonify({"ok": True, "total": len(paths), "ble": ble, "lan": lan})
+
+
+def _lan_push_now() -> None:
+    """向已注册的常开设备推送：HTTP 回调设备 /fetch?idx=0 触发拉取渲染。
+
+    设备 IP/端口来自 /api/device_register 的最近一次注册（常开模式下设备
+    上线及每次每日刷新后都会重登）。设备返回的拉取日志尾部回显到任务日志。
+    """
+    ep = _load_device_endpoint()
+    ip = str(ep.get("ip") or "").strip()
+    try:
+        port = int(ep.get("port") or 80)
+    except (TypeError, ValueError):
+        port = 80
+    if not ip:
+        _push_log("[LAN] 未找到已注册的常开设备（需在设备 /debug 页开启常开模式并上线）")
+        return
+
+    url = f"http://{ip}:{port}/fetch?idx=0"
+    _push_log(f"[LAN] GET {url} （设备拉取+渲染约 10-40 秒，超时 {_LAN_PUSH_TIMEOUT_SEC}s）...")
+    try:
+        resp = requests.get(url, timeout=_LAN_PUSH_TIMEOUT_SEC)
+    except requests.RequestException as e:
+        _push_log(f"[LAN] 推送失败：{e.__class__.__name__}: {e}")
+        return
+    if resp.status_code != 200:
+        _push_log(f"[LAN] 推送失败 HTTP {resp.status_code}")
+        return
+    tail = [ln for ln in resp.text.splitlines() if ln.strip()][-15:]
+    for ln in tail:
+        _push_log(f"[LAN] {ln}")
+    _push_log("[LAN] 推送成功 ✅")
+
+
+def _run_push_job(paths: list[str], ble: bool, lan: bool = False) -> None:
+    try:
+        items = rdp.load_sim_rows()
+        lookup = {unicodedata.normalize("NFC", it["path"]): it for it in items}
+
+        resolved = []
+        for db_path in paths:
+            it = lookup.get(db_path)
+            if it is None:
+                it = lookup.get(unicodedata.normalize("NFC", _to_db_path(db_path)))
+            if it is None:
+                _push_log(f"[SKIP] 数据库中找不到，已跳过: {db_path}")
+                continue
+            resolved.append(it)
+        if not resolved:
+            raise RuntimeError("所选照片均未在数据库命中，未渲染任何内容")
+
+        holiday = None
+        from holidays import get_today_holiday
+        holiday = get_today_holiday(datetime.now().date())
+        if holiday:
+            _push_log(f"[HOLIDAY] 命中{holiday['name']}，渲染将叠加节日层")
+
+        for idx, it in enumerate(resolved):
+            _push_log(f"[RENDER] 第 {idx + 1}/{len(resolved)} 张: {Path(str(it['path'])).name}")
+            rdp.render_photo_to_bin(it, idx, holiday, log=_push_log)
+            with _PUSH_JOB_LOCK:
+                _PUSH_JOB["done"] = idx + 1
+                _PUSH_JOB["photos"].append({"idx": idx, "db_path": it["path"]})
+
+        # 手动选择整体替换当日批次：清掉多余槽位的旧产物，避免 ESP32 拉到残留旧照片
+        for idx in range(len(resolved), DAILY_PHOTO_QUANTITY):
+            removed = []
+            for suffix in ("bin", "json", "path.txt"):
+                p = BIN_OUTPUT_DIR / f"photo_{idx}.{suffix}"
+                if p.exists():
+                    p.unlink()
+                    removed.append(p.name)
+            pv = BIN_OUTPUT_DIR / f"preview_{idx}.png"
+            if pv.exists():
+                pv.unlink()
+                removed.append(pv.name)
+            if removed:
+                _push_log(f"[CLEAN] 移除槽位 {idx} 的旧批次残留: {', '.join(removed)}")
+
+        rdp.sync_latest_from_photo0(log=_push_log)
+
+        if lan:
+            _lan_push_now()
+
+        if ble:
+            _push_log(f"[BLE] 调用 push_to_epd_ble.py --idx 0（超时 {BLE_PUSH_TIMEOUT_SEC}s）...")
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "push_to_epd_ble.py", "--idx", "0"],
+                    cwd=str(ROOT_DIR), capture_output=True, text=True,
+                    timeout=BLE_PUSH_TIMEOUT_SEC,
+                )
+                tail = [ln for ln in ((proc.stdout or "") + (proc.stderr or "")).splitlines() if ln.strip()][-10:]
+                for ln in tail:
+                    _push_log(f"[BLE] {ln}")
+                if proc.returncode == 0:
+                    _push_log("[BLE] 推送成功 ✅")
+                else:
+                    _push_log(f"[BLE] 推送失败（exit={proc.returncode}），BIN 已就绪，设备下次唤醒仍会拉取")
+            except subprocess.TimeoutExpired:
+                _push_log("[BLE] 推送超时 ⚠️，BIN 已就绪，设备下次唤醒仍会拉取")
+
+        with _PUSH_JOB_LOCK:
+            _PUSH_JOB["state"] = "done"
+        _push_log(f"[DONE] 已落盘 {len(resolved)} 张，latest.* 指向 photo_0")
+    except Exception as e:
+        with _PUSH_JOB_LOCK:
+            _PUSH_JOB["state"] = "error"
+            _PUSH_JOB["error"] = str(e)
+        _push_log(f"[ERROR] {e}")
+    finally:
+        with _PUSH_JOB_LOCK:
+            _PUSH_JOB["finished"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.get("/api/select/push_status")
+def api_select_push_status():
+    with _PUSH_JOB_LOCK:
+        return jsonify(dict(_PUSH_JOB))
+
+
+# ── 相框设备控制台（/device）────────────────────────────────
+# 把 ESP32 唤醒窗口 / 常开模式自带 WebUI 的能力（配置、拉取、测试、debug/
+# 常开开关）代理进统一控制台：页面在本端渲染（控制台风格），操作经
+# /api/device/* 转发到设备。设备地址来自 /api/device_register 的最近注册
+# （设备手动唤醒窗口与常开模式上线时都会注册）；设备休眠后代理会报离线。
+
+_DEVICE_PING_TIMEOUT_SEC = 4      # ping/status 类快速探测
+_DEVICE_SCAN_TIMEOUT_SEC = 20     # 设备现场扫描约 2-4s，留余量
+_DEVICE_RENDER_TIMEOUT_SEC = 150  # 拉取/渲染/标定测试一轮 10-40s，留足余量
+
+
+def _device_base_url() -> str | None:
+    ep = _load_device_endpoint()
+    ip = str(ep.get("ip") or "").strip()
+    if not ip:
+        return None
+    try:
+        port = int(ep.get("port") or 80)
+    except (TypeError, ValueError):
+        port = 80
+    return f"http://{ip}:{port}"
+
+
+def _device_http(method: str, path: str, timeout: float,
+                 data: dict | None = None) -> tuple[int, str]:
+    """代理请求设备，返回 (http_code, 响应文本)；网络失败返回 (503, 原因)。"""
+    base = _device_base_url()
+    if not base:
+        return 503, "设备未注册（需唤醒设备或开启常开模式，设备上线后会自动注册）"
+    try:
+        if method == "GET":
+            resp = requests.get(base + path, timeout=timeout)
+        else:
+            resp = requests.post(base + path, data=data, timeout=timeout)
+    except requests.RequestException as e:
+        return 503, f"设备请求失败：{e.__class__.__name__}: {e}"
+    resp.encoding = "utf-8"   # ESP32 输出恒为 UTF-8；防 Content-Type 未带 charset 时被按 latin-1 解码
+    return resp.status_code, resp.text
+
+
+def _device_err_resp(code: int, text: str):
+    """设备代理失败的统一 JSON 错误：503=不可达，其余按 502 上游异常。"""
+    return jsonify({"error": text or f"设备 HTTP {code}"}), (503 if code == 503 else 502)
+
+
+def _html_log_to_text(html_text: str) -> str:
+    """设备部分接口返回 <br> 分隔的 HTML 日志，清洗成纯文本供控制台展示。"""
+    txt = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.I)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    return html.unescape(txt).strip()
+
+
+@app.get("/device")
+def device_console_page():
+    return render_template("device.html", quantity=DAILY_PHOTO_QUANTITY)
+
+
+@app.get("/api/device/home_status")
+def api_device_home_status():
+    """主页设备卡片的轻量探测：单次 /ping（不拉完整 /api/status）。
+
+    /ping 文本自带 ip/debug/alwayson 字段，这里解析成 JSON。设备休眠时
+    连接失败也只等一个 ping 超时，适合主页轮询与手动"检测上线"。
+    """
+    registered = bool(_device_base_url())
+    code, text = _device_http("GET", "/ping", _DEVICE_PING_TIMEOUT_SEC)
+    if code != 200:
+        return jsonify({"online": False, "registered": registered,
+                        "alwayson": None, "debug": None, "ip": "",
+                        "error": text or f"HTTP {code}"})
+    try:
+        info = dict(re.findall(r"(\w+)=([^\s]+)", text or ""))
+        uptime_ms = int(info.get("uptime_ms", "0") or 0)
+    except ValueError:
+        info, uptime_ms = {}, 0
+    return jsonify({
+        "online": True,
+        "registered": True,
+        "alwayson": info.get("alwayson") == "1",
+        "debug": info.get("debug") == "1",
+        "ip": info.get("ip", ""),
+        "uptime_ms": uptime_ms,
+    })
+
+
+@app.get("/api/device/console_status")
+def api_device_console_status():
+    """注册信息 + 设备在线探测 + 设备状态（控制台页面加载/刷新时拉取）。"""
+    ep = _load_device_endpoint()
+    payload: dict = {
+        "registered": bool(ep.get("ip")),
+        "endpoint": {k: ep.get(k) for k in ("ip", "port", "alwayson", "ts")},
+        "online": False,
+        "device": None,
+        "error": "",
+    }
+    code, text = _device_http("GET", "/api/status", _DEVICE_PING_TIMEOUT_SEC)
+    if code == 200:
+        try:
+            payload["device"] = json.loads(text)
+            payload["online"] = True
+        except ValueError:
+            payload["error"] = "设备状态解析失败（固件异常？）"
+    else:
+        # 旧固件没有 /api/status：用 /ping 至少判定在线
+        pcode, ptext = _device_http("GET", "/ping", _DEVICE_PING_TIMEOUT_SEC)
+        if pcode == 200:
+            payload["online"] = True
+            payload["ping"] = ptext
+            payload["error"] = "设备在线但固件较旧（缺少 /api/status），请更新固件使用完整控制台"
+        else:
+            payload["error"] = text or "设备无响应（已休眠或离线）"
+    return jsonify(payload)
+
+
+@app.get("/api/device/scan")
+def api_device_scan():
+    code, text = _device_http("GET", "/api/scan", _DEVICE_SCAN_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    try:
+        return jsonify(json.loads(text))
+    except ValueError:
+        return jsonify({"error": "扫描结果解析失败"}), 502
+
+
+@app.post("/api/device/config")
+def api_device_config():
+    """转发网络/刷新配置到设备 POST /save。设备保存后会自行重启。"""
+    allowed = ("ssid0", "pass0", "ssid1", "pass1", "ssid2", "pass2",
+               "hostport", "hour", "tz", "rot180")
+    data = {k: request.form.get(k, "") for k in allowed}
+    code, text = _device_http("POST", "/save", _DEVICE_RENDER_TIMEOUT_SEC, data=data)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "message": "已保存，设备正在重启…"})
+
+
+@app.post("/api/device/fetch")
+def api_device_fetch():
+    """手动拉取指定 idx 照片并渲染（设备 /fetch?idx=N，返回纯文本日志）。"""
+    try:
+        idx = int(request.form.get("idx", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "idx 需为整数"}), 400
+    code, text = _device_http("GET", f"/fetch?idx={idx}", _DEVICE_RENDER_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": text})
+
+
+@app.post("/api/device/screen_test")
+def api_device_screen_test():
+    """4 色测试条（设备 /screen?run=1，约 12-16s）。"""
+    code, text = _device_http("GET", "/screen?run=1", _DEVICE_RENDER_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": text})
+
+
+@app.post("/api/device/servo_test")
+def api_device_servo_test():
+    """简单转动测试（设备 /servo_test?run=1，纯转动不保存）。"""
+    try:
+        angle = float(request.form.get("angle", "0"))
+        speed = float(request.form.get("speed", "40"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "angle/speed 需为数字"}), 400
+    code, text = _device_http(
+        "GET", f"/servo_test?run=1&angle={angle}&speed={speed}",
+        _DEVICE_RENDER_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": text})
+
+
+@app.post("/api/device/servo_test_ori")
+def api_device_servo_test_ori():
+    """标定测试：转舵机 + 拉标定卡渲染（设备 /servo?test=portrait|landscape）。"""
+    ori = request.form.get("ori", "")
+    if ori not in ("portrait", "landscape"):
+        return jsonify({"error": "ori 需为 portrait|landscape"}), 400
+    q = "&".join(f"{k}={request.form.get(k, '')}"
+                 for k in ("p_deg", "l_deg", "spd", "inv", "rot180"))
+    code, text = _device_http(
+        "GET", f"/servo?test={ori}&{q}", _DEVICE_RENDER_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": _html_log_to_text(text)})
+
+
+@app.post("/api/device/servo_save")
+def api_device_servo_save():
+    """转发标定保存到设备 POST /servo_save。"""
+    data = {k: request.form.get(k, "") for k in ("p_deg", "l_deg", "spd", "inv", "rot180")}
+    code, text = _device_http("POST", "/servo_save", _DEVICE_PING_TIMEOUT_SEC, data=data)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": _html_log_to_text(text)})
+
+
+@app.post("/api/device/servo_sync")
+def api_device_servo_sync():
+    """位置校正（设备 /servo_sync?actual=，校正后重拉 photo_0 渲染）。"""
+    actual = request.form.get("actual", "")
+    if actual not in ("portrait", "landscape"):
+        return jsonify({"error": "actual 需为 portrait|landscape"}), 400
+    code, text = _device_http(
+        "GET", f"/servo_sync?actual={actual}", _DEVICE_RENDER_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    return jsonify({"ok": True, "log": _html_log_to_text(text)})
+
+
+@app.post("/api/device/debug")
+def api_device_debug():
+    """debug / 常开开关（转发设备 /debug?state=...），返回切换后最新状态。"""
+    state = request.form.get("state", "")
+    if state not in ("on", "off", "confirm_off", "aon_on", "aon_off"):
+        return jsonify({"error": "非法 state"}), 400
+    code, text = _device_http("GET", f"/debug?state={state}", _DEVICE_PING_TIMEOUT_SEC)
+    if code != 200:
+        return _device_err_resp(code, text)
+    st: dict = {}
+    c2, t2 = _device_http("GET", "/api/status", _DEVICE_PING_TIMEOUT_SEC)
+    if c2 == 200:
+        try:
+            st = json.loads(t2)
+        except ValueError:
+            st = {}
+    return jsonify({"ok": True, "device": st or None})
 
 
 @app.get("/files/")
