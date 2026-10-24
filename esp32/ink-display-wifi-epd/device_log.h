@@ -7,10 +7,10 @@
  *  - 时间戳 = 开机序号 + 相对毫秒；授时成功后记锚点，绝对时间由服务器换算
  *  - 上传在 goDeepSleepMinutes() 里触发（入睡前咽喉点），收到 200 才推进游标
  *
- * 事件类型（14 种，清单见 docs/esp32-device-log.md）：
+ * 事件类型（15 种，清单见 docs/esp32-device-log.md）：
  *   BOOT / SLEEP / WIFI / AP_PORTAL / TIME_SYNC / PHOTO_JSON / PHOTO_BIN /
  *   RENDER / SERVO_CMD / SERVO_SKIP / SERVO_DONE / SERVO_SKIP_UNCAL /
- *   HTTP_HIT / LOG_UP
+ *   HTTP_HIT / LOG_UP / ALWAYS_ON
  */
 #ifndef DEVICE_LOG_H
 #define DEVICE_LOG_H
@@ -31,6 +31,7 @@
 #define EV_SUNCAL         "SERVO_SKIP_UNCAL"
 #define EV_HTTP           "HTTP_HIT"
 #define EV_UPLOAD         "LOG_UP"
+#define EV_AON            "ALWAYS_ON"
 
 // setup() 最早调用：挂载 LittleFS、开机序号 +1、恢复行号游标、记 BOOT 事件
 void journalBegin();

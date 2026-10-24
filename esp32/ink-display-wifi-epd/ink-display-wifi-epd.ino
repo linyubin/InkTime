@@ -12,6 +12,8 @@
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
  *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网；
  *      内置备用 WiFi 会在下次启动时自动补回）
+ *   6. 常开模式（/debug 页开关，NVS 持久化）：开启后不再休眠，Web 常驻，
+ *      局域网 server 可向设备 /fetch 主动推送照片；每日定时拉取照常执行
  *
  * 硬件参数（对齐 push_to_epd_ble.py 中的墨水屏配置）：
  *   - 屏幕型号：GDEY073D46 (EL073TS3)，7.3 寸四色（黑/白/红/黄）
@@ -188,6 +190,14 @@ void handleRoot();         // /  (hub 首页)
 void handleNetwork();      // /network
 void handleScreen();       // /screen
 void handleServoTest();    // /servo_test
+void handlePing();         // /ping（LAN 推送前的可达性探测）
+void handleDeviceStatus(); // /api/status（运行时状态+配置 JSON，server 控制台代理读取）
+void handleDeviceScan();   // /api/scan（现场扫描周围 WiFi，server 控制台配表单用）
+// 常开模式辅助（定义在 setup() 附近）
+static void registerDeviceWithServer();   // 向 server 登记常开设备（LAN 推送目标）
+static void startLanWebServer();          // 注册全部路由并启动 Web（幂等）
+static time_t nextRefreshEpoch(bool hasTime);
+static void runAlwaysOnMainLoop(bool &hasTime, struct tm &timeinfo);
 // 网络信息屏显（AP 提示页 / 联网成功页）。显式前置声明：带默认参数的函数
 // 不能依赖 .ino 自动生成原型（Arduino 预处理器对默认参数会生成重复声明）。
 void showNetworkInfoScreen(bool isAP, bool isSuccess);
@@ -199,6 +209,14 @@ volatile bool g_requestHappened   = false;   // 任意请求触发，用于重�
 String        g_fetchLog;                     // /fetch 产出 + /log 下载的日志缓冲
 static const uint32_t INITIAL_WINDOW_MS = 3UL  * 60UL * 1000UL;  // 手动唤醒后初始 web 在线窗口
 static const uint32_t DEBUG_IDLE_MS    = 30UL * 60UL * 1000UL;  // debug 下无操作自动休眠
+
+// ── 常开模式（Always-On）──
+// /debug?state=aon_on|aon_off 切换并写入 NVS（跨重启、跨深睡生效；恢复出厂一并清除）。
+// 开启后设备不再进入 Deep Sleep：Web 常驻、局域网 server 可随时向 /fetch 推送照片；
+// 每日定时拉取（refresh_hour）仍由常开主循环照常执行。
+volatile bool g_alwaysOnMode = false;
+static bool loadAlwaysOnMode();
+static void saveAlwaysOnMode(bool on);
 
 // ── EPD 屏幕存在检测（开机时探测一次）──
 // false 时所有 EPD 调用静默跳过，避免无屏时 lcd_chkstatus 卡满 30s × 多次。
@@ -337,6 +355,21 @@ void saveLastOrientation(const String &ori) {
   DBG_PRINTF("[CFG] last_orientation=%s 已保存\n", ori.c_str());
 }
 
+// ── 常开模式持久化（独立键，不随 saveConfig 重写）──
+static bool loadAlwaysOnMode() {
+  prefs.begin("dashcfg", true);
+  bool v = prefs.getBool("alwon", false);
+  prefs.end();
+  return v;
+}
+
+static void saveAlwaysOnMode(bool on) {
+  prefs.begin("dashcfg", false);
+  prefs.putBool("alwon", on);
+  prefs.end();
+  DBG_PRINTF("[CFG] always_on=%s 已保存\n", on ? "true" : "false");
+}
+
 // ============================================================
 //  Deep Sleep 时间戳记录（用于离线计算下次唤醒）
 // ============================================================
@@ -404,6 +437,22 @@ String htmlEscape(const String &s) {
     else if (c == '>')  out += F("&gt;");
     else if (c == '"')  out += F("&quot;");
     else                out += c;
+  }
+  return out;
+}
+
+// JSON 字符串转义（SSID/hostport 可能含引号或反斜杠）
+static String jsonEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    if      (c == '"')  out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((uint8_t)c >= 0x20) out += c;   // 其余控制字符丢弃
   }
   return out;
 }
@@ -734,6 +783,10 @@ static String buildStatusBar() {
   s += F("<div class='row-s'><span class='k'>舵机</span><span class='v ");
   s += g_cfg.servo_calibrated ? F("ok'>已标定") : F("warn'>未标定");
   s += F("</span></div>");
+  // 常开模式（开启时设备不休眠，LAN 推送可用）
+  s += F("<div class='row-s'><span class='k'>常开</span><span class='v ");
+  s += g_alwaysOnMode ? F("ok'>开启") : F("'>关闭");
+  s += F("</span></div>");
   // WiFi（STA 已连接时直接显示 SSID，多组配置下能看到当前用的是哪组）
   bool apMode = (WiFi.status() != WL_CONNECTED);
   s += F("<div class='row-s'><span class='k'>网络</span><span class='v ");
@@ -944,7 +997,117 @@ void handleLog() {
   server.send(200, "text/plain; charset=utf-8", body);
 }
 
-// /debug?state=on|off|confirm_off —— 切换 debug 模式（两步关闭，关前提示下载日志）
+// /ping —— 可达性探测（LAN 推送前 server 先打这里确认设备在线）
+//   纯文本返回状态行，不触发任何渲染动作
+void handlePing() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] GET /ping");
+  String s = String("OK ") +
+             "ip=" + WiFi.localIP().toString() +
+             " uptime_ms=" + String((uint32_t)millis()) +
+             " heap=" + String((uint32_t)ESP.getFreeHeap()) +
+             " debug=" + (g_debugMode ? "1" : "0") +
+             " alwayson=" + (g_alwaysOnMode ? "1" : "0");
+  server.send(200, "text/plain; charset=utf-8", s);
+}
+
+// /api/status —— 运行时状态 + 配置 JSON（InkTime server 控制台代理读取）。
+// 不回传 WiFi 密码；控制台表单"密码留空=保持原密码"由 /save 既有逻辑保证。
+void handleDeviceStatus() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] GET /api/status");
+
+  String s = "{";
+  s += "\"ok\":true";
+  s += ",\"ip\":\"" + jsonEscape(WiFi.localIP().toString()) + "\"";
+  s += ",\"rssi\":" + String(WiFi.RSSI());
+  s += ",\"heap\":" + String((uint32_t)ESP.getFreeHeap());
+  s += ",\"uptime_ms\":" + String((uint32_t)millis());
+  s += ",\"debug\":" + String(g_debugMode ? "true" : "false");
+  s += ",\"alwayson\":" + String(g_alwaysOnMode ? "true" : "false");
+  s += ",\"epd\":" + String(g_epdPresent ? "true" : "false");
+  s += ",\"hostport\":\"" + jsonEscape(g_cfg.backend_hostport) + "\"";
+  s += ",\"tz\":" + String((int)g_cfg.tz_offset_hours);
+  s += ",\"hour\":" + String((int)g_cfg.refresh_hour);
+  s += ",\"rot180\":" + String(g_cfg.rotate180 ? "true" : "false");
+  s += ",\"sv_p_deg\":" + String(g_cfg.servo_portrait_deg, 1);
+  s += ",\"sv_l_deg\":" + String(g_cfg.servo_landscape_deg, 1);
+  s += ",\"sv_speed\":" + String(g_cfg.servo_speed, 1);
+  s += ",\"sv_cal\":" + String(g_cfg.servo_calibrated ? "true" : "false");
+  s += ",\"ls_inv\":" + String(g_cfg.landscape_invert ? "true" : "false");
+  s += ",\"last_orientation\":\"" + jsonEscape(g_cfg.last_orientation) + "\"";
+  s += ",\"active_wifi\":" + String((int)g_cfg.active_wifi);
+  s += ",\"wifi\":[";
+  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
+    if (i) s += ",";
+    s += "{\"i\":" + String(i) + ",\"ssid\":\"" + jsonEscape(g_cfg.wifi_ssid[i]) + "\"}";
+  }
+  s += "]";
+  s += "}";
+  server.send(200, "application/json", s);
+}
+
+// /api/scan —— 现场扫描周围 WiFi（同步阻塞约 2~4 秒）。
+// 同名 SSID 去重取最强 RSSI，按信号强度降序输出，供控制台配网表单下拉。
+void handleDeviceScan() {
+  g_requestHappened = true;
+  DBG_PRINTLN("[HTTP] GET /api/scan");
+
+  WiFi.scanDelete();
+  int n = WiFi.scanNetworks(false, true);
+  if (n < 0) n = 0;
+
+  // 收集 (ssid, 最强 rssi)，同名去重
+  String*  ssids = (n > 0) ? new String[n] : nullptr;
+  int32_t* rssis = (n > 0) ? new int32_t[n] : nullptr;
+  int cnt = 0;
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) continue;
+    int32_t r = WiFi.RSSI(i);
+    int found = -1;
+    for (int j = 0; j < cnt; ++j) {
+      if (ssids[j] == ssid) { found = j; break; }
+    }
+    if (found >= 0) {
+      if (r > rssis[found]) rssis[found] = r;
+    } else {
+      ssids[cnt] = ssid;
+      rssis[cnt] = r;
+      ++cnt;
+    }
+  }
+  WiFi.scanDelete();
+
+  // 按 RSSI 降序（选择排序，cnt 很小）
+  for (int i = 0; i < cnt; ++i) {
+    int best = i;
+    for (int j = i + 1; j < cnt; ++j) {
+      if (rssis[j] > rssis[best]) best = j;
+    }
+    if (best != i) {
+      String  ts = ssids[i]; ssids[i] = ssids[best]; ssids[best] = ts;
+      int32_t tr = rssis[i]; rssis[i] = rssis[best]; rssis[best] = tr;
+    }
+  }
+
+  String out = "{\"ok\":true,\"networks\":[";
+  for (int i = 0; i < cnt; ++i) {
+    if (i) out += ",";
+    out += "{\"ssid\":\"" + jsonEscape(ssids[i]) + "\",\"rssi\":" + String(rssis[i]) + "}";
+  }
+  out += "]}";
+  delete[] ssids;
+  delete[] rssis;
+
+  DBG_PRINTF("[HTTP] /api/scan → %d 个网络\n", cnt);
+  server.send(200, "application/json", out);
+}
+
+// /debug —— 调试控制台
+//   state=on|off|confirm_off  debug 模式（两步关闭，关前提示下载日志）
+//   state=aon_on|aon_off      常开模式开关（NVS 持久化：开启后设备不休眠，
+//                             局域网 server 可向 /fetch 主动推送照片）
 void handleDebug() {
   g_requestHappened = true;
   String st = server.hasArg("state") ? server.arg("state") : "";
@@ -959,22 +1122,62 @@ void handleDebug() {
     g_debugOffRequested = false;
     html += F("<h3>🔧 Debug 模式已开启</h3>");
     html += F("<p style='color:#666;margin:12px 0'>设备保持唤醒，直到你手动关闭或 30 分钟无操作。</p>");
-    html += F("<p style='margin-top:16px'><a href='/' class='btn'>← 返回首页</a></p>");
+    html += F("<p style='margin-top:16px'><a href='/debug' class='btn'>← 返回 Debug</a></p>");
+    html += F("<p><a href='/' class='btn btn-secondary'>返回首页</a></p>");
   } else if (st == "off") {
     html += F("<h3>准备退出 Debug 模式</h3>");
     html += F("<p style='color:#666;margin:12px 0'>设备即将进入 Deep Sleep。请先下载本次日志：</p>");
     html += F("<p style='margin-top:16px'><a href='/log' class='btn'>⬇️ 下载日志 (inktime_fetch.log)</a></p>");
     html += F("<p><a href='/debug?state=confirm_off' class='btn btn-secondary'>确认退出并休眠 →</a></p>");
+    if (g_alwaysOnMode) {
+      html += F("<div class='note'>ℹ️ 常开模式开启中：确认退出后设备<b>不会休眠</b>，");
+      html += F("仍保持 Web 常驻与定时拉取；需要休眠请先关闭常开模式。</div>");
+    }
   } else if (st == "confirm_off") {
-    html += F("<h3>已退出 Debug，进入 Deep Sleep...</h3>");
+    if (g_alwaysOnMode) {
+      html += F("<h3>已退出 Debug，常开模式保持运行</h3>");
+      html += F("<p style='color:#666;margin:12px 0'>设备不休眠，Web 与每日定时拉取照常。</p>");
+    } else {
+      html += F("<h3>已退出 Debug，进入 Deep Sleep...</h3>");
+    }
     g_debugOffRequested = true;
+  } else if (st == "aon_on") {
+    g_alwaysOnMode = true;
+    saveAlwaysOnMode(true);
+    g_debugOffRequested = false;
+    journalEvent(EV_AON, "on via=web");
+    html += F("<h3>🔋 常开模式已开启</h3>");
+    html += F("<p style='color:#666;margin:12px 0'>设备不再休眠：Web 常驻，局域网 InkTime server ");
+    html += F("可随时推送照片；每日定时拉取照常执行。开关已写入 NVS，重启后仍生效。</p>");
+    html += F("<p style='margin-top:16px'><a href='/debug' class='btn'>← 返回 Debug</a></p>");
+  } else if (st == "aon_off") {
+    g_alwaysOnMode = false;
+    saveAlwaysOnMode(false);
+    journalEvent(EV_AON, "off via=web");
+    html += F("<h3>常开模式已关闭</h3>");
+    html += F("<p style='color:#666;margin:12px 0'>设备稍后将按 debug/窗口规则进入 Deep Sleep，恢复定时唤醒刷新。</p>");
+    html += F("<p style='margin-top:16px'><a href='/debug' class='btn'>← 返回 Debug</a></p>");
   } else {
+    // 主面板：debug 开关 + 常开模式开关
     html += F("<h3>🔧 InkTime Debug</h3>");
     html += F("<p style='color:#666;margin:12px 0'>当前 debug 模式：<strong>");
     html += (g_debugMode ? F("开启") : F("关闭"));
     html += F("</strong></p>");
     html += F("<p style='margin-top:16px'><a href='/debug?state=on' class='btn'>开启 debug</a></p>");
     html += F("<p><a href='/debug?state=off' class='btn btn-secondary'>关闭 debug</a></p>");
+
+    html += F("<hr style='margin:20px 0;border:none;border-top:1px solid #e8eaed'>");
+    html += F("<h3>🔋 常开模式</h3>");
+    html += F("<p style='color:#666;margin:12px 0'>当前状态：<strong>");
+    html += (g_alwaysOnMode ? F("开启") : F("关闭"));
+    html += F("</strong></p>");
+    html += F("<p style='font-size:13px;color:#888;margin:12px 0'>开启后设备不休眠：Web 常驻，");
+    html += F("局域网 InkTime server 可主动推送照片（选片页勾选「LAN 刷新」）；每日定时拉取不受影响。</p>");
+    if (g_alwaysOnMode) {
+      html += F("<p><a href='/debug?state=aon_off' class='btn btn-secondary'>关闭常开模式</a></p>");
+    } else {
+      html += F("<p><a href='/debug?state=aon_on' class='btn'>开启常开模式</a></p>");
+    }
     html += F("<p style='margin-top:16px'><a href='/' class='btn btn-secondary'>← 返回首页</a></p>");
   }
   html += F("</div>");
@@ -1748,6 +1951,37 @@ static bool fetchServerTime(const Config &cfg, struct tm &outLocal) {
 }
 
 // ============================================================
+//  常开设备注册：POST /api/device_register/<key> 告知 server 本机在线
+//
+//  server 从连接源地址取得设备 IP 并落盘，选片页「LAN 刷新」推送时
+//  据此回调本机 /fetch?idx=0。失败不阻塞主流程（推送时 server 会
+//  重新探测）。每次进入常开模式、以及常开期间每次每日刷新后调用，
+//  让 DHCP 换 IP 后能自愈。
+// ============================================================
+static void registerDeviceWithServer() {
+  if (g_cfg.backend_hostport.length() == 0) return;
+
+  String base = pathPrefixBase();                       // "/static/inktime/<key>"
+  String key  = base.substring(base.lastIndexOf('/') + 1);
+  String hp   = g_cfg.backend_hostport;
+  hp.trim();
+  String url  = (hp.startsWith("http://") || hp.startsWith("https://") ? hp : ("http://" + hp))
+                + "/api/device_register/" + key;
+
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(5000);
+  http.addHeader("Content-Type", "application/json");
+  String body = String("{\"port\":80,\"alwayson\":") + (g_alwaysOnMode ? "true" : "false") + "}";
+  int code = http.POST(body);
+  http.end();
+
+  DBG_PRINTF("[AON] 设备注册 %s code=%d\n", url.c_str(), code);
+  journalEvent(code == HTTP_CODE_OK ? EV_AON : EV_HTTP, "register code=%d ip=%s",
+               code, WiFi.localIP().toString().c_str());
+}
+
+// ============================================================
 //  fetch photo_N.json sidecar，解析出 orientation
 //    成功返回 true 并填 outOrientation（"portrait"/"landscape"）
 //    失败返回 false（调用方负责降级）
@@ -2266,6 +2500,117 @@ void sleepUntilNextSchedule(const Config &cfg, bool hasTime, const struct tm &no
 }
 
 // ============================================================
+//  常开模式（Always-On）
+// ============================================================
+
+// 计算下一个每日刷新点（epoch 秒，按系统时钟 + refresh_hour）。
+// hasTime=false 时返回 0（调用方走 millis 24h 兜底）。恰在刷新点上
+// 返回 24h 后的下一个点，避免刚渲染完立刻重复触发。
+static time_t nextRefreshEpoch(bool hasTime) {
+  if (!hasTime) return 0;
+  time_t nowE = time(nullptr);
+  struct tm now;
+  localtime_r(&nowE, &now);
+  int curMinOfDay = now.tm_hour * 60 + now.tm_min;
+  int targetMin   = (int)g_cfg.refresh_hour * 60;
+  int deltaMin;
+  if (curMinOfDay < targetMin) deltaMin = targetMin - curMinOfDay;
+  else                         deltaMin = 24 * 60 - (curMinOfDay - targetMin);
+  if (deltaMin < 1) deltaMin = 24 * 60;
+  return nowE + (time_t)deltaMin * 60;
+}
+
+// Web 路由注册 + 启动（幂等）。手动唤醒窗口与常开主循环共用——
+// 常开 + 定时唤醒的启动路径不会经过手动唤醒窗口，由这里补上。
+static bool g_webServerStarted = false;
+static void startLanWebServer() {
+  if (g_webServerStarted) return;
+  server.on("/",          HTTP_GET,  handleRoot);
+  server.on("/network",   HTTP_GET,  handleNetwork);
+  server.on("/save",      HTTP_POST, handleSave);
+  server.on("/fetch",     HTTP_GET,  handleFetch);
+  server.on("/log",       HTTP_GET,  handleLog);
+  server.on("/debug",     HTTP_GET,  handleDebug);
+  server.on("/ping",      HTTP_GET,  handlePing);
+  server.on("/api/status", HTTP_GET, handleDeviceStatus);
+  server.on("/api/scan",   HTTP_GET, handleDeviceScan);
+  server.on("/screen",    HTTP_GET,  handleScreen);
+  server.on("/test",      HTTP_GET,  handleScreen);   // 向后兼容别名
+  server.on("/servo_test",HTTP_GET,  handleServoTest);
+  server.on("/servo",     HTTP_GET,  handleServo);
+  server.on("/servo_save", HTTP_POST, handleServoSave);
+  server.on("/servo_sync", HTTP_GET,  handleServoSync);
+  server.begin();
+  g_webServerStarted = true;
+}
+
+// 常开主循环：不休眠，Web 常驻，每日 refresh_hour 定时拉取照常执行。
+// 退出条件只有一个：debug 页把常开模式关掉（g_alwaysOnMode=false），
+// 返回后调用方落到正常休眠调度。
+static void runAlwaysOnMainLoop(bool &hasTime, struct tm &timeinfo) {
+  DBG_PRINTLN("[AON] 进入常开主循环（不休眠，定时拉取保留）");
+  journalEvent(EV_AON, "enter heap=%u", (unsigned)ESP.getFreeHeap());
+
+  static const uint32_t AON_DAILY_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL;  // 无时间兜底刷新间隔
+  static const uint32_t AON_RETRY_MS          = 10UL * 60UL * 1000UL;         // 拉取失败重试间隔
+  static const time_t   AON_RETRY_SEC         = 10 * 60;                      // 同上（epoch 制）
+  static const uint32_t AON_TIME_RETRY_MS     = 10UL * 60UL * 1000UL;         // 授时重试间隔
+
+  time_t   nextDueEpoch    = nextRefreshEpoch(hasTime);  // 0 = 无时间，走 millis 兜底
+  uint32_t lastRenderMs    = millis();                   // 最近一次拉取（含启动时那次）
+  uint32_t renderGapMs     = AON_DAILY_INTERVAL_MS;
+  uint32_t lastTimeRetryMs = millis();
+
+  for (;;) {
+    server.handleClient();
+
+    // debug 页关闭常开 → 回到休眠调度
+    if (!g_alwaysOnMode) break;
+
+    // 时间未同步：每 10 分钟向服务器重试授时，成功后按 refresh_hour 排程
+    if (!hasTime && millis() - lastTimeRetryMs > AON_TIME_RETRY_MS) {
+      lastTimeRetryMs = millis();
+      struct tm tmp;
+      if (fetchServerTime(g_cfg, tmp)) {
+        timeinfo = tmp;
+        hasTime = true;
+        nextDueEpoch = nextRefreshEpoch(hasTime);
+        DBG_PRINTLN("[AON] 授时成功，定时拉取已按 refresh_hour 排程");
+      }
+    }
+
+    // 到达刷新点 → 与正常启动同一条渲染链路
+    bool due = hasTime ? (nextDueEpoch && time(nullptr) >= nextDueEpoch)
+                       : (millis() - lastRenderMs >= renderGapMs);
+    if (due) {
+      DBG_PRINTLN("[AON] 到达刷新点，执行定时拉取");
+      journalEvent(EV_AON, "daily_due");
+      // 先重新授时校正晶振漂移（失败不影响渲染）
+      struct tm tmp;
+      if (fetchServerTime(g_cfg, tmp)) { timeinfo = tmp; hasTime = true; }
+      bool ok = downloadAndRenderDailyPhoto(g_cfg);
+      journalUpload();             // 常开没有入睡前上传点，趁在线推增量
+      registerDeviceWithServer();  // 重登注册（DHCP 换 IP 自愈）
+      if (ok) {
+        nextDueEpoch = nextRefreshEpoch(hasTime);   // 下一个每日刷新点
+        renderGapMs  = AON_DAILY_INTERVAL_MS;
+      } else {
+        // 拉取失败：常开下重试成本低，10 分钟后再试（server 短暂离线可自愈）
+        nextDueEpoch = hasTime ? (time(nullptr) + AON_RETRY_SEC) : 0;
+        renderGapMs  = AON_RETRY_MS;
+        journalEvent(EV_AON, "daily_fail retry_sec=600");
+      }
+      lastRenderMs = millis();
+    }
+
+    delay(10);
+  }
+
+  DBG_PRINTLN("[AON] 常开模式已关闭");
+  journalEvent(EV_AON, "exit");
+}
+
+// ============================================================
 //  显示配网/网络状态信息页面
 // ============================================================
 void showNetworkInfoScreen(bool isAP, bool isSuccess) {   // 前置声明在文件头部（无默认参数）
@@ -2434,6 +2779,8 @@ void setup() {
   // 6. 加载 NVS 配置 + 补入固件内置备用 WiFi（lybclj123）
   loadConfig(g_cfg);
   ensureBuiltinWifiProfile(g_cfg);
+  g_alwaysOnMode = loadAlwaysOnMode();   // 常开模式（NVS 持久化，跨重启生效）
+  DBG_PRINTF("[CFG] always_on=%s\n", g_alwaysOnMode ? "true" : "false");
 
   // 6.1 注入设备日志的上传目标（hostport + 照片 key 作设备标识）
   {
@@ -2551,33 +2898,40 @@ void setup() {
   // 10.5 手动唤醒：启动局域网 Web 服务器
   //      - 未开 debug：保持 INITIAL_WINDOW_MS（3 分钟）供改配置，到期即睡
   //      - 开了 debug：保持唤醒，直到用户 /debug?state=confirm_off 或 DEBUG_IDLE_MS(30min) 无操作
+  //      - 窗口内开启常开模式 → 立即切到常开主循环（不休眠）
   if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
     DBG_PRINTLN("[HTTP] 启动局域网 Web 服务器（手动唤醒）...");
-    server.on("/",          HTTP_GET,  handleRoot);
-    server.on("/network",   HTTP_GET,  handleNetwork);
-    server.on("/save",      HTTP_POST, handleSave);
-    server.on("/fetch",     HTTP_GET,  handleFetch);
-    server.on("/log",       HTTP_GET,  handleLog);
-    server.on("/debug",     HTTP_GET,  handleDebug);
-    server.on("/screen",    HTTP_GET,  handleScreen);
-    server.on("/test",      HTTP_GET,  handleScreen);   // 向后兼容别名
-    server.on("/servo_test",HTTP_GET,  handleServoTest);
-    server.on("/servo",     HTTP_GET,  handleServo);
-    server.on("/servo_save", HTTP_POST, handleServoSave);
-    server.on("/servo_sync", HTTP_GET,  handleServoSync);
-    server.begin();
+    startLanWebServer();
+    // 唤醒窗口内也向 server 登记（IP/在线标志），inktime server 控制台代理
+    // 在窗口期即可用；常开路径在 10.6 会再登记一次（幂等，重复无害）。
+    registerDeviceWithServer();
 
     uint32_t bootMs = millis();
     uint32_t lastAct = bootMs;
     for (;;) {
       server.handleClient();
       if (g_requestHappened) { g_requestHappened = false; lastAct = millis(); }
+      if (g_alwaysOnMode) break;                                            // 常开已开启 → 常开主循环接管
       if (g_debugOffRequested) break;                                       // 用户确认退出 debug
       if (!g_debugMode && (millis() - bootMs > INITIAL_WINDOW_MS)) break;   // 初始窗口到期且未开 debug
       if (g_debugMode && (millis() - lastAct > DEBUG_IDLE_MS)) break;       // debug 下 30 分钟无操作
       delay(10);
     }
-    DBG_PRINTLN("[HTTP] Web 服务器结束，准备进入休眠");
+    DBG_PRINTLN("[HTTP] 手动唤醒 Web 窗口结束");
+  }
+
+  // 10.6 常开模式主循环：不休眠，Web 常驻，局域网 server 可随时向 /fetch 推送；
+  //      每日 refresh_hour 定时拉取照常执行。定时唤醒 + NVS 常开开启也会走到这里
+  //      （此前 Web 未启动，startLanWebServer 会补上）。循环返回 = 用户关闭了常开
+  //      → 落到下面正常休眠调度。
+  if (g_alwaysOnMode) {
+    startLanWebServer();
+    // 常驻在线：关掉 WiFi 省电休眠（modem sleep），LAN 推送即时响应
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    registerDeviceWithServer();
+    runAlwaysOnMainLoop(hasTime, timeinfo);
+    DBG_PRINTLN("[AON] 常开已关闭，准备进入休眠调度");
   }
 
   // 11. 计算下次唤醒时间，进入 Deep Sleep
