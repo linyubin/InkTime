@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>INTERACT-TEST</title></head>
+<body>
+<iframe id="frame" src="/style-editor?v=20260925h" style="width:1500px;height:950px;border:1px solid #666"></iframe>
+<pre id="log"></pre>
+<script>
+/* 编辑器交互自动化测试：iframe 同源注入合成事件 + DOM 断言。
+ * 结果 POST /api/selftest_report（stage=interact）。测试产生的新样式最后删除清理。 */
+const POST = (stage, data) => fetch("/api/selftest_report", {
+  method: "POST", body: JSON.stringify({stage, ...data})}).catch(() => {});
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(fn, ms = 15000, step = 200) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await sleep(step); }
+  return null;
+}
+function pe(type, x, y) {
+  return new PointerEvent(type, {clientX: x, clientY: y, pointerId: 7,
+                                 isPrimary: true, bubbles: true, cancelable: true});
+}
+(async () => {
+  const steps = [];
+  const S = (name, ok, extra) => { steps.push(`${ok ? "PASS" : "FAIL"} ${name}${extra ? " | " + extra : ""}`); };
+  const log = s => { document.getElementById("log").textContent = s; };
+  try {
+    const frame = document.getElementById("frame");
+    const win = () => frame.contentWindow, doc = () => frame.contentDocument;
+    const $f = id => doc().getElementById(id);
+
+    /* 1. 启动 */
+    await waitFor(() => {
+      try { return $f("styleBadge") && $f("styleBadge").textContent.includes("P05"); }
+      catch (e) { return false; }
+    }, 20000);
+    S("启动加载 P05", !!$f("styleBadge") && $f("styleBadge").textContent.includes("P05"),
+      $f("styleBadge") && $f("styleBadge").textContent);
+    S("版式列表 12 项", $f("styleList").querySelectorAll("li").length === 12,
+      "got " + $f("styleList").querySelectorAll("li").length);
+    S("元素库 9 预设", $f("presets").children.length === 9,
+      "got " + $f("presets").children.length);
+    S("压力照片 12 张", $f("photoSel").options.length === 12,
+      "got " + $f("photoSel").options.length);
+    S("层级列表 4 元素", $f("layers").children.length === 4,
+      "got " + $f("layers").children.length);
+
+    /* 2. 点击添加预设元素 */
+    $f("presets").querySelector(".preset").click();
+    await sleep(300);
+    S("点击添加毛玻璃卡 → 5 元素", $f("layers").children.length === 5,
+      "got " + $f("layers").children.length);
+    S("dirty 标记出现", $f("styleBadge").classList.contains("dirty"));
+
+    /* 3. 画布拖拽（合成指针事件） */
+    const cv = $f("cv");
+    const r = cv.getBoundingClientRect();
+    const sc = r.width / cv.width;
+    const to = (cx, cy) => [r.left + cx * sc, r.top + cy * sc];
+    let [sx, sy] = to(240, 155);
+    cv.dispatchEvent(pe("pointerdown", sx, sy));
+    let [ex, ey] = to(300, 195);
+    cv.dispatchEvent(pe("pointermove", ex, ey));
+    cv.dispatchEvent(pe("pointerup", ex, ey));
+    await sleep(300);
+    const nums = [...doc().querySelectorAll("#props input[type=number]")].map(i => i.value);
+    S("拖拽移动 x0 40→100", nums[0] === "100", "x0=" + nums[0]);
+
+    /* 4. undo / redo（一次 undo 只撤拖拽，再撤一次才回到未修改态） */
+    $f("btnUndo").click(); await sleep(200);
+    let nums2 = [...doc().querySelectorAll("#props input[type=number]")].map(i => i.value);
+    S("撤销 x0 回 40", nums2[0] === "40", "x0=" + nums2[0]);
+    $f("btnUndo").click(); await sleep(200);
+    S("二次撤销 dirty 消失", !$f("styleBadge").classList.contains("dirty"));
+    $f("btnRedo").click(); $f("btnRedo").click(); await sleep(300);
+    /* undo/redo 不恢复选中；层级列表倒序，新增元素在第 1 行 */
+    $f("layers").children[0].click(); await sleep(300);
+    let nums3 = [...doc().querySelectorAll("#props input[type=number]")].map(i => i.value);
+    const nm3 = doc().querySelector("#props input[type=text]");
+    S("重做 x0 又 100", nums3[0] === "100",
+      `x0=${nums3[0]} name=${nm3 ? nm3.value : "-"} nums=[${nums3}]`);
+
+    /* 5. 墨水屏模式开关不崩 */
+    $f("tgEink").click(); await sleep(800);
+    $f("tgEink").click(); await sleep(300);
+    S("墨水屏模式开关", $f("styleBadge").textContent.includes("P05"));
+
+    /* 5b. 警戒线遮罩：默认 mask 模式，开/关时遮挡区像素应变化 */
+    const cornerPixel = () => {
+      const d = $f("cv").getContext("2d").getImageData(5, 5, 1, 1).data;
+      return d[0] + d[1] + d[2];
+    };
+    const tg = $f("tgGuide");
+    tg.checked = true; tg.dispatchEvent(new Event("change")); await sleep(300);
+    const pOn = cornerPixel();
+    tg.checked = false; tg.dispatchEvent(new Event("change")); await sleep(300);
+    const pOff = cornerPixel();
+    S("警戒线遮罩生效（inset 区像素变化）", pOn !== pOff, `on=${pOn} off=${pOff}`);
+    tg.checked = true; tg.dispatchEvent(new Event("change")); await sleep(200);
+
+    /* 5c. rect 直观表示：选中 P05 签面（层级列表第 4 行=elements[0]），应显示 x/y/宽/高 */
+    const rows = $f("layers").children;
+    if (rows.length >= 4) rows[rows.length - 1].click(), await sleep(300);
+    const rnums = [...doc().querySelectorAll("#props input[type=number]")].map(i => +i.value);
+    S("rect 显示 x/y/宽/高 (382,56,72,296)",
+      rnums.slice(0, 4).join(",") === "382,56,72,296", "got " + rnums.slice(0, 4).join(","));
+
+    /* 5d. 溢出提示：4:3 警戒线（可视 y80..720）下签面 y56 顶部溢出 24px → 画布红罩 + 面板红字 */
+    const pxAt = (x, y) => {
+      const d = $f("cv").getContext("2d").getImageData(x, y, 1, 1).data;
+      return d[0] - d[1];
+    };
+    frame.contentWindow.localStorage.setItem("seGuideCfg2",
+      JSON.stringify({mode: "mask", vw: 480, vh: 640, radius: 0}));
+    $f("tgGuide").dispatchEvent(new Event("change"));
+    await sleep(500);
+    const redDiff = pxAt(418, 60);
+    const warn = $f("ovWarn");
+    S("溢出红罩 + 面板警告", redDiff > 20 && warn && !warn.hidden && warn.textContent.includes("超出可视区"),
+      `r-g=${redDiff} warn=${warn && !warn.hidden ? warn.textContent.slice(0, 26) : "无"}`);
+    frame.contentWindow.localStorage.removeItem("seGuideCfg2");
+    $f("tgGuide").dispatchEvent(new Event("change"));
+    await sleep(300);
+
+    /* 6. 真机对照弹层 */
+    $f("btnGroundTruth").click();
+    const gtTop = await waitFor(() => $f("gtTop"), 20000);
+    S("真机对照出图", !!gtTop);
+    if (gtTop) { $f("gtClose").click(); await sleep(200); }
+
+    /* 7. 另存为新样式（走 POST /api/styles） */
+    const before = new Set([...$f("styleList").querySelectorAll("li span:first-child")].map(e => e.textContent));
+    $f("btnDup").click();
+    const newBadge = await waitFor(() => {
+      const t = $f("styleBadge").textContent;
+      const m = t.match(/^(P\d+)/); return m && !before.has(m[1]) ? m[1] : null;
+    }, 15000);
+    S("另存为新样式", !!newBadge, newBadge || "未出现新 ID");
+    await waitFor(() => $f("layers").children.length === 5, 10000);
+    S("新样式携带当前画布状态", $f("layers").children.length === 5,
+      "layers=" + $f("layers").children.length);
+
+    /* 8. 保存（diff 确认 → PUT 落盘） */
+    const sid = newBadge || "P11";
+    $f("presets").children[2].click();                 /* 再加一个横排文字 → dirty */
+    await waitFor(() => $f("styleBadge").classList.contains("dirty"), 5000);
+    const expectCnt = $f("layers").children.length;
+    S("添加元素后 dirty", $f("styleBadge").classList.contains("dirty"));
+    $f("btnSave").click();
+    const okBtn = await waitFor(() => [...doc().querySelectorAll("#modalBox .actions button")]
+      .find(b => b.textContent.includes("确认保存")), 8000);
+    S("保存 diff 弹层出现", !!okBtn);
+    if (okBtn) {
+      okBtn.click();
+      const saved = await waitFor(() => !$f("styleBadge").classList.contains("dirty"), 10000);
+      S("确认保存后 dirty 清除", !!saved);
+    }
+    const after = await (await fetch(`/api/styles/${sid}`)).json();
+    S("落盘校验元素数一致", after.elements.length === expectCnt,
+      `disk=${after.elements.length} ui=${expectCnt}`);
+
+    /* 9. 载入相框状态（放最后：会切换到当日 latest 版式） */
+    $f("btnFrameState").click();
+    const fsBtn = await waitFor(() => [...doc().querySelectorAll("#modalBox .actions button")]
+      .find(b => b.textContent === "好"), 25000);
+    S("相框状态弹层出现", !!fsBtn);
+    if (fsBtn) { fsBtn.click(); }
+    const fsInfo = await (await fetch("/api/frame_state")).json();
+    const okLayout = await waitFor(
+      () => $f("styleBadge").textContent.startsWith(fsInfo.layout || "?") ? 1 : null, 12000);
+    S("载入当日版式", !!okLayout,
+      `badge=${$f("styleBadge").textContent.slice(0, 14)} sidecar=${fsInfo.layout}`);
+    const okItem = await waitFor(
+      () => ($f("itSide").value !== "山间的清晨雾气还未散去") ? 1 : null, 8000);
+    S("槽位文案已填充", !!okItem && $f("itSide").value.length > 0, $f("itSide").value.slice(0, 12) + "…");
+    S("相框照片加入选择器", [...$f("photoSel").options].some(o => o.textContent.includes("相框当前照片")));
+
+    /* 10. 清理：删除测试样式 */
+    const del = await fetch(`/api/styles/${sid}`, {method: "DELETE"});
+    S("清理测试样式", del.ok, sid);
+
+    const allPass = steps.every(s => s.startsWith("PASS"));
+    await POST("interact", {pass: allPass, steps});
+    log((allPass ? "ALL PASS\n" : "HAS FAILURES\n") + steps.join("\n"));
+  } catch (e) {
+    await POST("interact-fatal", {msg: String(e), steps});
+    log("FATAL " + e + "\n" + steps.join("\n"));
+  }
+})();
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-from flask import Flask, render_template, jsonify, send_file, abort, request
+from flask import Blueprint, Flask, redirect, render_template, jsonify, send_file, abort, request
 import sqlite3
 import json
 from pathlib import Path
@@ -11,7 +11,9 @@ import config as cfg
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
 
-app = Flask(__name__)
+# 以 Blueprint 形式挂载到 server.py（8765 统一入口，见 server.py 的 register_blueprint）；
+# 直接运行本文件时由 __main__ 临时组一个 app，兼容旧的独立启动方式。
+bp = Blueprint("webui", __name__)
 
 # Config loading
 ROOT_DIR = Path(__file__).resolve().parent
@@ -101,12 +103,12 @@ def _get_conn():
         return sqlite3.connect(DB_PATH)
 
 
-@app.route('/')
-def index():
+@bp.route('/manager')
+def manager():
     return render_template('index.html')
 
 
-@app.route('/api/photos/meta')
+@bp.route('/api/photos/meta')
 def api_photos_meta():
     """独立接口：返回所有照片的路径目录、城市、类型列表，用于填充下拉框
     仅查询需要的字段，不做 EXIF 解析，速度很快。
@@ -141,7 +143,7 @@ def api_photos_meta():
     })
 
 
-@app.route('/api/photos')
+@bp.route('/api/photos')
 def api_photos():
     """DataTables server-side 分页接口。
     支持参数: draw, start, length, order[0][column], order[0][dir]
@@ -332,17 +334,7 @@ def api_photos():
     })
 
 
-@app.route('/images/<path:filepath>')
-def serve_image(filepath):
-    try:
-        abs_path = _safe_join(IMAGE_DIR, filepath)
-        if not abs_path.exists() or not abs_path.is_file():
-            abort(404)
-        return send_file(abs_path)
-    except ValueError:
-        abort(403)
-    except Exception:
-        abort(404)
+# /images/<path> 由 server.py 提供（合并后共用同一路由，本 blueprint 不再重复注册）
 
 
 # ── 设备日志（黑盒）只读页 ───────────────────────────────────
@@ -356,7 +348,7 @@ DEVLOG_PAGE_SIZE = 500
 _ANCHOR_RE = re.compile(r" anchor=(\d+)")
 
 
-@app.route('/devlog')
+@bp.route('/devlog')
 def devlog():
     p = DEVICE_LOG_DIR / f"{DOWNLOAD_KEY}.log"
     events = []
@@ -394,9 +386,302 @@ def devlog():
     return render_template('devlog.html', rows=rows, exists=p.exists())
 
 
+# ── 样式编辑器（/style-editor，ADR 0002 版式数据化 + ADR 0003 预览保真）──
+
+import io
+import re
+import uuid
+
+from PIL import Image as PILImage, ImageOps
+
+import style_registry
+import style_runtime
+
+STYLE_EDITOR_DIR = ROOT_DIR / "static" / "style_editor"
+STYLE_UPLOAD_DIR = STYLE_EDITOR_DIR / "uploads"
+_STYLE_ID_RE = re.compile(r"^[A-Z]\d{2,3}$")
+
+
+def _style_path(sid: str) -> Path:
+    sid = str(sid or "").strip().upper()
+    if not _STYLE_ID_RE.match(sid):
+        abort(400, description="非法版式 ID")
+    return ROOT_DIR / "layouts" / f"{sid}.json"
+
+
+def _validate_style_doc(doc) -> dict:
+    """落盘前的最小结构校验（渲染期错误由 style_runtime 抛出）。"""
+    if not isinstance(doc, dict):
+        abort(400, description="样式必须是 JSON 对象")
+    sid = str(doc.get("id") or "").strip().upper()
+    if not _STYLE_ID_RE.match(sid):
+        abort(400, description="非法版式 ID")
+    if doc.get("orientation") not in ("portrait", "landscape"):
+        abort(400, description="orientation 必须是 portrait/landscape")
+    if not isinstance(doc.get("elements"), list):
+        abort(400, description="elements 必须是数组")
+    return sid
+
+
+@bp.route('/style-editor')
+def style_editor():
+    return send_file(STYLE_EDITOR_DIR / "index.html")
+
+
+@bp.route('/api/style_meta')
+def api_style_meta():
+    return jsonify({
+        "veil_alpha": int(255 * float(getattr(cfg, "TEXT_VEIL_OPACITY", 0.85))),
+        "veil_rgb": [246, 241, 231],
+        "inset": int(getattr(cfg, "FRAME_MASK_INSET_PX", 40) or 0),
+        "canvas": {"portrait": [480, 800], "landscape": [800, 480]},
+        "palette": [[0, 0, 0], [255, 255, 255], [200, 0, 0], [220, 180, 0]],
+        "fonts": [{"id": "", "label": "跟随全局"},
+                  {"id": "smiley", "label": "得意黑"},
+                  {"id": "lxgw", "label": "霞鹜文楷"}],
+    })
+
+
+@bp.route('/api/styles')
+def api_styles():
+    return jsonify([{"id": s["id"], "name": s.get("name", ""),
+                     "orientation": s.get("orientation", "portrait"),
+                     "elements": len(s.get("elements", []))}
+                    for s in style_registry.all_styles().values()])
+
+
+@bp.route('/api/styles', methods=['POST'])
+def api_style_create():
+    body = request.get_json(force=True, silent=True) or {}
+    orientation = body.get("orientation", "portrait")
+    if orientation not in ("portrait", "landscape"):
+        abort(400, description="非法朝向")
+    prefix = "P" if orientation == "portrait" else "L"
+    ids = [k for k in style_registry.all_styles() if k.startswith(prefix)]
+    n = max((int(k[1:]) for k in ids), default=0) + 1
+    new_id = f"{prefix}{n:02d}"
+    base = style_registry.get_style(body.get("base", "")) if body.get("base") else None
+    doc = dict(base) if base else {}
+    doc.update({"schema_version": 1, "id": new_id,
+                "name": body.get("name") or f"新样式 {new_id}",
+                "orientation": orientation})
+    path = _style_path(new_id)
+    path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    style_registry.load_styles(force=True)
+    print(f"[STYLE-EDITOR] 新建 {new_id}（基于 {body.get('base') or '空白'}）")
+    return jsonify(doc)
+
+
+@bp.route('/api/styles/<sid>')
+def api_style_get(sid):
+    style = style_registry.get_style(sid)
+    if style is None:
+        abort(404, description="版式不存在")
+    return jsonify(style)
+
+
+@bp.route('/api/styles/<sid>', methods=['PUT'])
+def api_style_put(sid):
+    path = _style_path(sid)
+    doc = request.get_json(force=True, silent=True)
+    doc_id = _validate_style_doc(doc)
+    if doc_id != sid.upper():
+        abort(400, description="body.id 与 URL 不一致")
+    if not path.exists():
+        abort(404, description="版式不存在")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    tmp.replace(path)
+    style_registry.load_styles(force=True)
+    print(f"[STYLE-EDITOR] 保存 {doc_id}（{len(doc.get('elements', []))} 元素）")
+    return jsonify({"ok": True})
+
+
+@bp.route('/api/styles/<sid>', methods=['DELETE'])
+def api_style_delete(sid):
+    path = _style_path(sid)
+    if not path.exists():
+        abort(404, description="版式不存在")
+    path.unlink()
+    style_registry.load_styles(force=True)
+    print(f"[STYLE-EDITOR] 删除 {sid.upper()}")
+    return jsonify({"ok": True})
+
+
+@bp.route('/api/stress_photos')
+def api_stress_photos():
+    d = STYLE_EDITOR_DIR / "stress"
+    files = sorted(d.glob("*.jpg")) if d.exists() else []
+    return jsonify([{"name": f.stem, "url": f"/static/style_editor/stress/{f.name}"}
+                    for f in files])
+
+
+@bp.route('/api/upload_photo', methods=['POST'])
+def api_upload_photo():
+    f = request.files.get("photo")
+    if f is None:
+        abort(400, description="缺少 photo 字段")
+    try:
+        img = ImageOps.exif_transpose(PILImage.open(f.stream)).convert("RGB")
+    except Exception:
+        abort(400, description="无法解析图片")
+    img.thumbnail((1600, 1600), PILImage.LANCZOS)
+    STYLE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{uuid.uuid4().hex[:12]}.jpg"
+    img.save(STYLE_UPLOAD_DIR / name, quality=88)
+    return jsonify({"url": f"/static/style_editor/uploads/{name}"})
+
+
+def _load_editor_photo(photo_url: str) -> PILImage.Image:
+    """编辑器传来的照片 URL → 本地文件（防目录穿越）。
+    允许 /static/style_editor/（压力照/上传）与 /images/（照片库，载入相框状态用）。"""
+    if photo_url and photo_url.startswith("/static/style_editor/"):
+        p = _safe_join(STYLE_EDITOR_DIR, photo_url[len("/static/style_editor/"):])
+    elif photo_url and photo_url.startswith("/images/"):
+        p = _safe_join(IMAGE_DIR, photo_url[len("/images/"):])
+    else:
+        abort(400, description="photo 必须是 /static/style_editor/ 或 /images/ 下的 URL")
+    if not p.exists():
+        abort(404, description="照片不存在")
+    return ImageOps.exif_transpose(PILImage.open(p)).convert("RGB")
+
+
+@bp.route('/api/style_photo', methods=['POST'])
+def api_style_photo():
+    """按版式避让区裁切照片（真实管线 _cover_crop 同一实现）：
+    编辑器预览的取景/缩放必须与真机一致——居中 cover 会与实际出图偏差。"""
+    body = request.get_json(force=True, silent=True) or {}
+    photo = _load_editor_photo(body.get("photo", ""))
+    orientation = body.get("orientation", "portrait")
+    w, h = (800, 480) if orientation == "landscape" else (480, 800)
+    item = {"subjects_json": body.get("subjects_json", "")}
+    import render_daily_photo as rdp
+    cropped, _ = rdp._cover_crop(photo, w, h, item,
+                                 dict(body.get("crop_reserve") or {}))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+
+@bp.route('/api/frame_state')
+def api_frame_state():
+    """相框当前显示状态：当日渲染产物（latest.*）→ 版式/朝向/照片/槽位文案。
+    sidecar 带 item 摘要时为精确值（含 holiday_ai 覆写后的实际渲染文案），
+    否则从 photos.db 兜底（分析期 side_caption）。"""
+    out_dir = ROOT_DIR / str(getattr(cfg, "BIN_OUTPUT_DIR", "./output") or "./output")
+    out_dir = (out_dir if out_dir.is_absolute() else ROOT_DIR / out_dir)
+    sidecar_path, path_txt = out_dir / "latest.json", out_dir / "latest.path.txt"
+    if not sidecar_path.exists() or not path_txt.exists():
+        return jsonify({"error": "output/ 下没有 latest.*（尚未渲染过）"}), 404
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception:
+        sidecar = {}
+    photo_path = path_txt.read_text(encoding="utf-8").strip()
+    item = dict(sidecar.get("item") or {})
+    exact = bool(item.get("side") is not None)
+    if not item and photo_path:
+        conn = _get_conn()
+        if conn is not None:
+            try:
+                row = conn.execute(
+                    "SELECT side_caption, exif_city, subjects_json FROM photo_scores WHERE path = ?",
+                    (photo_path,)).fetchone()
+                conn.close()
+                if row:
+                    item = {"side": row[0] or "", "city": row[1] or "",
+                            "subjects_json": row[2] or ""}
+            except Exception:
+                pass
+    import style_registry
+    layout = str(sidecar.get("layout") or "")
+    return jsonify({
+        "layout": layout,
+        "layout_name": style_registry.get_style(layout).get("name", "") if layout else "",
+        "orientation": sidecar.get("orientation", "portrait"),
+        "holiday": sidecar.get("holiday", ""),
+        "item": item,
+        "exact": exact,
+        "photo_path": photo_path,
+        "photo_url": _make_image_url(photo_path) if photo_path else "",
+        "generated": datetime.fromtimestamp(
+            sidecar_path.stat().st_mtime).isoformat(timespec="minutes"),
+    })
+
+
+@bp.route('/api/style_preview', methods=['POST'])
+def api_style_preview():
+    """真机对照：后端跑真实管线（cover 裁切含避让 → 版式层 → gamma → 量化）。"""
+    body = request.get_json(force=True, silent=True) or {}
+    doc = body.get("style")
+    _validate_style_doc(doc)
+    item = body.get("item") or {}
+    orientation = doc["orientation"]
+    w, h = (800, 480) if orientation == "landscape" else (480, 800)
+    photo = _load_editor_photo(body.get("photo", ""))
+    canvas = PILImage.new("RGB", (w, h), (255, 255, 255))
+    # 与 _render_with_layout 同一口径：避让区并入 cover 裁切（无主体信号时居中）
+    import render_daily_photo as rdp
+    cropped, _ = rdp._cover_crop(photo, w, h, item,
+                                 dict(doc.get("crop_reserve") or {}))
+    canvas.paste(cropped, (0, 0))
+    style_runtime.render_style(canvas, doc, item)
+    if body.get("dither"):
+        gamma, _ = rdp.choose_gamma(canvas)
+        canvas = rdp.quantize_four_color(rdp.apply_gamma(canvas, gamma)).convert("RGB")
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+
+@bp.route('/style-assets/seal/<hexcode>.png')
+def style_asset_seal(hexcode):
+    if not re.match(r"^[0-9A-Fa-f]{4,6}$", hexcode):
+        abort(400)
+    p = ROOT_DIR / "seal_glyphs" / f"{hexcode.upper()}.png"
+    if not p.exists():
+        abort(404)
+    return send_file(p)
+
+
+@bp.route('/style-assets/font/<fname>')
+def style_asset_font(fname):
+    if fname not in ("SmileySans-Oblique.ttf", "LXGWHeartSerifMN.ttf"):
+        abort(400)
+    return send_file(ROOT_DIR / "font" / fname)
+
+
+# 编辑器自检页（selftest.html）的结果回传：无头 chromium 消费用
+_SELFTEST_REPORT = {"pending": True}
+
+
+@bp.route('/api/selftest_report', methods=['POST', 'GET'])
+def api_selftest_report():
+    if request.method == "POST":
+        _SELFTEST_REPORT.update({"pending": False,
+                                 "result": request.get_data(as_text=True)[:20000],
+                                 "at": datetime.now().isoformat(timespec="seconds")})
+        print(f"[SELFTEST] {_SELFTEST_REPORT['result'][:300]}")
+        return jsonify({"ok": True})
+    return jsonify(_SELFTEST_REPORT)
+
+
 if __name__ == '__main__':
+    # 兼容旧的独立启动方式（systemd inktime-webui / docker supervisord）。
+    # 合并后的正式入口是 server.py：所有功能统一挂在 FLASK_PORT(8765)。
+    app = Flask(__name__)
+    app.register_blueprint(bp)
+
+    @app.route('/')
+    def _index():
+        return redirect('/manager')
+
     print(f"==================================================")
     print(f"InkTime Independent WebUI Manager")
-    print(f"启动 URL: http://{WEBUI_HOST}:{WEBUI_PORT}")
+    print(f"启动 URL: http://{WEBUI_HOST}:{WEBUI_PORT}  (建议改用 server.py 统一入口)")
     print(f"==================================================")
     app.run(host=WEBUI_HOST, port=WEBUI_PORT, debug=True)

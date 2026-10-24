@@ -195,3 +195,48 @@ def normalize_type_to_list(type_val) -> str:
         return json.dumps(parts, ensure_ascii=False)
     # 单个值
     return json.dumps([s], ensure_ascii=False)
+
+
+# ---------- 5. AI 对话端点解析 ----------
+
+def resolve_chat_endpoint(url: str) -> tuple[str, str]:
+    """
+    把配置的 AI 接口地址解析为可直接 POST 的对话端点。
+
+    返回 (endpoint_url, protocol)，protocol ∈ {"openai", "ollama"}。
+    写完整端点或只写 base 均可，远端云端与本地推理一套配置通用：
+      - .../v1/chat/completions        → OpenAI 兼容（原样直连）
+      - .../api/chat                   → Ollama native（原样直连）
+      - .../v1、.../v4 等版本化 base   → 自动补 /chat/completions
+        （智谱 open.bigmodel.cn/api/paas/v4、LM Studio /v1、多数云端网关）
+      - 裸地址 http://host:11434       → 自动补 /api/chat（Ollama 默认端口）
+      - 其它裸地址 http://host:1234    → 自动补 /v1/chat/completions（LM Studio 等）
+      - 其它带路径的 base              → 自动补 /chat/completions（兜底）
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return u, "openai"
+    if u.endswith("/chat/completions"):
+        return u, "openai"
+    if u.endswith("/api/chat"):
+        return u, "ollama"
+
+    host_path = u.split("://", 1)[-1]  # 去掉协议，得到 host[:port]/path
+    last_seg = host_path.rsplit("/", 1)[-1]
+
+    # 版本化 base：/v1、/v4 …
+    if re.fullmatch(r"v\d+", last_seg):
+        return u + "/chat/completions", "openai"
+
+    if "/" not in host_path:
+        # 无路径裸地址：按端口猜协议
+        port = host_path.rsplit(":", 1)[-1] if ":" in host_path else ""
+        if port == "11434":
+            return u + "/api/chat", "ollama"
+        return u + "/v1/chat/completions", "openai"
+
+    # 罕见写法 http://host:11434/api
+    if ":11434" in host_path and last_seg == "api":
+        return u + "/chat", "ollama"
+
+    return u + "/chat/completions", "openai"

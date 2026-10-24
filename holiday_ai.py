@@ -28,6 +28,7 @@ import requests
 from PIL import Image, ImageOps
 
 import config as cfg
+from common import resolve_chat_endpoint
 
 # 模板 → 给模型的场景说明（帮助它理解"找什么氛围的照片"）
 _TEMPLATE_DESC = {
@@ -100,13 +101,10 @@ def _image_to_b64(path: str, max_edge: int) -> Optional[str]:
 # ========== 请求与解析 ==========
 
 def _endpoint(url: str) -> tuple:
-    """(完整 URL, 协议) ；协议 ∈ {"openai", "ollama"}。"""
-    url = url.strip().rstrip("/")
-    if url.endswith("/chat/completions"):
-        return url, "openai"
-    if url.endswith("/api/chat"):
-        return url, "ollama"
-    return url + "/chat/completions", "openai"
+    """(完整 URL, 协议) ；协议 ∈ {"openai", "ollama"}。
+    委托 common.resolve_chat_endpoint：完整端点或 base 均可，
+    与 analyze_photos.py 共用同一套识别口径。"""
+    return resolve_chat_endpoint(url)
 
 
 def _build_prompt(candidates: List[Dict[str, Any]], holiday: Dict[str, Any]) -> str:
@@ -263,9 +261,10 @@ def select_and_describe(candidates: List[Dict[str, Any]],
 
     desc_map = data.get("descriptions") if isinstance(data.get("descriptions"), dict) else {}
     for i, c in enumerate(kept):
+        # 长度限制（2026-10-09）：L10 铭牌 368px 宽只容得下 ~24 字，超长会溢出文本框。
         desc = str(desc_map.get(str(i + 1), "") or "").strip()
         if desc:
-            c["side"] = desc[:60]  # 底部卡片最多两行，超长由换行截断兜底
+            c["side"] = desc[:30] + ("…" if len(desc) > 30 else "")
 
     greeting = str(data.get("greeting", "") or "").strip()[:12]
     print(f"[HOLIDAY-AI] 模型返回: greeting=\"{greeting}\" 首选编号={order[0] + 1 if order else '-'}")

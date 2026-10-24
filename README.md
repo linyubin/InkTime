@@ -143,14 +143,23 @@ GET /static/inktime/<DOWNLOAD_KEY>/calib_l.bin
 
 ```python3 server.py```
 
-#### WebUI（如果开启）：
-Server 将提供一个简明的可视化前端，用于查看已处理照片的描述、文案，并预览模拟墨水屏渲染效果。
+`server.py` 是统一入口（`config.py` 的 `FLASK_PORT`，默认 8765），首页分发以下子页：
+
+| 路径 | 功能 |
+| --- | --- |
+| `/` | InkTime Server 首页（各子页导航） |
+| `/select` | 选片推送：今日选中批次 + 候选池预览、打分明细、手动勾选推送墨水屏 |
+| `/review` | 照片库：按回忆度/美观度/日期浏览评分与文案，单张墨水屏模拟 |
+| `/manager` | 相册管理：DataTables 多维筛选（原 8766 端口 `webui.py` 已并入本服务） |
+| `/style-editor` | 版式编辑器：元素级拖放编辑 P/L 系版式，真机对照 |
+| `/devlog` | 设备日志：ESP32 黑盒事件回查 |
+| `/files/` | 输出文件浏览（`photo_*.bin` / `latest.*` / `preview_*.png`） |
 
 在浏览器中访问：
 
-```http://127.0.0.1:8765/review```
+```http://127.0.0.1:8765/```
 
-程序跑通后，建议在```config.py```中关闭WebUI，仅保留 ESP32 下载接口。
+程序跑通后，建议在```config.py```中关闭`ENABLE_REVIEW_WEBUI`，仅保留 ESP32 下载接口。
 
 ## 服务器部署与定时任务示例（可选）
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "P05",
+  "name": "竖排题签·钤印",
+  "orientation": "portrait",
+  "crop_reserve": {"right": 110},
+  "elements": [
+    {"kind": "glass", "name": "右侧签面", "rect": [382, 56, 454, 352], "radius": 8, "alpha": 184, "blur": 10, "shadow": false, "highlight": true},
+    {"kind": "vtext", "name": "竖排旁白", "slot": "side", "x": 429, "y": 64, "size": 24, "fill": [0, 0, 0], "col_h": 280, "pitch": 31, "col_gap": 31, "max_cols": 2},
+    {"kind": "seal", "name": "钤印", "slot": "city", "x": 382, "y": 356, "w": 72, "h": 44, "vertical": false, "glyph_px": 28, "radius": 6},
+    {"kind": "text", "name": "日期行", "slot": "meta_wd_city", "x": 24, "y": 724, "size": 17, "fill": [96, 90, 82], "stroke": 0, "bold": false, "align": "l"}
+  ]
+}

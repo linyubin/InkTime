@@ -144,6 +144,10 @@ YOLO_SUBJECT_WEIGHTS = {
     "cat": 4.0,
     "dog": 4.0,
 }
+# 人脸框（2026-10-24）：pose 关键点派生脸框写入 subjects_json 的 face 字段，
+# 供选型端「覆盖区压脸硬否决」。仅在照片含 person 时二次推理；失败退回无脸数据。
+YOLO_POSE_MODEL = "yolov8n-pose.pt"
+YOLO_POSE_KPT_CONF = 0.3
 
 
 # ═══ ⑥ 渲染输出（墨水屏画面生成）═══════════════════════

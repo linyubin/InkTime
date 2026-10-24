@@ -1,0 +1,81 @@
+{
+  "crop_reserve": {
+    "bottom": 140
+  },
+  "elements": [
+    {
+      "alpha": 255,
+      "blur": 1,
+      "highlight": false,
+      "kind": "glass",
+      "name": "中央实白铭牌",
+      "radius": 14,
+      "rect": [
+        216,
+        342,
+        584,
+        474
+      ],
+      "shadow": true
+    },
+    {
+      "align": "c",
+      "bold": false,
+      "cx": 400,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "日期",
+      "size": 25,
+      "slot": "date_full",
+      "stroke": 0.5,
+      "x": 0,
+      "y": 356
+    },
+    {
+      "fill": [
+        200,
+        0,
+        0
+      ],
+      "kind": "bar",
+      "name": "红色饰杠",
+      "rect": [
+        384,
+        393,
+        416,
+        395
+      ]
+    },
+    {
+      "align": "c",
+      "bold": false,
+      "cx": 400,
+      "fill": [
+        51,
+        51,
+        51
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "min_size": 22,
+      "size": 28,
+      "slot": "side",
+      "stroke": 0,
+      "wrap": {
+        "line_step": 31,
+        "max_lines": 2,
+        "max_w": 344
+      },
+      "x": 0,
+      "y": 401
+    }
+  ],
+  "id": "L10",
+  "name": "中央铭牌",
+  "orientation": "landscape",
+  "schema_version": 1
+}

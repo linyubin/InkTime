@@ -1,0 +1,66 @@
+{
+  "crop_reserve": {
+    "bottom": 140
+  },
+  "elements": [
+    {
+      "a0": 0,
+      "a1": null,
+      "kind": "veil",
+      "name": "米白渐变底托",
+      "ramp_px": 170,
+      "rect": [
+        0,
+        494,
+        480,
+        800
+      ],
+      "rgb": [
+        246,
+        241,
+        231
+      ]
+    },
+    {
+      "align": "l",
+      "bold": true,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "size": 27,
+      "slot": "side",
+      "stroke": 0.3,
+      "wrap": {
+        "line_step": 34,
+        "max_lines": 2,
+        "max_w": 424
+      },
+      "x": 28,
+      "y": 660
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        96,
+        90,
+        82
+      ],
+      "kind": "text",
+      "name": "日期行",
+      "size": 18,
+      "slot": "meta_wd_city",
+      "stroke": 0,
+      "x": 28,
+      "y": 710
+    }
+  ],
+  "id": "P03",
+  "name": "角落手记",
+  "orientation": "portrait",
+  "schema_version": 1
+}

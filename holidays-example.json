@@ -1,17 +1,96 @@
 {
   "holidays": [
-    { "name": "春节",     "calendar": "lunar", "start": "1-1",      "end": "1-6", "greeting": "新春快乐 阖家团圆" },
-    { "name": "除夕",     "calendar": "lunar", "start": "chuxi",    "greeting": "辞旧迎新" },
-    { "name": "中秋节",   "calendar": "lunar", "start": "8-15",     "greeting": "花好月圆人团圆" },
-    { "name": "端午节",   "calendar": "lunar", "start": "5-5",      "greeting": "端午安康" },
-    { "name": "国庆节",   "calendar": "solar", "start": "10-1",     "end": "10-7", "greeting": "祖国生日快乐" },
-    { "name": "元旦",     "calendar": "solar", "start": "1-1",      "greeting": "新年快乐" },
-    { "name": "情人节",   "calendar": "solar", "start": "2-14",     "template": "anniversary_hearts", "greeting": "余生请多指教" },
-    { "name": "儿童节",   "calendar": "solar", "start": "6-1",      "template": "child_bunting", "greeting": "永远快乐呀" },
-    { "name": "女儿的生日", "calendar": "solar", "start": "2027-6-18", "template": "child_wave", "greeting": "生日快乐", "ai_hint": "女儿，8岁生日，全家庆祝" },
-    { "name": "爸爸70大寿", "calendar": "solar", "start": "2027-3-5",  "template": "elder_calligraphy", "greeting": "福如东海 寿比南山", "ai_hint": "爸爸，70岁生日，全家聚餐" },
-    { "name": "妈妈生日",   "calendar": "solar", "start": "8-20",     "template": "elder_ribbon", "greeting": "身体健康 笑口常开", "ai_hint": "妈妈的生日，找有妈妈的照片" },
-    { "name": "我的生日",   "calendar": "solar", "start": "11-11",    "template": "adult_editorial", "greeting": "又长大一岁", "ai_hint": "我的生日，找有我的照片" },
-    { "name": "结婚纪念日", "calendar": "solar", "start": "5-20",     "template": "anniversary_rings", "greeting": "永结同心", "ai_hint": "结婚纪念日，优先夫妻合影或婚纱照" }
+    {
+      "name": "春节",
+      "calendar": "lunar",
+      "start": "1-1",
+      "end": "1-6",
+      "greeting": "新春快乐 阖家团圆"
+    },
+    {
+      "name": "除夕",
+      "calendar": "lunar",
+      "start": "chuxi",
+      "greeting": "辞旧迎新"
+    },
+    {
+      "name": "中秋节",
+      "calendar": "lunar",
+      "start": "8-15",
+      "greeting": "花好月圆人团圆"
+    },
+    {
+      "name": "端午节",
+      "calendar": "lunar",
+      "start": "5-5",
+      "greeting": "端午安康"
+    },
+    {
+      "name": "国庆节",
+      "calendar": "solar",
+      "start": "10-1",
+      "end": "10-7",
+      "greeting": "祖国生日快乐"
+    },
+    {
+      "name": "元旦",
+      "calendar": "solar",
+      "start": "1-1",
+      "greeting": "新年快乐"
+    },
+    {
+      "name": "情人节",
+      "calendar": "solar",
+      "start": "2-14",
+      "template": "anniversary_hearts",
+      "greeting": "余生请多指教"
+    },
+    {
+      "name": "儿童节",
+      "calendar": "solar",
+      "start": "6-1",
+      "template": "child_bunting",
+      "greeting": "永远快乐呀"
+    },
+    {
+      "name": "女儿的生日",
+      "calendar": "solar",
+      "start": "2027-6-18",
+      "template": "child_wave",
+      "greeting": "生日快乐",
+      "ai_hint": "女儿，8岁生日，全家庆祝"
+    },
+    {
+      "name": "爸爸70大寿",
+      "calendar": "solar",
+      "start": "2027-3-5",
+      "template": "elder_calligraphy",
+      "greeting": "福如东海 寿比南山",
+      "ai_hint": "爸爸，70岁生日，全家聚餐"
+    },
+    {
+      "name": "妈妈生日",
+      "calendar": "solar",
+      "start": "8-20",
+      "template": "elder_ribbon",
+      "greeting": "身体健康 笑口常开",
+      "ai_hint": "妈妈的生日，找有妈妈的照片"
+    },
+    {
+      "name": "我的生日",
+      "calendar": "solar",
+      "start": "11-11",
+      "template": "adult_editorial",
+      "greeting": "又长大一岁",
+      "ai_hint": "我的生日，找有我的照片"
+    },
+    {
+      "name": "结婚纪念日",
+      "calendar": "solar",
+      "start": "5-20",
+      "template": "anniversary_rings",
+      "greeting": "永结同心",
+      "ai_hint": "结婚纪念日，优先夫妻合影或婚纱照"
+    }
   ]
 }

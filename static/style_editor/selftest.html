@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>SELFTEST</title></head>
+<body>
+<canvas id="cv"></canvas>
+<pre id="result">RUNNING...</pre>
+<script src="/static/style_editor/renderer.js"></script>
+<script>
+/* 编辑器预览 vs Python 真机出图 的无头自检。
+ * 逐样式 POST 进度到 /api/selftest_report；window.onerror 兜底回传。 */
+const POST = (stage, data) => fetch("/api/selftest_report", {
+  method: "POST", body: JSON.stringify({stage, ...data})}).catch(() => {});
+window.addEventListener("error", e => POST("error", {msg: String(e.message), at: String(e.filename) + ":" + e.lineno}));
+
+(async () => {
+  const $ = id => document.getElementById(id);
+  const log = s => { $("result").textContent = s; };
+  try {
+    const meta = await (await fetch("/api/style_meta")).json();
+    const item = {side: "山间的清晨雾气还未散去", date: "2026-09-24", city: "厦门市"};
+    const photos = {};
+    for (const o of ["p", "l"]) {
+      photos[o] = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im); im.onerror = () => rej(new Error("photo " + o));
+        im.src = `/static/style_editor/stress/warm_${o}.jpg`;
+      });
+    }
+    await POST("boot", {fonts: "loading"});
+    await document.fonts.load('24px SmileySans');
+    await document.fonts.load('24px LXGW');
+    await document.fonts.ready;
+    const cv = $("cv"), ctx = cv.getContext("2d");
+    const styles = await (await fetch("/api/styles")).json();
+
+    /* 预热：触发钤印字形加载 */
+    const first = await (await fetch("/api/styles/P05")).json();
+    const [w0, h0] = meta.canvas[first.orientation];
+    cv.width = w0; cv.height = h0;
+    Renderer.render(cv, first, item, photos.p, {canvasSize: [w0, h0], guide: false});
+    await new Promise(r => setTimeout(r, 1500));
+
+    const results = [];
+    for (const s of styles) {
+      const style = await (await fetch(`/api/styles/${s.id}`)).json();
+      const [w, h] = meta.canvas[style.orientation];
+      const photoKey = style.orientation === "portrait" ? "p" : "l";
+      cv.width = w; cv.height = h;
+      const t0 = performance.now();
+      Renderer.render(cv, style, item, photos[photoKey],
+                      {canvasSize: [w, h], veilAlphaDefault: meta.veil_alpha, guide: false});
+      const prev = ctx.getImageData(0, 0, w, h).data;
+
+      const r = await fetch("/api/style_preview", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({style, item,
+                              photo: `/static/style_editor/stress/warm_${photoKey}.jpg`,
+                              dither: false})});
+      if (!r.ok) { results.push({id: s.id, error: r.status}); await POST("progress", {results}); continue; }
+      const gt = await createImageBitmap(await r.blob());
+      const off = document.createElement("canvas");
+      off.width = w; off.height = h;
+      off.getContext("2d").drawImage(gt, 0, 0);
+      const gtd = off.getContext("2d").getImageData(0, 0, w, h).data;
+
+      let sum = 0, over = 0;
+      const N = w * h;
+      for (let i = 0; i < N; i++) {
+        const j = i * 4;
+        const d = (Math.abs(prev[j] - gtd[j]) + Math.abs(prev[j+1] - gtd[j+1])
+                   + Math.abs(prev[j+2] - gtd[j+2])) / 3;
+        sum += d;
+        if (d > 8) over++;
+      }
+      results.push({id: s.id, mean: +(sum / N).toFixed(2),
+                    pctOver8: +(100 * over / N).toFixed(1),
+                    ms: Math.round(performance.now() - t0)});
+      await POST("progress", {results});
+    }
+
+    let eink = "OK";
+    try {
+      Renderer.render(cv, first, item, photos.p,
+                      {canvasSize: [w0, h0], guide: false, eink: true});
+    } catch (e) { eink = "FAIL: " + e.message; }
+
+    /* 真实照片端到端：/api/style_photo 裁切底图渲染 vs 真实管线出图
+     * （照片区域应零差异，残差只剩文字栅格化） */
+    let real = null;
+    try {
+      const fsr = await fetch("/api/frame_state");
+      if (fsr.ok) {
+        const fs = await fsr.json();
+        if (fs.layout && fs.photo_url) {
+          const rst = await (await fetch(`/api/styles/${fs.layout}`)).json();
+          const [rw, rh] = meta.canvas[rst.orientation];
+          const rit = {side: (fs.item && fs.item.side) || "",
+                       date: (fs.item && fs.item.date) || "",
+                       city: (fs.item && fs.item.city) || "",
+                       subjects_json: (fs.item && fs.item.subjects_json) || ""};
+          const cr = await fetch("/api/style_photo", {method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({photo: fs.photo_url, orientation: rst.orientation,
+                                    crop_reserve: rst.crop_reserve || {},
+                                    subjects_json: (fs.item && fs.item.subjects_json) || ""})});
+          const bmp = await createImageBitmap(await cr.blob());
+          cv.width = rw; cv.height = rh;
+          Renderer.render(cv, rst, rit, bmp,
+                          {canvasSize: [rw, rh], veilAlphaDefault: meta.veil_alpha, guide: false});
+          const rp = ctx.getImageData(0, 0, rw, rh).data;
+          const gr = await fetch("/api/style_preview", {method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({style: rst, item: rit, photo: fs.photo_url, dither: false})});
+          const gtb = await createImageBitmap(await gr.blob());
+          const off = document.createElement("canvas");
+          off.width = rw; off.height = rh;
+          off.getContext("2d").drawImage(gtb, 0, 0);
+          const gd = off.getContext("2d").getImageData(0, 0, rw, rh).data;
+          let sum = 0, over = 0;
+          for (let i = 0; i < rw * rh; i++) {
+            const j = i * 4;
+            const d = (Math.abs(rp[j] - gd[j]) + Math.abs(rp[j+1] - gd[j+1])
+                       + Math.abs(rp[j+2] - gd[j+2])) / 3;
+            sum += d; if (d > 8) over++;
+          }
+          real = {layout: fs.layout, mean: +(sum / (rw * rh)).toFixed(2),
+                  pctOver8: +(100 * over / (rw * rh)).toFixed(1)};
+        }
+      }
+    } catch (e) { real = {error: String(e)}; }
+
+    const report = {stage: "done", results, eink, real, fonts: document.fonts.status};
+    log(JSON.stringify(report));
+    await POST("done", report);
+  } catch (e) {
+    await POST("fatal", {msg: String(e)});
+    log("FATAL " + e);
+  }
+})();
+</script>
+</body>
+</html>

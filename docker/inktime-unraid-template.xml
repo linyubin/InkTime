@@ -11,7 +11,7 @@
   <Project></Project>
   <Overview>InkTime: 这个容器囊括了完整的服务器、照片分析和蓝牙推送能力。每日通过 Cron 自动运算你当天的精彩回忆黑白影像并通过蓝牙更新至 ESP32。</Overview>
   <Category>Tools:</Category>
-  <WebUI>http://[IP]:[PORT:8766]</WebUI>
+  <WebUI>http://[IP]:[PORT:8765]</WebUI>
   <TemplateURL></TemplateURL>
   <Icon>https://raw.githubusercontent.com/docker-library/docs/master/python/logo.png</Icon>
   <ExtraParams>--device /dev/tty:-v /var/run/dbus:/var/run/dbus</ExtraParams>

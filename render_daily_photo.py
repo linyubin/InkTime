@@ -92,6 +92,21 @@ def _parse_exif_datetime(s: Optional[str]) -> Optional[dt.datetime]:
     return None
 
 
+SIDE_TEXT_MAX_CHARS = int(getattr(cfg, "SIDE_TEXT_MAX_CHARS", 30))  # 旁白字数兜底上限（版式层 fit/wrap/min_size 之外的数据源防线）
+
+
+def _clamp_side_text(text: str, limit: int = SIDE_TEXT_MAX_CHARS) -> str:
+    """旁白文案长度兜底（2026-10-09）：超限截断加省略号。
+
+    版式层已有 fit/wrap/min_size 三重约束，这里防的是数据源脏数据——
+    历史库存在 1379 字的超长 side_caption，直接进管线会拖慢折行循环。
+    """
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
 def load_sim_rows() -> List[Dict[str, Any]]:
     """
     加载 InkTime 用的核心字段：
@@ -123,7 +138,9 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                width,
                height,
                orientation,
-               exif_datetime
+               exif_datetime,
+               caption,
+               reason
         FROM photo_scores
         WHERE exif_json IS NOT NULL
         """
@@ -131,7 +148,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     conn.close()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json, width, height, orientation_raw, exif_dt in rows:
+    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city, beauty_score, type_str, used_at, subjects_json, width, height, orientation_raw, exif_dt, caption, reason in rows:
         date_str = extract_date_from_exif(exif_json, str(path))
         if not date_str:
             continue
@@ -149,7 +166,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "path": str(path),
             "date": date_str,  # YYYY-MM-DD
             "md": md,          # MM-DD
-            "side": side_caption or "",
+            "side": _clamp_side_text(side_caption or ""),
             "memory": float(memory_score) if memory_score is not None else -1.0,
             "lat": gps_lat,
             "lon": gps_lon,
@@ -168,6 +185,10 @@ def load_sim_rows() -> List[Dict[str, Any]]:
             "width": int(width) if width is not None else None,
             "height": int(height) if height is not None else None,
             "orientation_raw": orientation_raw or "",
+            # 选片页（server /select）展示用：主文案 / 评分理由 / 原始 EXIF
+            "caption": caption or "",
+            "reason": reason or "",
+            "exif_json": exif_json or "",
         }
         items.append(item)
 
@@ -280,11 +301,68 @@ def compute_recency_penalty(used_at) -> float:
     return 1.0
 
 
+def compute_crop_penalty(subjects_json: str, img_w: int | None = None, img_h: int | None = None) -> float:
+    """
+    构图完整性惩罚（2026-10-16）：从 YOLO subjects_json 的 bbox 推导主体是否被
+    原生取景切掉（贴边+大面积 = 无头/无脚构图），对 final_score 乘惩罚系数。
+
+    判定口径（归一化坐标 0~1）：
+    - person/cat/dog 框贴顶(top<=0.03)或贴底(bot>=0.97) 且框高>=COMPOSITION_MIN_FRAC
+      → 视为"主体被切"，每个此类主体记一次缺陷；
+    - 贴边但框矮（<MIN_FRAC）视为远景/半身构图，不罚（远处小人贴边属正常取景）；
+    - 横向贴边不罚：左右裁切对"人物照"的观感伤害远小于切头。
+
+    返回惩罚系数（1.0=无缺陷；命中 N 个缺陷主体 × COMPOSITION_CUT_PENALTY），
+    与 recency penalty 同范式（乘法因子），默认 0.85（单缺陷），多主体缺陷可叠加。
+    """
+    if not subjects_json:
+        return 1.0
+    try:
+        subjects = json.loads(subjects_json)
+        if not subjects:
+            return 1.0
+        weights_map = getattr(cfg, "YOLO_SUBJECT_WEIGHTS", {"person": 5.0, "cat": 4.0, "dog": 4.0})
+        min_frac = getattr(cfg, "COMPOSITION_MIN_FRAC", 0.40)
+        pen_top = getattr(cfg, "COMPOSITION_CUT_TOP_PENALTY", 0.85)
+        pen_bot = getattr(cfg, "COMPOSITION_CUT_BOTTOM_PENALTY", 0.93)
+        factor = 1.0
+        for s in subjects:
+            label = s.get("label", "")
+            if label not in weights_map:  # 只看"重要主体"，与版式避让同口径
+                continue
+            bbox = s.get("bbox")
+            if not bbox or len(bbox) != 4:
+                continue
+            cx, cy, bw, bh = bbox
+            top, bot = cy - bh / 2, cy + bh / 2
+            if bh < min_frac:
+                continue
+            top_clip = top <= 0.03
+            bot_clip = bot >= 0.97
+            if top_clip and bot_clip:
+                # 满幅特写豁免（2026-10-16 二次修正）：框上下双贴边=人占满画幅，
+                # 头部在画面内（YOLO 框画满只是因为主体就是整张照片），
+                # 是刻意的满幅/特写构图而非裁切事故。真·无头照只贴一端、
+                # 另一端在画面内自然结束（如 10-16 主照 top=0.000/bot=0.96）。
+                continue
+            if top_clip:           # 仅贴顶: 切头（构图事故）
+                factor *= pen_top
+            elif bot_clip:         # 仅贴底: 切脚（半身/特写，轻罚）
+                factor *= pen_bot
+        return factor
+    except Exception:
+        return 1.0
+
+
 def compute_final_score(item: dict) -> float:
     """
     计算照片综合加权得分：
-        final = (memory × path_w × cat_w × recency_w) × α + beauty × (1−α)
+        final = (memory × path_w × cat_w × recency_w × crop_w) × α + beauty × (1−α)
     若 beauty 为 None，退化为 final = weighted_memory。
+
+    crop_w（2026-10-16）：构图完整性惩罚，从 subjects_json bbox 推导切头/切脚，
+    无 bbox 数据的照片不罚（向后兼容）。惩罚作用于 memory 项（回忆观感受损），
+    不动 beauty 项（美观分已在分析期对构图扣过一次分，避免双重惩罚）。
     """
     memory = item.get("memory", -1.0)
     if memory < 0:
@@ -292,7 +370,8 @@ def compute_final_score(item: dict) -> float:
     path_w    = compute_path_weight(item["path"])
     cat_w     = compute_category_weight(item.get("type_raw", ""))
     recency_w = compute_recency_penalty(item.get("used_at"))
-    wm = memory * path_w * cat_w * recency_w
+    crop_w    = compute_crop_penalty(item.get("subjects_json", ""))
+    wm = memory * path_w * cat_w * recency_w * crop_w
     beauty = item.get("beauty")
     if beauty is None:
         return wm
@@ -789,22 +868,24 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
         center_x = max(0, draw_w - img_area_w) / 2.0
         center_y = max(0, draw_h - img_area_h) / 2.0
 
-        # ====== 第一阶段：硬约束——绝不切人（方案 A）======
-        # 原始算法用 cov**2 平方惩罚来"排斥切人"，但在"上方多人 vs 下方一人"
-        # 这类人数不平衡的场景下，多保几个人的总收益会压过切掉一人的惩罚，
-        # 导致算法选择牺牲边缘主体（切头/切腿），与"绝不切头"的设计意图相悖。
+        # ====== 第一阶段：绝不切人（方案 A，2026-09-25 强化）======
+        # 旧版用"完整框入主体个数(fully_covered_count)"做硬约束，纯数人头会被
+        # 边缘零碎小主体劫持：为把一个贴画边的路人完整框入，宁可切掉主要人物
+        # 三分之一（2026-09-25 实拍反馈：前景两小孩，左边那个被裁）。
         #
-        # 修复：先把每个候选窗口"完整框入了几个主体(fully_covered_count)"算出来，
-        # 只在【能完整框入最多主体的那一组窗口】里再走打分。
-        # 即：若存在能让全部主体 100% 装下的窗口，绝不考虑任何切人的窗口；
-        #     若最多只能装下 k 个，则在"装下 k 个"的窗口里择优。
-        # 这是一条硬性优先级，凌驾于加权打分之上。
+        # 改为三级词典序择优：
+        #   1) 加权完整框入分 fully_w = Σ(主体权重 | cov≥0.999)：按重要性"数人头"，
+        #      完整保住大主体远比凑满边缘小主体值钱；
+        #   2) 重要主体最低覆盖率（maximin，量化到 5% 桶防抖）：同分时优先抬高
+        #      最惨的重要主体（权重≥全库最大权重一半者），确保大主体不被切；
+        #   3) 加权 cov² 总分 + 中心偏置（原有行为）。
         #
         # bottom_reserve（底部文字避让）：评估主体是否被完整框入时，窗口的有效下边界
         # 从 y+img_area_h 收缩为 y+img_area_h-bottom_reserve。物理窗口仍填满画布，
         # 但算法会主动把主体上移到文字区之上，避免被底部毛玻璃卡片遮挡。
         eff_bottom_margin = bottom_reserve  # 主体应避开的底部高度
-        candidates = []  # 每项: (x, y, fully_covered_count, score)
+        max_weight = max(s["weight"] for s in valid_subs)
+        candidates = []  # 每项: (fully_w, min_bucket, score, x, y)
         for x in x_steps:
             for y in y_steps:
                 wx1, wx2 = x, x + img_area_w
@@ -816,7 +897,8 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
                 wx_eff2 = wx2 - right_reserve
 
                 score = 0.0
-                fully_covered = 0
+                fully_w = 0.0
+                min_cov = 1.0
                 for s in valid_subs:
                     ix1 = max(wx_eff1, s["x1"])
                     ix2 = min(wx_eff2, s["x2"])
@@ -831,7 +913,13 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
                         # 如果切掉了一半(cov=0.5)，得分会变成 0.25 倍，从而遭到极大的排斥！
                         score += s["weight"] * (cov ** 2)
                         if cov >= 0.999:  # 该主体被窗口 100% 完整框入
-                            fully_covered += 1
+                            fully_w += s["weight"]
+                        # maximin 只看重要主体：边缘碎主体的低覆盖不应绑架构图
+                        if s["weight"] >= 0.5 * max_weight:
+                            min_cov = min(min_cov, cov)
+                    else:
+                        if s["weight"] >= 0.5 * max_weight:
+                            min_cov = 0.0
 
                 # 中心偏置：得分相同时，优先选择最靠近中心的构图
                 dist_x = abs(x - center_x) / (center_x + 1)
@@ -839,16 +927,11 @@ def compute_crop_window(draw_w: int, draw_h: int, img_area_w: int, img_area_h: i
                 bias = 0.001 * (2 - dist_x - dist_y)
                 score += bias
 
-                candidates.append((x, y, fully_covered, score))
+                candidates.append((fully_w, round(min_cov * 20), score, x, y))
 
-        # 只保留 fully_covered_count 最高的那组候选，再按 score 选最优。
-        max_fully = max(c[2] for c in candidates)
-        best_left, best_top, _, _ = max(
-            ((x, y, fc, sc) for x, y, fc, sc in candidates if fc == max_fully),
-            key=lambda c: c[3],
-        )
-
-        return int(best_left), int(best_top)
+        # 三级词典序：加权完整分 → 重要主体最低覆盖率 → 总分。
+        fully_w_best, min_b_best, _, best_x, best_y = max(candidates)
+        return int(best_x), int(best_y)
     except Exception as e:
         print(f"[WARN] compute_crop_window error: {e}")
         return default_left, default_top
@@ -961,7 +1044,9 @@ def _pick_layout_for(item: Dict[str, Any], orientation: str, img: Image.Image,
         info = {"signals": extract_signals(item, wr), "scores": {}, "final": {},
                 "vetoed": {}, "tie": "forced"}
         return forced, info
-    return pick_layout(item, orientation, wr)
+    # 真实尺寸（exif_transpose 后）传给选型：侧避让版式（L02/P05）的几何
+    # 可行性否决需要它；DB width/height 对 EXIF 旋转照片不可信（见 load 处注释）
+    return pick_layout(item, orientation, wr, img_size=img.size)
 
 
 def _cover_crop(img: Image.Image, canvas_w: int, canvas_h: int,
@@ -1588,6 +1673,144 @@ def image_to_palette_bin(img: Image.Image, orientation: str = "portrait") -> byt
 
 # ========== 主流程 ==========
 
+def render_photo_to_bin(chosen: Dict[str, Any], idx: int,
+                        holiday: Optional[Dict[str, Any]] = None,
+                        log=print) -> Dict[str, Any]:
+    """渲染单张选中照片并落盘全部产物，返回该张的 sidecar dict。
+
+    产物：preview_{idx}.png / photo_{idx}.bin / photo_{idx}.path.txt / photo_{idx}.json。
+    每日管线（main）与 server 手动选片推送共用本函数，保证两条入口产物一致。
+    chosen 须为 load_sim_rows 形状的照片 dict；holiday 为当日节日（可为 None）。
+    """
+    import shutil
+
+    # 渲染成完整成品图（照片 + 文案 + 日期 + 地点 [+ 节日庆祝层]）
+    img = render_image(chosen, holiday=holiday)
+
+    # AI 质检（2026-09-13）：成品图发给视觉大模型检查贴图缺陷；
+    # shift=换槽位重渲染复检，复检不过或 drop=本张不叠加装饰（fail-open）
+    import holiday_ai
+    holiday_skipped = False
+    if holiday and holiday_ai.enabled() and bool(getattr(cfg, "HOLIDAY_AI_QA", True)):
+        verdict = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
+        if not verdict["ok"]:
+            log(f"[HOLIDAY-QA] 缺陷: {verdict['problems']} → {verdict['action']}")
+            if verdict["action"] == "shift":
+                img = render_image(chosen, holiday=dict(holiday, _alt_slot=True))
+                v2 = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
+                if not v2["ok"]:
+                    log("[HOLIDAY-QA] 换位复检仍未通过，本张不叠加装饰")
+                    img = render_image(chosen, holiday=None)
+                    holiday_skipped = True
+            else:  # drop
+                img = render_image(chosen, holiday=None)
+                holiday_skipped = True
+
+    # 朝向决策：render_image 已把实际渲染朝向写入 canvas.info，不再为判定朝向
+    # 而第二次完整加载原图。
+    render_orientation = img.info.get("render_orientation")
+    if render_orientation not in ("portrait", "landscape"):
+        # 兜底：保守按竖屏处理（render_image 若失败会另行抛错）。
+        render_orientation = "portrait"
+
+    # 自适应伽马补偿：按成品图直方图选档（预测式），提亮后再抖动
+    gamma, g_mode = choose_gamma(img)
+    img_gamma = apply_gamma(img, gamma)
+    log(f"[GAMMA] {g_mode} | gamma={gamma:.3f}")
+
+    # 抖动成四色墨水屏风格（quantize C 实现，产物为 P 模式索引图）
+    img_dithered = quantize_four_color(img_gamma)
+
+    # 实测四色占比（闭环校验：预测 vs 实际）
+    ratios = measure_dither_ratios(img_dithered)
+    tol = getattr(cfg, "GAMMA_TARGET_TOLERANCE", 0.05)
+    target = getattr(cfg, "GAMMA_TARGET_WHITE_RATIO", 0.45)
+    warn = ""
+    if g_mode.startswith("auto") and abs(ratios["white"] - target) > tol:
+        warn = f" ⚠️偏离目标(±{tol:.0%})"
+    log(f"[GAMMA] 实测占比: white={ratios['white']:.1%} black={ratios['black']:.1%} "
+        f"red={ratios['red']:.1%} yellow={ratios['yellow']:.1%}{warn}")
+
+    # 保存预览 PNG（已经是抖动后的效果），按索引区分
+    preview_path = BIN_OUTPUT_DIR / f"preview_{idx}.png"
+    img_dithered.save(preview_path)
+    log(f"[OK] 已保存预览 PNG: {preview_path}")
+
+    # 转 BIN：photo_0.bin, photo_1.bin, ...（按朝向校验画布尺寸）
+    bin_data = image_to_palette_bin(img_dithered, orientation=render_orientation)
+    bin_path = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
+    with open(bin_path, "wb") as f:
+        f.write(bin_data)
+    log(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节, {render_orientation}）")
+
+    # 记录展示历史改为由推送展示端执行，此处仅保存此图片的路径
+    path_file = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
+    with open(path_file, "w", encoding="utf-8") as f:
+        f.write(chosen["path"])
+
+    # 写 sidecar json：标注本张照片实际渲染朝向与画布尺寸，供 ESP32 / debug 读取。
+    if render_orientation == "landscape":
+        sidecar_w = int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
+        sidecar_h = int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
+    else:
+        sidecar_w = CANVAS_WIDTH
+        sidecar_h = CANVAS_HEIGHT
+    sidecar = {
+        "orientation": render_orientation,
+        "w": sidecar_w,
+        "h": sidecar_h,
+        # 版式选型结果（2026-09-12），旧固件会忽略未知字段
+        "layout": img.info.get("layout", ""),
+        # 实际渲染所用槽位文案（2026-09-25，样式编辑器「载入相框状态」消费；
+        # 含 holiday_ai 覆写后的值，photos.db 里的只是分析期初值）
+        "item": {"side": str(chosen.get("side") or ""),
+                 "date": str(chosen.get("date") or ""),
+                 "city": str(chosen.get("city") or "")},
+    }
+    if holiday:
+        sidecar["holiday"] = holiday["name"]
+        if holiday_skipped:
+            sidecar["holiday_skipped"] = True
+    sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    log(f"[OK] 已生成 sidecar: {sidecar_path} ({sidecar})")
+    return sidecar
+
+
+def sync_latest_from_photo0(log=print) -> bool:
+    """把 photo_0.{bin,png,json,path.txt} 同步为 latest.*（兼容旧流程的单一入口）。
+
+    返回是否存在 photo_0.bin（不存在则什么都不做）。
+    """
+    import shutil
+
+    first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
+    first_preview = BIN_OUTPUT_DIR / "preview_0.png"
+    first_path = BIN_OUTPUT_DIR / "photo_0.path.txt"
+    latest_bin = BIN_OUTPUT_DIR / "latest.bin"
+    latest_preview = BIN_OUTPUT_DIR / "preview.png"
+    latest_path = BIN_OUTPUT_DIR / "latest.path.txt"
+
+    if not first_bin.exists():
+        return False
+
+    shutil.copyfile(first_bin, latest_bin)
+    log(f"[OK] 已更新 latest.bin -> {first_bin.name}")
+    if first_preview.exists():
+        shutil.copyfile(first_preview, latest_preview)
+        log(f"[OK] 已更新 preview.png -> {first_preview.name}")
+    if first_path.exists():
+        shutil.copyfile(first_path, latest_path)
+
+    # 同步 latest.json（朝向 sidecar），供走 latest 路径的设备拿朝向。
+    first_json = BIN_OUTPUT_DIR / "photo_0.json"
+    latest_json = BIN_OUTPUT_DIR / "latest.json"
+    if first_json.exists():
+        shutil.copyfile(first_json, latest_json)
+        log(f"[OK] 已更新 latest.json -> {first_json.name}")
+    return True
+
+
 def main():
     items = load_sim_rows()
     if not items:
@@ -1640,8 +1863,6 @@ def main():
     if not photos:
         raise SystemExit("选片结果为空。")
 
-    import shutil
-
     # 对今天选出的多张照片逐一渲染
     for idx, chosen in enumerate(photos):
         print(f"[INFO] 第 {idx} 张选中照片:", chosen["path"])
@@ -1652,10 +1873,11 @@ def main():
         _pw = compute_path_weight(chosen["path"])
         _cw = compute_category_weight(chosen.get("type_raw", ""))
         _rw = compute_recency_penalty(chosen.get("used_at"))
+        _gw = compute_crop_penalty(chosen.get("subjects_json", ""))
         _pb = chosen.get("_portrait_boost") or compute_portrait_boost(chosen.get("type_raw", ""))
         _ds = chosen.get("_display_score") or _fs * _pb
         print(f"[SELECT] final={_fs:.2f} | portrait_boost={_pb:.2f} | display={_ds:.2f}"
-              f" | path_w={_pw:.2f} cat_w={_cw:.2f} recency_w={_rw:.2f}"
+              f" | path_w={_pw:.2f} cat_w={_cw:.2f} recency_w={_rw:.2f} crop_w={_gw:.2f}"
               f" | mem={chosen['memory']:.1f} beauty={chosen.get('beauty', 'N/A')}"
               f" | type={chosen.get('type_raw', '')}")
         # 额外调试信息：城市 / 经纬度 / 文案
@@ -1663,114 +1885,11 @@ def main():
         print("[DEBUG] 经纬度:", chosen.get("lat"), chosen.get("lon"))
         print("[DEBUG] 文案:", chosen.get("side", ""))
 
-        # 渲染成完整成品图（照片 + 文案 + 日期 + 地点 [+ 节日庆祝层]）
-        img = render_image(chosen, holiday=holiday)
-
-        # AI 质检（2026-09-13）：成品图发给视觉大模型检查贴图缺陷；
-        # shift=换槽位重渲染复检，复检不过或 drop=本张不叠加装饰（fail-open）
-        holiday_skipped = False
-        if holiday and holiday_ai.enabled() and bool(getattr(cfg, "HOLIDAY_AI_QA", True)):
-            verdict = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
-            if not verdict["ok"]:
-                print(f"[HOLIDAY-QA] 缺陷: {verdict['problems']} → {verdict['action']}")
-                if verdict["action"] == "shift":
-                    img = render_image(chosen, holiday=dict(holiday, _alt_slot=True))
-                    v2 = holiday_ai.qa_check(img, holiday, img.info.get("layout", ""))
-                    if not v2["ok"]:
-                        print("[HOLIDAY-QA] 换位复检仍未通过，本张不叠加装饰")
-                        img = render_image(chosen, holiday=None)
-                        holiday_skipped = True
-                else:  # drop
-                    img = render_image(chosen, holiday=None)
-                    holiday_skipped = True
-
-        # 朝向决策：render_image 已把实际渲染朝向写入 canvas.info，不再为判定朝向
-        # 而第二次完整加载原图。
-        render_orientation = img.info.get("render_orientation")
-        if render_orientation not in ("portrait", "landscape"):
-            # 兜底：保守按竖屏处理（render_image 若失败会另行抛错）。
-            render_orientation = "portrait"
-
-        # 自适应伽马补偿：按成品图直方图选档（预测式），提亮后再抖动
-        gamma, g_mode = choose_gamma(img)
-        img_gamma = apply_gamma(img, gamma)
-        print(f"[GAMMA] {g_mode} | gamma={gamma:.3f}")
-
-        # 抖动成四色墨水屏风格（quantize C 实现，产物为 P 模式索引图）
-        img_dithered = quantize_four_color(img_gamma)
-
-        # 实测四色占比（闭环校验：预测 vs 实际）
-        ratios = measure_dither_ratios(img_dithered)
-        tol = getattr(cfg, "GAMMA_TARGET_TOLERANCE", 0.05)
-        target = getattr(cfg, "GAMMA_TARGET_WHITE_RATIO", 0.45)
-        warn = ""
-        if g_mode.startswith("auto") and abs(ratios["white"] - target) > tol:
-            warn = f" ⚠️偏离目标(±{tol:.0%})"
-        print(f"[GAMMA] 实测占比: white={ratios['white']:.1%} black={ratios['black']:.1%} "
-              f"red={ratios['red']:.1%} yellow={ratios['yellow']:.1%}{warn}")
-
-        # 保存预览 PNG（已经是抖动后的效果），按索引区分
-        preview_path = BIN_OUTPUT_DIR / f"preview_{idx}.png"
-        img_dithered.save(preview_path)
-        print(f"[OK] 已保存预览 PNG: {preview_path}")
-
-        # 转 BIN：photo_0.bin, photo_1.bin, ...（按朝向校验画布尺寸）
-        bin_data = image_to_palette_bin(img_dithered, orientation=render_orientation)
-        bin_path = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
-        with open(bin_path, "wb") as f:
-            f.write(bin_data)
-        print(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节, {render_orientation}）")
-
-        # 记录展示历史改为由推送展示端执行，此处仅保存此图片的路径
-        path_file = BIN_OUTPUT_DIR / f"photo_{idx}.path.txt"
-        with open(path_file, "w", encoding="utf-8") as f:
-            f.write(chosen["path"])
-
-        # 写 sidecar json：标注本张照片实际渲染朝向与画布尺寸，供 ESP32 / debug 读取。
-        if render_orientation == "landscape":
-            sidecar_w = int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800))
-            sidecar_h = int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480))
-        else:
-            sidecar_w = CANVAS_WIDTH
-            sidecar_h = CANVAS_HEIGHT
-        sidecar = {
-            "orientation": render_orientation,
-            "w": sidecar_w,
-            "h": sidecar_h,
-            # 版式选型结果（2026-09-12），旧固件会忽略未知字段
-            "layout": img.info.get("layout", ""),
-        }
-        if holiday:
-            sidecar["holiday"] = holiday["name"]
-            if holiday_skipped:
-                sidecar["holiday_skipped"] = True
-        sidecar_path = BIN_OUTPUT_DIR / f"photo_{idx}.json"
-        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
-        print(f"[OK] 已生成 sidecar: {sidecar_path} ({sidecar})")
+        # 渲染 + 落盘（与 server 手动选片推送共用同一实现）
+        render_photo_to_bin(chosen, idx, holiday)
 
     # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
-    first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
-    first_preview = BIN_OUTPUT_DIR / "preview_0.png"
-    first_path = BIN_OUTPUT_DIR / "photo_0.path.txt"
-    latest_bin = BIN_OUTPUT_DIR / "latest.bin"
-    latest_preview = BIN_OUTPUT_DIR / "preview.png"
-    latest_path = BIN_OUTPUT_DIR / "latest.path.txt"
-
-    if first_bin.exists():
-        shutil.copyfile(first_bin, latest_bin)
-        print(f"[OK] 已更新 latest.bin -> {first_bin.name}")
-    if first_preview.exists():
-        shutil.copyfile(first_preview, latest_preview)
-        print(f"[OK] 已更新 preview.png -> {first_preview.name}")
-    if first_path.exists():
-        shutil.copyfile(first_path, latest_path)
-
-    # 同步 latest.json（朝向 sidecar），供走 latest 路径的设备拿朝向。
-    first_json = BIN_OUTPUT_DIR / "photo_0.json"
-    latest_json = BIN_OUTPUT_DIR / "latest.json"
-    if first_json.exists():
-        shutil.copyfile(first_json, latest_json)
-        print(f"[OK] 已更新 latest.json -> {first_json.name}")
+    sync_latest_from_photo0()
 
 
 if __name__ == "__main__":

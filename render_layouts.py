@@ -2,14 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-14 款文字版式的 PIL 渲染实现（2026-09-12 定稿）。
+文字版式绘制原语 + 数据化版式入口（2026-09-24 版式数据化迁移，ADR 0002）。
+
+本模块保留所有绘制原语（_glass/_scrim/_seal/_draw_dark/_fit_text…）供
+style_runtime 解释 layouts/*.json 时复用；入口 render_layout 按版式 ID 从
+注册表取样式数据交 style_runtime 绘制。12 款在册版式的转写以
+scripts/validate_style_migration.py 逐像素验收（864/864 一致）。
 
 几何坐标与 docs/layout-showcase-2026-09-11/index.html 逐一对应：
 - 展示页 mockup 按真实画布 1:1 标注，竖屏 480×800 / 横屏 800×480；
 - 竖屏 y 坐标按相框遮挡换算：y_canvas = y_mockup - 40 + FRAME_MASK_INSET_PX；
 - 横屏 x 坐标同理：x_canvas = x_mockup - 40 + FRAME_MASK_INSET_PX；
+- layouts/*.json 存的是换算后的画布坐标（FRAME_MASK_INSET_PX=40 时与展示页同值）；
 - 遵循展示页「抖动三条铁律」：半透明白 alpha≥184、无深色描边、
-  立体感 = 外投影 + 白高光边。
+   立体感 = 外投影 + 白高光边。
 
 入口：render_layout(canvas, layout_id, item)
 """
@@ -45,15 +51,25 @@ _FONT_PATH = Path(str(getattr(cfg, "FONT_PATH", "") or "")).expanduser()
 if str(_FONT_PATH) and not _FONT_PATH.is_absolute():
     _FONT_PATH = (Path(__file__).resolve().parent / _FONT_PATH).resolve()
 
-_FONT_CACHE: Dict[Tuple[str, int], ImageFont.FreeTypeFont] = {}
+_FONT_CACHE: Dict[Tuple[Optional[str], int], ImageFont.FreeTypeFont] = {}
 _SEAL_GLYPH_DIR = Path(__file__).resolve().parent / "seal_glyphs"
 
+# 版式 JSON 的 font 字段可选字体（None=跟随 config.FONT_PATH，存量版式均为 None）
+_FONT_FILES = {"smiley": "SmileySans-Oblique.ttf", "lxgw": "LXGWHeartSerifMN.ttf"}
 
-def _get_font(size: int) -> ImageFont.FreeTypeFont:
-    key = ("lxgw", size)
+
+def _get_font(size: int, font_id: Optional[str] = None) -> ImageFont.FreeTypeFont:
+    key = (font_id, size)
     if key not in _FONT_CACHE:
         font = None
-        if _FONT_PATH and Path(_FONT_PATH).exists():
+        if font_id in _FONT_FILES:
+            p = Path(__file__).resolve().parent / "font" / _FONT_FILES[font_id]
+            if p.exists():
+                try:
+                    font = ImageFont.truetype(str(p), size)
+                except Exception:
+                    font = None
+        if font is None and _FONT_PATH and Path(_FONT_PATH).exists():
             try:
                 font = ImageFont.truetype(str(_FONT_PATH), size)
             except Exception:
@@ -135,10 +151,11 @@ def _wrap_lines(canvas, text: str, font, max_w: float, max_lines: int) -> List[s
 
 def _draw_dark(canvas, x: float, y: float, s: str, size: int,
                fill=BLACK, stroke: float = 0.3,
-               align: str = "l", cx: float = None, bold: bool = False) -> None:
+               align: str = "l", cx: float = None, bold: bool = False,
+               font_id: Optional[str] = None) -> None:
     """深色文字（毛玻璃/实白/浅色渐变底上），同色描边模拟加粗。"""
     d = ImageDraw.Draw(canvas)
-    font = _get_font(size)
+    font = _get_font(size, font_id)
     w = d.textlength(s, font=font)
     if align == "c":
         x = (cx if cx is not None else x) - w / 2
@@ -275,249 +292,18 @@ def _city(item: Dict[str, Any]) -> str:
 # ==================================================================
 # 竖屏 6 款（480×800，展示页 y - 40 + INSET）
 # ==================================================================
-def _p01(canvas, item) -> None:
-    """底部玻璃卡·基线：卡片自适应文案行数，锚进可视区。"""
-    caption = item.get("side") or ""
-    font_cap = _get_font(24)
-    y1 = _py(750)
-    y0 = y1 - 92
-    _glass(canvas, (10, y0, 470, y1), radius=16, alpha=184, blur=12)
-    d = ImageDraw.Draw(canvas)
-    if caption:
-        # 单行纪律：最多约 16 汉字 + 2 标点，超出省略号截断（本款不适合多行）
-        fitted = _fit_text(d, caption, font_cap, 432)
-        d.text((24, y0 + 12), fitted, font=font_cap, fill=BLACK,
-               stroke_width=0.3, stroke_fill=BLACK)
-    row_y = y1 - 40
-    left_meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    _draw_dark(canvas, 24, row_y, left_meta, 18, fill=META_GRAY, stroke=0)
-    city = _city(item)
-    if city:
-        cw = d.textlength(city, font=_get_font(18))
-        _draw_dark(canvas, 456 - cw, row_y, city, 18, fill=META_GRAY, stroke=0)
-
-
-def _p03(canvas, item) -> None:
-    """角落手记：左对齐黑字加粗 + 底部米白渐变（514→800，文字顶到位）。"""
-    _scrim(canvas, 0, int(_py(494)), 480, 800 - int(_py(494)), 0, VEIL_ALPHA,
-           ramp_px=170, rgb=VEIL_RGB)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(26), 424, 2)
-        y = _py(660)
-        for ln in lines:
-            _draw_dark(canvas, 28, y, ln, 26, bold=True)
-            y += 34
-    _draw_dark(canvas, 28, _py(738), _meta_segments(item), 18,
-               fill=META_GRAY, stroke=0)
-
-
-def _p05(canvas, item) -> None:
-    """竖排题签·钤印：右侧半透明签面竖排文案，等宽横排小篆印章。"""
-    _glass(canvas, (382, int(_py(56)), 454, int(_py(352))), radius=8, alpha=184, blur=10)
-    caption = item.get("side") or ""
-    font_v = _get_font(24)
-    d = ImageDraw.Draw(canvas)
-    if caption:
-        col_h, pitch, col_gap = 280, 31, 31
-        per_col = col_h // pitch
-        cols = [caption[i:i + per_col] for i in range(0, min(len(caption), per_col * 2), per_col)]
-        for ci, col in enumerate(cols):
-            col_cx = 429 - ci * col_gap     # 传统竖排：从右往左列
-            y0 = _py(64)
-            for j, ch in enumerate(col):
-                d.text((col_cx, y0 + pitch / 2 + j * pitch), ch,
-                       font=font_v, fill=BLACK, anchor="mm")
-    _seal(canvas, 382, int(_py(356)), 72, 44, _city(item),
-          vertical=False, glyph_px=28)
-    _draw_dark(canvas, 24, _py(724), _meta_segments(item, with_weekday=True), 17,
-               fill=META_GRAY, stroke=0)
-
-
-def _p08(canvas, item) -> None:
-    """大字日期：日期即图形（右侧竖组黑字），文案小字左下；米白渐变 486→800。"""
-    _scrim(canvas, 0, int(_py(486)), 480, 800 - int(_py(486)), 0, VEIL_ALPHA,
-           ramp_px=170, rgb=VEIL_RGB)
-    full, year, rest = _date_parts(item)
-    _draw_dark(canvas, 452, _py(532), year, 22, align="r", cx=452, bold=True)
-    _draw_dark(canvas, 456, _py(554), rest, 96, align="r", cx=456,
-               bold=True, stroke=1.4)
-    _draw_dark(canvas, 452, _py(658),
-               " · ".join(x for x in (weekday_cn(item.get("date", "")), _city(item)) if x),
-               17, fill=META_GRAY, stroke=0, align="r", cx=452)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(24), 268, 2)
-        y = _py(692)
-        for ln in lines:
-            _draw_dark(canvas, 24, y, ln, 24, bold=True)
-            y += 34
-
-
-def _p10(canvas, item) -> None:
-    """全幅字幕：中轴对称黑字收在底部米白渐变上（506→800）。"""
-    _scrim(canvas, 0, int(_py(506)), 480, 800 - int(_py(506)), 0, VEIL_ALPHA,
-           ramp_px=170, rgb=VEIL_RGB)
-    caption = item.get("side") or ""
-    if caption:
-        # 单行纪律：最多约 16 汉字 + 2 标点，超出省略号截断（本款不适合多行）
-        fitted = _fit_text(ImageDraw.Draw(canvas), caption, _get_font(24), 432)
-        _draw_dark(canvas, 24, _py(676), fitted, 24, bold=True, align="c", cx=240)
-    _draw_dark(canvas, 24, _py(736), _meta_segments(item, with_weekday=False),
-               19, fill=META_GRAY, stroke=0, align="c", cx=240)
-
-
+# 版式注册表与入口（ADR 0002：版式数据化，layouts/*.json + style_runtime 解释渲染）
 # ==================================================================
-# 横屏 8 款（800×480，展示页 x - 40 + INSET）
-# ==================================================================
-def _l01(canvas, item) -> None:
-    """底部玻璃卡·基线（现行方案的 3D 玻璃卡，坐标=展示页）。"""
-    _glass(canvas, (_lx(54), 366, _lx(746), 466), radius=18, alpha=184, blur=14,
-           shadow=True, highlight=True)
-    caption = item.get("side") or ""
-    d = ImageDraw.Draw(canvas)
-    x0 = _lx(68)
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(26), 660, 2)
-        y = 372
-        for ln in lines:
-            d.text((x0, y), ln, font=_get_font(26), fill=BLACK,
-                   stroke_width=0.3, stroke_fill=BLACK)
-            y += 32
-    left_meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    _draw_dark(canvas, x0, 438, left_meta, 22)
-    city = _city(item)
-    if city:
-        cw = d.textlength(city, font=_get_font(22))
-        _draw_dark(canvas, _lx(736) - cw, 438, city, 22)
-
-
-def _l02(canvas, item) -> None:
-    """左侧信息栏：通高毛玻璃栏，字段纵向排布。"""
-    x0 = int(_lx(40))
-    _glass(canvas, (x0, 40, x0 + 176, 440), radius=14, alpha=184, blur=12)
-    full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(58), 58, full, 28, stroke=0.5)
-    wd = weekday_cn(item.get("date", ""))
-    if wd:
-        _draw_dark(canvas, _lx(58), 96, wd, 15, fill=GRAY_TEXT, stroke=0)
-    ImageDraw.Draw(canvas).rectangle((_lx(58), 122, _lx(58) + 28, 125), fill=SEAL_RED)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(22), 142, 8)
-        y = 140
-        for ln in lines:
-            _draw_dark(canvas, _lx(58), y, ln, 22)
-            y += 30
-    _draw_dark(canvas, _lx(58), 412, _city(item), 16, fill=GRAY_TEXT, stroke=0)
-
-
-def _l04(canvas, item) -> None:
-    """电影字幕：居中黑字 + 底部米白渐变（212→480）。"""
-    _scrim(canvas, 0, 204, 800, 480 - 204, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(26), 660, 2)
-        y = 372
-        for ln in lines:
-            _draw_dark(canvas, 80, y, ln, 26, bold=True, align="c", cx=_lx(400))
-            y += 34
-    _draw_dark(canvas, 80, 442, _meta_segments(item, with_weekday=False),
-               17, fill=META_GRAY, stroke=0, align="c", cx=_lx(400))
-
-
-def _l05(canvas, item) -> None:
-    """报纸横条：64px 实白条，日期—竖线—文案—城市从左到右。"""
-    x0 = int(_lx(40))
-    _glass(canvas, (x0, 398, x0 + 720, 470), radius=10, alpha=255, blur=1,
-           shadow=True, highlight=False)
-    full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(64), 417, full, 24, stroke=0.5)
-    ImageDraw.Draw(canvas).rectangle((_lx(186), 418, _lx(186) + 1, 450), fill=GRAY_LINE)
-    caption = item.get("side") or ""
-    if caption:
-        fitted = _fit_text(ImageDraw.Draw(canvas), caption, _get_font(18), 458)
-        _draw_dark(canvas, _lx(202), 424, fitted, 18, fill=(34, 34, 34), stroke=0)
-    city = _city(item)
-    if city:
-        d = ImageDraw.Draw(canvas)
-        cw = d.textlength(city, font=_get_font(15))
-        _draw_dark(canvas, _lx(736) - cw, 426, city, 15, fill=GRAY_TEXT, stroke=0)
-
-
-def _l06(canvas, item) -> None:
-    """顶签悬挂：可视区顶边垂下挂签。"""
-    x0 = int(_lx(40))
-    _glass(canvas, (x0, 40, x0 + 330, 194), radius=14, alpha=184, blur=12)
-    full, _, _ = _date_parts(item)
-    _draw_dark(canvas, _lx(60), 54, full, 28, stroke=0.5)
-    wd = weekday_cn(item.get("date", ""))
-    if wd:
-        _draw_dark(canvas, _lx(60), 92, wd, 15, fill=GRAY_TEXT, stroke=0)
-    ImageDraw.Draw(canvas).rectangle((_lx(60), 116, _lx(60) + 30, 119), fill=SEAL_RED)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(20), 290, 2)
-        y = 130
-        for ln in lines:
-            _draw_dark(canvas, _lx(60), y, ln, 20)
-            y += 28
-
-
-def _l07(canvas, item) -> None:
-    """落款钤印：黑字文案/日期右对齐收在右下 + 底部米白渐变，末尾竖排小篆印。"""
-    _scrim(canvas, 0, 168, 800, 480 - 168, 0, VEIL_ALPHA, ramp_px=170, rgb=VEIL_RGB)
-    seal_x1 = int(_lx(736))
-    text_r = seal_x1                            # 无城市→无印章，文字直接顶右缘
-    if _city(item):
-        text_r = seal_x1 - 46 - 10              # 文字给竖排印章让位
-    text_l = int(_lx(40)) + 10                 # 文字左界
-    font_cap = _get_font(25)
-    d = ImageDraw.Draw(canvas)
-    caption = item.get("side") or ""
-    if caption:
-        fitted = _fit_text(d, caption, font_cap, text_r - text_l)
-        _draw_dark(canvas, 0, 334, fitted, 25, bold=True, align="r", cx=text_r)
-    meta = " · ".join(x for x in (_date_parts(item)[0], weekday_cn(item.get("date", ""))) if x)
-    if meta:
-        _draw_dark(canvas, 0, 382, meta, 17, fill=META_GRAY, stroke=0,
-                   align="r", cx=text_r)
-    if _city(item):
-        _seal(canvas, seal_x1 - 46, 334, 46, 70, _city(item),
-              vertical=True, glyph_px=24)
-
-
-def _l10(canvas, item) -> None:
-    """中央铭牌：底部居中实白铭牌（博物馆仪式感）。"""
-    _glass(canvas, (_lx(236), 360, _lx(564), 474), radius=14, alpha=255, blur=1,
-           shadow=True, highlight=False)
-    full, _, _ = _date_parts(item)
-    cx = _lx(400)
-    d = ImageDraw.Draw(canvas)
-    fw = d.textlength(full, font=_get_font(24))
-    _draw_dark(canvas, cx - fw / 2, 376, full, 24, stroke=0.5)
-    d.rectangle((cx - 16, 410, cx + 16, 412), fill=SEAL_RED)
-    caption = item.get("side") or ""
-    if caption:
-        lines = _wrap_lines(canvas, caption, _get_font(18), 300, 2)
-        y = 422
-        for ln in lines:
-            lw = d.textlength(ln, font=_get_font(18))
-            _draw_dark(canvas, cx - lw / 2, y, ln, 18, fill=(51, 51, 51), stroke=0)
-            y += 24
-
-
-PORTRAIT_RENDERERS = {"P01": _p01, "P03": _p03, "P05": _p05,
-                      "P08": _p08, "P10": _p10}
-LANDSCAPE_RENDERERS = {"L01": _l01, "L02": _l02, "L04": _l04, "L05": _l05,
-                       "L06": _l06, "L07": _l07, "L10": _l10}
-
-
 def render_layout(canvas: Image.Image, layout: str, item: Dict[str, Any]) -> None:
-    """按版式 ID 在已裁切好的画布上绘制文字层。"""
-    if layout in PORTRAIT_RENDERERS:
-        PORTRAIT_RENDERERS[layout](canvas, item)
-    elif layout in LANDSCAPE_RENDERERS:
-        LANDSCAPE_RENDERERS[layout](canvas, item)
-    else:
+    """按版式 ID 在已裁切好的画布上绘制文字层。
+
+    版式定义为 layouts/<ID>.json（声明式数据），由 style_runtime 复用本模块的
+    绘制原语解释渲染；旧"一版式一函数"实现于 2026-09-24 迁移退役，
+    迁移验收：scripts/validate_style_migration.py 864/864 逐像素一致。
+    """
+    import style_registry
+    import style_runtime
+    style = style_registry.get_style(layout)
+    if style is None:
         raise ValueError(f"未知版式: {layout}")
+    style_runtime.render_style(canvas, style, item)

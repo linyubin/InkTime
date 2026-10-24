@@ -20,10 +20,111 @@ try:
 except ImportError:
     pass
 import config as cfg
-from common import normalize_type_to_list, parse_datetime_from_filename
+from common import normalize_type_to_list, parse_datetime_from_filename, resolve_chat_endpoint
 import shutil
 
 _yolo_model = None
+_pose_model = None
+
+# COCO-pose 面部关键点索引：0 鼻、1 左眼、2 右眼、3 左耳、4 右耳
+_FACE_KPT_IDS = (0, 1, 2, 3, 4)
+_EYE_IDS = (1, 2)
+_EAR_IDS = (3, 4)
+
+
+def _face_box_from_pose(kpt_xy, kpt_conf, person_box_px, img_w, img_h) -> list | None:
+    """由 COCO-pose 面部关键点派生归一化脸框 [cx, cy, bw, bh]（与 bbox 同格式）。
+
+    脸宽锚点优先级：双耳间距×1.15 > 双眼间距×2.4 > 人物框高×0.12（兜底）；
+    眼线约在脸高 40% 处、鼻约 52%，据此从锚点反推框顶，再裁回图像内。
+    无任何可见面部关键点（侧脸/遮挡/人过小）返回 None——宁缺毋滥，
+    选型端对无 face 字段的数据退回主体级防护。
+    """
+    conf_lim = float(getattr(cfg, "YOLO_POSE_KPT_CONF", 0.3))
+    pts = {i: (float(kpt_xy[i][0]), float(kpt_xy[i][1]))
+           for i in _FACE_KPT_IDS
+           if i < len(kpt_conf) and float(kpt_conf[i]) >= conf_lim}
+    if not pts:
+        return None
+    cx = sum(p[0] for p in pts.values()) / len(pts)
+    px1, py1, px2, py2 = person_box_px
+    person_h = max(1.0, py2 - py1)
+    if len(set(_EAR_IDS) & pts.keys()) == 2:
+        face_w = 1.15 * abs(pts[3][0] - pts[4][0])
+        anchor_y = (pts[3][1] + pts[4][1]) / 2
+        anchor_t = 0.42
+    elif len(set(_EYE_IDS) & pts.keys()) == 2:
+        face_w = 2.4 * abs(pts[1][0] - pts[2][0])
+        anchor_y = (pts[1][1] + pts[2][1]) / 2
+        anchor_t = 0.40
+    elif 0 in pts:
+        face_w = 0.12 * person_h
+        anchor_y, anchor_t = pts[0][1], 0.52
+    else:
+        face_w = 0.12 * person_h
+        anchor_y, anchor_t = next(iter(pts.values()))[1], 0.45
+    face_w = max(face_w, 0.05 * img_w)  # 关键点间距过小时保底，防零尺寸框
+    face_h = 1.35 * face_w
+    top = anchor_y - anchor_t * face_h
+    x1, y1 = max(0.0, cx - face_w / 2), max(0.0, top)
+    x2 = min(float(img_w), cx + face_w / 2)
+    y2 = min(float(img_h), top + face_h)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [round((x1 + x2) / 2 / img_w, 4), round((y1 + y2) / 2 / img_h, 4),
+            round((x2 - x1) / img_w, 4), round((y2 - y1) / img_h, 4)]
+
+
+def _attach_faces(image_path: str, subjects: list) -> None:
+    """给 person 条目附加 pose 关键点派生的脸框（face 字段，2026-10-24）。
+
+    pose 模型只认人：仅当检测出 person 时才加载/推理，宠物照零开销。
+    与检测框按 IoU≥0.3 配对；任何失败静默降级为无脸数据，选型端退回
+    主体级防护（不阻断分析主流程）。
+    """
+    global _pose_model
+    try:
+        from ultralytics import YOLO
+        if _pose_model is None:
+            _pose_model = YOLO(str(getattr(cfg, "YOLO_POSE_MODEL", "yolov8n-pose.pt")))
+        results = _pose_model(image_path, verbose=False)
+    except Exception as e:
+        print(f"[WARN] pose 脸部关键点失败（退回无脸数据）: {e}")
+        return
+
+    for r in results:
+        img_h, img_w = r.orig_shape
+        if r.keypoints is None or not len(r.boxes):
+            continue
+        pose_boxes = r.boxes.xyxy.tolist()
+        kpts_xy = r.keypoints.xy.tolist()
+        kpts_cf = (r.keypoints.conf.tolist()
+                   if r.keypoints.conf is not None else None)
+        for s in subjects:
+            if s.get("label") != "person" or "face" in s:
+                continue
+            cx, cy, bw, bh = s["bbox"]
+            sx1, sy1 = (cx - bw / 2) * img_w, (cy - bh / 2) * img_h
+            sx2, sy2 = (cx + bw / 2) * img_w, (cy + bh / 2) * img_h
+            best_j, best_iou = None, 0.3
+            for j, (qx1, qy1, qx2, qy2) in enumerate(pose_boxes):
+                ix1, iy1 = max(sx1, qx1), max(sy1, qy1)
+                ix2, iy2 = min(sx2, qx2), min(sy2, qy2)
+                inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                union = ((sx2 - sx1) * (sy2 - sy1)
+                         + (qx2 - qx1) * (qy2 - qy1) - inter)
+                iou = inter / union if union > 0 else 0.0
+                if iou > best_iou:
+                    best_iou, best_j = iou, j
+            if best_j is None:
+                continue
+            face = _face_box_from_pose(
+                kpts_xy[best_j],
+                kpts_cf[best_j] if kpts_cf else [1.0] * len(kpts_xy[best_j]),
+                (sx1, sy1, sx2, sy2), img_w, img_h)
+            if face:
+                s["face"] = face
+
 
 def detect_subjects(image_path: Path) -> list:
     global _yolo_model
@@ -67,6 +168,8 @@ def detect_subjects(image_path: Path) -> list:
                 ],
                 "conf": round(conf, 3),
             })
+    if any(s.get("label") == "person" for s in subjects):
+        _attach_faces(str(image_path), subjects)
     return subjects
 
 # =======================
@@ -183,11 +286,17 @@ DB_PATH = Path(str(getattr(cfg, "DB_PATH", "photos.db") or "photos.db")).expandu
 if not DB_PATH.is_absolute():
     DB_PATH = (ROOT_DIR / DB_PATH).resolve()
 
-# LM Studio/OpenAI 兼容接口（仍允许用环境变量覆盖）
+# LM Studio / Ollama / 智谱开放平台等 AI 接口（仍允许用环境变量覆盖）
+# API_URL 写完整端点或只写 base 均可，common.resolve_chat_endpoint 自动补全：
+#   智谱   ：https://open.bigmodel.cn/api/paas/v4
+#   LM Studio：http://127.0.0.1:1234/v1
+#   Ollama  ：http://10.168.1.136:11434
 API_URL = str(
     getattr(cfg, "API_URL", None)
     or os.environ.get("LMSTUDIO_URL", "http://127.0.0.1:1234/v1/chat/completions")
 )
+# 解析后的可直连端点与协议（"openai" | "ollama"）
+API_ENDPOINT, API_PROTOCOL = resolve_chat_endpoint(API_URL)
 
 # 模型名称（仍允许用环境变量覆盖）
 MODEL_NAME = str(
@@ -219,8 +328,44 @@ CITY_MAX_DISTANCE_KM = float(getattr(cfg, "CITY_MAX_DISTANCE_KM", 80.0) or 80.0)
 HOME_LAT = float(getattr(cfg, "HOME_LAT", 22.543096) or 22.543096)
 HOME_LON = float(getattr(cfg, "HOME_LON", 114.057865) or 114.057865)
 HOME_RADIUS_KM = float(getattr(cfg, "HOME_RADIUS_KM", 60.0) or 60.0)
-# 排除关键字（全路径匹配，不区分大小写）
+# 排除关键字（全路径匹配，不区分大小写；\ 与 / 分隔符自动等价，见 is_excluded）
 EXCLUDE_KEYWORDS = getattr(cfg, "EXCLUDE_KEYWORDS", [])
+
+# 跨平台路径映射（来自 config.PATH_MAP）：{数据库路径前缀, 本地路径前缀}
+# 数据库历史记录多为 Windows 生成（UNC 路径），而 Linux/树莓派把照片库挂载在
+# /mnt/nas/Photos。分析脚本在「查库跳过 / 清理残留 / 写库」三个环节统一把
+# 本机扫描路径换算成数据库规范路径，保证跨平台一套库、已分析的不重跑。
+PATH_MAP = getattr(cfg, "PATH_MAP", {}) or {}
+
+
+def to_db_form(path) -> str:
+    r"""本机扫描路径 → 数据库规范路径（PATH_MAP 反向映射 + 分隔符归一）。
+
+    例：/mnt/nas/Photos/x.JPG → \\10.168.1.111\Photos\x.JPG；
+    无映射命中时原样返回（Windows 本机分析、或未配置映射的场景）。
+    """
+    s = str(path)
+    for db_prefix, local_prefix in PATH_MAP.items():
+        db_prefix, local_prefix = str(db_prefix), str(local_prefix)
+        if not local_prefix:
+            continue
+        root_local = local_prefix.rstrip("/\\")
+        if s == local_prefix or (
+            s.startswith(root_local)
+            and len(s) > len(root_local)
+            and s[len(root_local)] in "/\\"
+        ):
+            rest = s[len(root_local):]
+            sep = "\\" if "\\" in db_prefix else "/"
+            rest = rest.replace("\\", sep).replace("/", sep)
+            return db_prefix.rstrip("/\\") + rest
+    return s
+
+
+def _like_escape(s: str) -> str:
+    """转义 SQL LIKE 通配符，需配合 ESCAPE '\\' 子句使用。"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 # ==================================================
 
 # exiftool 是否可用：缺失时只降级 GPS/部分 EXIF，不中断流程
@@ -395,6 +540,19 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 # 生成一句话文案
+def _thinking_control() -> dict:
+    """OpenAI 兼容请求中「思考链控制」的字段口径（按端点自动区分服务商）。
+
+    智谱 glm-5.3-flash 是“始终思考”模型：不认 think 字段（思考链照跑并吃掉
+    max_tokens 预算），也不支持 disabled，只支持 effort 档位，用官方
+    thinking.enabled + effort=low 控制开销；LM Studio 等本地兼容层沿用
+    think=false（未知字段会被忽略，无副作用）。
+    """
+    if "open.bigmodel.cn" in API_ENDPOINT:
+        return {"thinking": {"type": "enabled", "effort": "low"}}
+    return {"think": False}
+
+
 def generate_side_caption(image_path: Path, img_b64: str | None = None) -> str | None:
     system_prompt = (
         "你是一位为「电子相框」撰写旁白短句的中文文案助手。\n"
@@ -429,7 +587,7 @@ def generate_side_caption(image_path: Path, img_b64: str | None = None) -> str |
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
 
-    is_ollama_native = API_URL.rstrip("/").endswith("/api/chat")
+    is_ollama_native = API_PROTOCOL == "ollama"
 
     if is_ollama_native:
         payload = {
@@ -459,33 +617,40 @@ def generate_side_caption(image_path: Path, img_b64: str | None = None) -> str |
                 },
             ],
             "temperature": 0.7,
-            "max_tokens": 64,
+            # 始终思考型模型需要预留思考 token（effort=low 约 100~300），64 会被思考链吃光
+            "max_tokens": 1024,
             "top_p": 0.9,
             "stream": False,
-            "think": False,
+            **_thinking_control(),
         }
 
-    try:
-        resp = requests.post(API_URL, headers=headers, json=payload, timeout=min(120, TIMEOUT))
-    except Exception:
-        return None
+    # 始终思考型模型偶发把 max_tokens 全花在思考链上（content 为空、finish=length），
+    # 对空结果做有限重试，其余失败仍按原口径静默返回 None（文案是可选产物）
+    caption = None
+    for _attempt in range(3):
+        try:
+            resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=min(120, TIMEOUT))
+        except Exception:
+            return None
 
-    if not resp.ok:
-        return None
+        if not resp.ok:
+            return None
 
-    try:
-        data = resp.json()
-        if is_ollama_native:
-            content = data["message"]["content"]
-        else:
-            content = data["choices"][0]["message"]["content"]
-    except Exception:
-        return None
+        try:
+            data = resp.json()
+            if is_ollama_native:
+                content = data["message"]["content"]
+            else:
+                content = data["choices"][0]["message"]["content"]
+        except Exception:
+            return None
 
-    if not isinstance(content, str):
-        content = str(content)
+        if not isinstance(content, str):
+            content = str(content)
 
-    caption = content.strip().strip("“”\"'")
+        caption = content.strip().strip("“”\"'")
+        if caption:
+            break
     return caption or None
 
 
@@ -495,15 +660,11 @@ def list_images(limit: int | None = None) -> list[Path]:
     print("[INFO] 正在递归扫描图片目录，请稍候……")
     scanned = 0
 
-    # 路径过滤：检查全路径是否包含排除关键字
-    def is_excluded(path_str: str) -> bool:
-        return any(kw.lower() in path_str.lower() for kw in EXCLUDE_KEYWORDS)
-
     dirs_to_scan = [IMAGE_DIR]
 
     while dirs_to_scan:
         curr_dir = dirs_to_scan.pop()
-        
+
         # 尝试读取当前目录下的文件和子目录，支持网络重试
         entries = None
         for attempt in range(1, NAS_RETRY_TIMES + 1):
@@ -511,7 +672,7 @@ def list_images(limit: int | None = None) -> list[Path]:
                 # 检查网络挂载状态并尝试重挂载
                 if not _is_mount_ok() and NAS_MOUNT_URL:
                     _try_remount_nas()
-                
+
                 with os.scandir(curr_dir) as it:
                     entries = list(it)
                 break
@@ -534,8 +695,8 @@ def list_images(limit: int | None = None) -> list[Path]:
             try:
                 entry_path = Path(entry.path)
                 path_str = str(entry_path)
-                
-                if is_excluded(path_str):
+
+                if _is_path_excluded(path_str):
                     continue
 
                 if entry.is_dir(follow_symlinks=False):
@@ -560,6 +721,16 @@ def is_screenshot(path: Path) -> bool:
     return "screenshot" in s.lower()
 
 
+def _is_path_excluded(path_str: str) -> bool:
+    r"""全路径排除关键字匹配（不区分大小写）。
+
+    分隔符归一：\ 与 / 等价，让一套 EXCLUDE_KEYWORDS 同时适配
+    Windows（\\10.168.1.111\Photos\陈丽娟的照片）与 Linux（/mnt/nas/Photos/陈丽娟的照片）。
+    """
+    norm = path_str.replace("\\", "/").lower()
+    return any(kw.replace("\\", "/").lower() in norm for kw in EXCLUDE_KEYWORDS)
+
+
 def filter_unscored(conn: sqlite3.Connection, paths: list[Path]) -> list[Path]:
     if not paths:
         return []
@@ -568,16 +739,28 @@ def filter_unscored(conn: sqlite3.Connection, paths: list[Path]) -> list[Path]:
     already: set[str] = set()
     # SQLite 的 IN (...) 参数数量有上限（约 32766），分批查询
     CHUNK = 2000
-    str_paths = [str(p) for p in paths]
-    for i in range(0, len(str_paths), CHUNK):
-        batch = str_paths[i : i + CHUNK]
+    # 每个文件同时核对本机路径与 PATH_MAP 映射后的数据库规范路径，
+    # 兼容「Windows 建库 + Linux 续跑」与「Linux 原生建库」两种口径
+    candidates: list[tuple[Path, set[str]]] = []
+    all_keys: list[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        keys = {str(p), to_db_form(p)}
+        candidates.append((p, keys))
+        for k in keys:
+            if k not in seen:
+                seen.add(k)
+                all_keys.append(k)
+
+    for i in range(0, len(all_keys), CHUNK):
+        batch = all_keys[i : i + CHUNK]
         placeholders = ",".join("?" for _ in batch)
         rows = cur.execute(
             f"SELECT path FROM photo_scores WHERE path IN ({placeholders})",
             batch,
         ).fetchall()
         already.update(row[0] for row in rows)
-    return [p for p in paths if str(p) not in already]
+    return [p for p, keys in candidates if not (keys & already)]
 
 
 def _convert_gps_to_deg(value):
@@ -900,8 +1083,8 @@ def call_vlm(image_path: Path, img_b64: str | None = None) -> dict:
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
 
-    # 根据 API_URL 区分 Ollama native (/api/chat) 与 OpenAI 兼容格式
-    is_ollama_native = API_URL.rstrip("/").endswith("/api/chat")
+    # 按解析出的协议区分 Ollama native (/api/chat) 与 OpenAI 兼容格式
+    is_ollama_native = API_PROTOCOL == "ollama"
 
     if is_ollama_native:
         # Ollama native：图片放 images，content 为纯文本字符串
@@ -936,10 +1119,10 @@ def call_vlm(image_path: Path, img_b64: str | None = None) -> dict:
             ],
             "temperature": 0.2,
             "stream": False,
-            "think": False,
+            **_thinking_control(),
         }
 
-    resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
+    resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=TIMEOUT)
     if not resp.ok:
         print("HTTP:", resp.status_code)
         print(resp.text)
@@ -1001,6 +1184,7 @@ def extract_json_from_text(text: str) -> str:
 def main():
     filelist_path = ROOT_DIR / "filelist.txt"
 
+    print(f"[INFO] AI 端点：{API_ENDPOINT}（协议 {API_PROTOCOL}，模型 {MODEL_NAME}）")
     print("[INFO] 正在扫描图片目录……")
     imgs = list_images()
     filelist_path.write_text("\n".join(str(p) for p in imgs), encoding="utf-8")
@@ -1020,14 +1204,17 @@ def main():
     # 同步删除：NAS/磁盘上已不存在的文件，也从数据库里删除
     # 只处理当前 IMAGE_DIR 前缀下的记录，避免误删其它历史路径。
     # =======================
-    image_dir_prefix = str(IMAGE_DIR)
+    # 清理/统计口径：本机 IMAGE_DIR 前缀 + PATH_MAP 反向映射出的数据库规范前缀。
+    # Windows 时代生成的库存的是 UNC 路径，Linux 上必须按映射前缀才能对上。
+    cleanup_prefixes = list(dict.fromkeys([str(IMAGE_DIR), to_db_form(IMAGE_DIR)]))
 
     try:
         # 用临时表避免 IN (...) 过长导致的 SQLite 参数上限问题
         conn.execute("DROP TABLE IF EXISTS _temp_existing_paths")
         conn.execute("CREATE TEMP TABLE _temp_existing_paths (path TEXT PRIMARY KEY)")
 
-        # 批量插入当前扫描到的文件列表
+        # 批量插入当前扫描到的文件列表（本机路径与数据库规范路径都登记，
+        # 两种口径的历史记录都能被 NOT EXISTS 命中，避免被误删）
         CHUNK = 2000
         total_files = len(imgs)
         inserted = 0
@@ -1035,37 +1222,42 @@ def main():
             chunk = imgs[i : i + CHUNK]
             conn.executemany(
                 "INSERT OR IGNORE INTO _temp_existing_paths(path) VALUES (?)",
-                [(str(p),) for p in chunk],
+                [(k,) for p in chunk for k in {str(p), to_db_form(p)}],
             )
             inserted += len(chunk)
             if inserted % 10000 == 0:
                 print(f"[CLEAN] 已写入存在文件清单：{inserted}/{total_files} …")
 
-        # 删除：数据库里有记录，但磁盘上已不存在的文件
-        cur_clean = conn.cursor()
-        before_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
-            (image_dir_prefix + "%",),
-        ).fetchone()[0]
+        def _count_under_prefixes(cur: sqlite3.Cursor) -> int:
+            return sum(
+                cur.execute(
+                    "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? ESCAPE '\\'",
+                    (_like_escape(prefix) + "%",),
+                ).fetchone()[0]
+                for prefix in cleanup_prefixes
+            )
 
-        cur_clean.execute(
-            """
-            DELETE FROM photo_scores
-            WHERE path LIKE ?
-              AND NOT EXISTS (
-                    SELECT 1 FROM _temp_existing_paths t
-                    WHERE t.path = photo_scores.path
-              )
-            """,
-            (image_dir_prefix + "%",),
-        )
-        deleted = cur_clean.rowcount if cur_clean.rowcount is not None else 0
+        # 删除：数据库里有记录，但磁盘上已不存在的文件（按两种口径前缀各清一遍）
+        cur_clean = conn.cursor()
+        before_cnt = _count_under_prefixes(cur_clean)
+
+        deleted = 0
+        for prefix in cleanup_prefixes:
+            cur_clean.execute(
+                """
+                DELETE FROM photo_scores
+                WHERE path LIKE ? ESCAPE '\\'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM _temp_existing_paths t
+                        WHERE t.path = photo_scores.path
+                  )
+                """,
+                (_like_escape(prefix) + "%",),
+            )
+            deleted += cur_clean.rowcount if cur_clean.rowcount is not None else 0
         conn.commit()
 
-        after_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
-            (image_dir_prefix + "%",),
-        ).fetchone()[0]
+        after_cnt = _count_under_prefixes(cur_clean)
 
         if deleted > 0:
             print(f"[CLEAN] 已同步删除 {deleted} 条数据库残留记录（当前目录：{before_cnt} → {after_cnt}）。")
@@ -1078,10 +1270,12 @@ def main():
 
     cur_test = conn.cursor()
     # 只统计当前 IMAGE_DIR 下的已分析照片，避免数据库里其它路径/历史残留影响进度计算
-    counted = cur_test.execute(
-        "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
-        (image_dir_prefix + "%",),
-    ).fetchone()[0]
+    counted = 0
+    for prefix in cleanup_prefixes:
+        counted += cur_test.execute(
+            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? ESCAPE '\\'",
+            (_like_escape(prefix) + "%",),
+        ).fetchone()[0]
     print(f"[INFO] 数据库中已有 {counted} 张已分析照片（仅统计当前目录）。")
 
     target_paths = filter_unscored(conn, imgs)
@@ -1198,6 +1392,8 @@ def main():
         subjects = detect_subjects(path)
         subjects_json_str = json.dumps(subjects, ensure_ascii=False) if subjects else ""
 
+        # 主键统一存数据库规范路径（PATH_MAP 反向映射），跨平台口径一致
+        db_path = to_db_form(path)
         cur.execute(
             """
             INSERT OR REPLACE INTO photo_scores
@@ -1215,7 +1411,7 @@ def main():
                     ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(path),
+                db_path,
                 caption,
                 ptype,
                 memory_score,
@@ -1224,7 +1420,7 @@ def main():
                 width,
                 height,
                 orientation,
-                str(path),
+                db_path,
                 exif_json,
                 json.dumps(result, ensure_ascii=False),
                 exif_datetime,

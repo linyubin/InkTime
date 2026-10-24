@@ -1,0 +1,86 @@
+{
+  "crop_reserve": {
+    "bottom": 150
+  },
+  "elements": [
+    {
+      "a0": 0,
+      "a1": null,
+      "kind": "veil",
+      "name": "米白渐变底托",
+      "ramp_px": 170,
+      "rect": [
+        0,
+        255,
+        800,
+        567
+      ],
+      "rgb": [
+        246,
+        241,
+        231
+      ]
+    },
+    {
+      "align": "r",
+      "bold": true,
+      "cx": 736,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "fit": 686,
+      "kind": "text",
+      "name": "旁白",
+      "peer_pad": {
+        "dx_cx": -56,
+        "dx_fit": -56,
+        "peer": "钤印"
+      },
+      "size": 28,
+      "slot": "side",
+      "stroke": 0.3,
+      "x": 0,
+      "y": 334
+    },
+    {
+      "align": "r",
+      "bold": false,
+      "cx": 736,
+      "fill": [
+        96,
+        90,
+        82
+      ],
+      "kind": "text",
+      "name": "日期·星期",
+      "peer_pad": {
+        "dx_cx": -56,
+        "dx_fit": -56,
+        "peer": "钤印"
+      },
+      "size": 25,
+      "slot": "date_wd",
+      "stroke": 0,
+      "x": 0,
+      "y": 375
+    },
+    {
+      "glyph_px": 24,
+      "h": 70,
+      "kind": "seal",
+      "name": "钤印",
+      "radius": 6,
+      "slot": "city",
+      "vertical": true,
+      "w": 46,
+      "x": 690,
+      "y": 334
+    }
+  ],
+  "id": "L07",
+  "name": "落款钤印",
+  "orientation": "landscape",
+  "schema_version": 1
+}

@@ -1,0 +1,116 @@
+{
+  "crop_reserve": {
+    "bottom": 140
+  },
+  "elements": [
+    {
+      "a0": 0,
+      "a1": null,
+      "kind": "veil",
+      "name": "米白渐变底托",
+      "ramp_px": 170,
+      "rect": [
+        0,
+        486,
+        480,
+        800
+      ],
+      "rgb": [
+        246,
+        241,
+        231
+      ]
+    },
+    {
+      "align": "r",
+      "bold": true,
+      "cx": 457,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "年份",
+      "size": 22,
+      "slot": "date_year",
+      "stroke": 0.3,
+      "x": -12,
+      "y": 568
+    },
+    {
+      "align": "r",
+      "bold": true,
+      "cx": 461,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "月日大字",
+      "size": 90,
+      "slot": "date_rest",
+      "stroke": 1.4,
+      "x": 5,
+      "y": 590
+    },
+    {
+      "align": "r",
+      "bold": false,
+      "cx": 461,
+      "fill": [
+        96,
+        90,
+        82
+      ],
+      "kind": "text",
+      "name": "星期·城市",
+      "size": 17,
+      "slot": "wd_city",
+      "stroke": 0,
+      "x": 9,
+      "y": 707
+    },
+    {
+      "align": "l",
+      "bold": true,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "size": 26,
+      "slot": "side",
+      "stroke": 0.2,
+      "wrap": {
+        "line_step": 34,
+        "max_lines": 2,
+        "max_w": 268
+      },
+      "x": 26,
+      "y": 660
+    },
+    {
+      "kind": "bar",
+      "name": "饰杠 2",
+      "rect": [
+        340,
+        695,
+        461,
+        700
+      ],
+      "fill": [
+        200,
+        0,
+        0
+      ]
+    }
+  ],
+  "id": "P08",
+  "name": "大字日期",
+  "orientation": "portrait",
+  "schema_version": 1
+}

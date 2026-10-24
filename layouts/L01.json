@@ -1,0 +1,80 @@
+{
+  "crop_reserve": {
+    "bottom": 110
+  },
+  "elements": [
+    {
+      "alpha": 100,
+      "blur": 15,
+      "highlight": true,
+      "kind": "glass",
+      "name": "底部玻璃卡",
+      "radius": 18,
+      "rect": [
+        54,
+        366,
+        746,
+        466
+      ],
+      "shadow": true
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "size": 28,
+      "slot": "side",
+      "stroke": 0.3,
+      "wrap": {
+        "line_step": 32,
+        "max_lines": 2,
+        "max_w": 660
+      },
+      "x": 68,
+      "y": 380
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        66,
+        66,
+        66
+      ],
+      "kind": "text",
+      "name": "日期·星期",
+      "size": 22,
+      "slot": "date_wd",
+      "stroke": 0.3,
+      "x": 68,
+      "y": 420
+    },
+    {
+      "align": "r",
+      "bold": false,
+      "cx": 727,
+      "fill": [
+        66,
+        66,
+        66
+      ],
+      "kind": "text",
+      "name": "城市",
+      "size": 22,
+      "slot": "city",
+      "stroke": 0.2,
+      "x": -10,
+      "y": 420
+    }
+  ],
+  "id": "L01",
+  "name": "底部玻璃卡",
+  "orientation": "landscape",
+  "schema_version": 1
+}

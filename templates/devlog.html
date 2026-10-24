@@ -27,7 +27,7 @@
 <div class="sub">
   事件由相框设备每次入睡前推送至此。<code>ls</code>=事件行号，<code>开机</code>=开机序号（同一次唤醒的事件序号相同），
   <code>相对ms</code>=该次唤醒内的毫秒偏移。BOOT 行的 reset= 字段即"上次怎么死的"（BROWNOUT=掉电、PANIC=崩溃、TIMER_WAKE=正常定时唤醒）。
-  <a href="{{ url_for('devlog') }}">刷新</a>
+  <a href="/devlog">刷新</a>
 </div>
 
 {% if not exists %}
@@ -58,6 +58,6 @@
   </tbody>
 </table>
 {% endif %}
-<a class="back" href="/">← 返回管理首页</a>
+<a class="back" href="/">← 返回 InkTime 首页</a>
 </body>
 </html>

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "P01",
+  "name": "底部玻璃卡",
+  "orientation": "portrait",
+  "crop_reserve": {"bottom": 130},
+  "elements": [
+    {"kind": "glass", "name": "底部玻璃卡", "rect": [10, 658, 470, 750], "radius": 16, "alpha": 184, "blur": 12, "shadow": false, "highlight": true},
+    {"kind": "text", "name": "旁白", "slot": "side", "x": 24, "y": 670, "size": 24, "fill": [0, 0, 0], "stroke": 0.3, "bold": false, "align": "l", "fit": 432},
+    {"kind": "text", "name": "日期·星期", "slot": "date_wd", "x": 24, "y": 710, "size": 18, "fill": [96, 90, 82], "stroke": 0, "bold": false, "align": "l"},
+    {"kind": "text", "name": "城市", "slot": "city", "x": 0, "y": 710, "size": 18, "fill": [96, 90, 82], "stroke": 0, "bold": false, "align": "r", "cx": 456}
+  ]
+}
