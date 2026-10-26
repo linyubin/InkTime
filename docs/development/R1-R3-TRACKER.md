@@ -4,6 +4,8 @@ Baseline: \`local-fix\` at \`378036ee22db9aa99e7e5656e4dedad5c30c90f5\`.
 Working branch: \`refactor/architecture-v1\`.
 Repository Issues are disabled (GitHub API HTTP 410), so this tracked document is the canonical issue ledger.
 
+Detailed work packages, dependency order, test matrices, acceptance gates and rollback: [R1-R3-IMPLEMENTATION.md](R1-R3-IMPLEMENTATION.md).
+
 Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardware/production tests must be recorded separately.
 
 ## R1 — Data integrity and safety
