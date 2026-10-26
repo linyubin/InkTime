@@ -10,7 +10,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 - [x] PR-00 (partial): Create independent branch, safety CI, unit tests, online SQLite backup. **Pending**: CI result, production restore drill, environment dependency installation.
 - [x] PR-01 (safety hotfix): Fail closed on unreadable folders and DirEntry errors; stop automatically deleting missing photo scores; count discrepancies in dry-run. **Pending**: backup + real NAS failure-injection validation; two-successful-scan revalidation/optional manual purge workflow.
-- [ ] PR-02 (partial): Fix safe path handling in server and WebUI; redact DOWNLOAD_KEY in transfer logs and daily orchestrator log. **Pending**: authenticated admin routes, CSRF, device identity, Wi-Fi secret migration, secret rotation, endpoint address validation.
+- [ ] PR-02 (partial): Fix safe path handling in server and WebUI; redact DOWNLOAD_KEY in transfer logs and daily orchestrator log. **Partially implemented**: admin HTTP Basic with no-password fail-closed behavior; Origin guard; removal of legacy /shutdown. **Pending**: CSRF tokens, device identity, Wi-Fi credential migration/rotation, endpoint validation, production HTTPS proxy.
 - [ ] PR-03 (partial): Split broken requirements entry and repair cache .gitignore. **Pending**: versioned database migrations, configuration validation, repository cleanup.
 
 ## R2 — Reliable publish and delivery
@@ -30,7 +30,8 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 | Date | Change | Branch | Validation | Deployment |
 |---|---|---|---|---|
-| 2026-10-27 | Initial safety changes, backup, tests, CI and tracker | refactor/architecture-v1 | Static inspection; CI pending | Not deployed |
+| 2026-10-27 | Initial scanner/backup/path safety baseline | refactor/architecture-v1 | 7 tests passed after SQL escape fix; GitHub Actions run 40356478311 succeeded | Not deployed |
+| 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | CI pending and staging browser verification required | Not deployed |
 
 ## Rollout, verification and rollback
 
@@ -49,3 +50,11 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - Repeated forced scans require a mounted photo library; no production testing is performed by GitHub-only editing.
 - New CI executes standard-library tests; it does not replace full dependency installation, image rendering tests or physical EPD verification.
 - Issues cannot be used until GitHub Issues is enabled for this repository.
+
+## Admin authentication deployment gate
+
+- Configure \`INKTIME_ADMIN_PASSWORD\` before server deployment; optional \`INKTIME_ADMIN_USERNAME\` defaults to \`admin\`. Without password, non-device routes deliberately respond 503.
+- Device routes under \`/static/inktime/\`, \`/api/device_log/\`, \`/api/device_register/\` keep existing DOWNLOAD_KEY semantics during compatibility period.
+- HTTP Basic authentication must only be used over HTTPS via reverse proxy; credentials are otherwise exposed over unencrypted LAN.
+- Cross-site POSTs with mismatched Origin are rejected, but full CSRF-token integration remains pending. This is **not** production authorization acceptance.
+- Previously enabled \`/shutdown\` endpoint is removed; legacy clients must not depend on that route.

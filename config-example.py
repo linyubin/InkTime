@@ -205,6 +205,10 @@ DOWNLOAD_KEY = "yourdownloadkey"
 # Flask 静态服务
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 8765
+# 管理接口默认锁定：通过服务进程环境变量设置 INKTIME_ADMIN_PASSWORD (required)
+# 可选 INKTIME_ADMIN_USERNAME (default: admin)。建议通过 HTTPS 反向代理访问后台。
+# HTTP Basic 在明文 HTTP 上会暴露凭据，不应与 DOWNLOAD_KEY 共用密码。
+
 
 # 是否开启照片库 WebUI（前期检验提示词选片效果时使用，跑通后建议关闭）
 ENABLE_REVIEW_WEBUI = True

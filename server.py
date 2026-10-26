@@ -19,6 +19,7 @@ import threading
 from datetime import datetime
 import config as cfg
 from path_security import safe_join
+from admin_security import admin_authorized, is_device_protocol_path, allowed_origin
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
 import render_daily_photo as rdp
@@ -202,8 +203,24 @@ ensure_transfer_history()
 
 
 @app.before_request
-def _before_request() -> None:
+def _before_request():
     g.t0 = time.time()
+    # The device download/log/register protocol retains DOWNLOAD_KEY authentication.
+    # All other routes, including private photo resources, require admin credentials.
+    if is_device_protocol_path(request.path):
+        return None
+    username = os.environ.get("INKTIME_ADMIN_USERNAME", "admin")
+    password = os.environ.get("INKTIME_ADMIN_PASSWORD", "")
+    if not password:
+        return Response("Administrator access disabled: set INKTIME_ADMIN_PASSWORD", status=503)
+    if not admin_authorized(request.headers.get("Authorization", ""), username, password):
+        return Response("Authentication required", status=401,
+                        headers={"WWW-Authenticate": 'Basic realm="InkTime Admin", charset="UTF-8"'})
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not allowed_origin(
+        request.headers.get("Origin", ""), request.host
+    ):
+        return Response("Cross-origin write blocked", status=403)
+    return None
 
 
 @app.after_request
@@ -1131,19 +1148,7 @@ def esp_time(key: str):
     return str(int(time.time()))
 
 
-@app.post("/static/inktime/<key>/shutdown")
-def esp_shutdown(key: str):
-    """供 inktime_daily.sh 在检测到 ESP32 拉取后优雅关闭 server。"""
-    if key != DOWNLOAD_KEY:
-        abort(404)
-
-    def _stop() -> None:
-        time.sleep(0.3)  # 留时间让响应先返回
-        print("[InkTime] shutdown via /shutdown")
-        os._exit(0)
-
-    threading.Thread(target=_stop, daemon=True).start()
-    return "shutting down", 200
+# Legacy /shutdown endpoint removed: DOWNLOAD_KEY cannot grant process termination.
 
 
 # ── 设备日志（黑盒）上传 ─────────────────────────────────────
