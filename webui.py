@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import config as cfg
+from path_security import safe_join
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
 
@@ -85,10 +86,7 @@ def _make_image_url(path_str: str) -> str:
 def _safe_join(base: Path, rel: str) -> Path:
     """防目录穿越"""
     try:
-        p = (base / rel).resolve()
-        if not str(p).startswith(str(base.resolve())):
-            raise ValueError("path traversal blocked")
-        return p
+        return safe_join(base, rel)
     except Exception:
         raise ValueError("path resolution failed")
 

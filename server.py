@@ -18,6 +18,7 @@ import os
 import threading
 from datetime import datetime
 import config as cfg
+from path_security import safe_join
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
 import render_daily_photo as rdp
@@ -217,8 +218,10 @@ def _after_request(resp):
         except Exception:
             size = 0
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 不将 URL 中的 DOWNLOAD_KEY 写入日志或 SQLite 历史记录。
+        safe_path = re.sub(r"^/static/inktime/[^/]+", "/static/inktime/[REDACTED]", request.path)
         log_line = (
-            f"{ts_str} | {request.remote_addr} | {request.method} {request.path} | "
+            f"{ts_str} | {request.remote_addr} | {request.method} {safe_path} | "
             f"{resp.status_code} | {size}B | {dur_ms:.0f}ms | {request.headers.get('User-Agent', '')}"
         )
         try:
@@ -234,7 +237,7 @@ def _after_request(resp):
                 (
                     datetime.now().isoformat(),
                     request.method,
-                    request.path,
+                    safe_path,
                     idx_val,
                     resp.status_code,
                     size,
@@ -278,10 +281,7 @@ def _require_webui_enabled() -> None:
 
 def _safe_join(base: Path, rel: str) -> Path:
     """防目录穿越：只允许 base 下的相对路径"""
-    p = (base / rel).resolve()
-    if not str(p).startswith(str(base.resolve())):
-        raise ValueError("path traversal blocked")
-    return p
+    return safe_join(base, rel)
 
 
 def _send_static_file(p: Path) -> Response:

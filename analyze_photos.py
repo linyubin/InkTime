@@ -22,6 +22,7 @@ except ImportError:
 import config as cfg
 from common import normalize_type_to_list, parse_datetime_from_filename, resolve_chat_endpoint
 import shutil
+from photo_scan_safety import scandir_with_retries, ScanIncompleteError, count_missing_paths
 
 _yolo_model = None
 _pose_model = None
@@ -665,24 +666,15 @@ def list_images(limit: int | None = None) -> list[Path]:
     while dirs_to_scan:
         curr_dir = dirs_to_scan.pop()
 
-        # 尝试读取当前目录下的文件和子目录，支持网络重试
-        entries = None
-        for attempt in range(1, NAS_RETRY_TIMES + 1):
-            try:
-                # 检查网络挂载状态并尝试重挂载
-                if not _is_mount_ok() and NAS_MOUNT_URL:
-                    _try_remount_nas()
+        # 扫描不可达目录时立即中止，禁止把不完整快照用于数据库清理。
+        def _before_attempt():
+            if not _is_mount_ok() and NAS_MOUNT_URL:
+                _try_remount_nas()
 
-                with os.scandir(curr_dir) as it:
-                    entries = list(it)
-                break
-            except OSError as e:
-                print(f"[WARN] 扫描目录失败（第 {attempt}/{NAS_RETRY_TIMES} 次重试）：{curr_dir}，错误：{e}")
-                if attempt < NAS_RETRY_TIMES:
-                    time.sleep(NAS_RETRY_SLEEP_SEC)
-                else:
-                    print(f"[ERROR] 无法访问目录（已跳过此文件夹）：{curr_dir}")
-                    entries = []
+        entries = scandir_with_retries(
+            curr_dir, attempts=NAS_RETRY_TIMES, sleep_seconds=NAS_RETRY_SLEEP_SEC,
+            before_attempt=_before_attempt,
+        )
 
         if not entries:
             continue
@@ -707,8 +699,7 @@ def list_images(limit: int | None = None) -> list[Path]:
                             continue
                         files.append(entry_path)
             except OSError as e:
-                print(f"[WARN] 获取状态失败（已跳过）：{entry.path}，错误：{e}")
-                continue
+                raise ScanIncompleteError(f"读取文件状态失败，禁止使用不完整快照：{entry.path}") from e
 
     print(f"[INFO] 扫描完成，共发现 {len(files)} 张图片（文件总数 {scanned}）。")
     if limit is not None:
@@ -1237,36 +1228,20 @@ def main():
                 for prefix in cleanup_prefixes
             )
 
-        # 删除：数据库里有记录，但磁盘上已不存在的文件（按两种口径前缀各清一遍）
-        cur_clean = conn.cursor()
-        before_cnt = _count_under_prefixes(cur_clean)
-
-        deleted = 0
-        for prefix in cleanup_prefixes:
-            cur_clean.execute(
-                """
-                DELETE FROM photo_scores
-                WHERE path LIKE ? ESCAPE '\\'
-                  AND NOT EXISTS (
-                        SELECT 1 FROM _temp_existing_paths t
-                        WHERE t.path = photo_scores.path
-                  )
-                """,
-                (_like_escape(prefix) + "%",),
-            )
-            deleted += cur_clean.rowcount if cur_clean.rowcount is not None else 0
+        # 默认仅报告差异：即使是完整扫描，也不能将“缺失”直接等同于真实删除。
+        # 历史版本在此执行 DELETE，NAS 瞬断或路径重映射可能导致分析记录丢失。
+        missing = count_missing_paths(conn, cleanup_prefixes, _like_escape)
         conn.commit()
-
-        after_cnt = _count_under_prefixes(cur_clean)
-
-        if deleted > 0:
-            print(f"[CLEAN] 已同步删除 {deleted} 条数据库残留记录（当前目录：{before_cnt} → {after_cnt}）。")
+        if missing:
+            print(f"[CLEAN][DRY-RUN] 发现 {missing} 条未在当前扫描中出现的评分记录；已保留。")
+            print("[CLEAN][DRY-RUN] 自动硬删除已禁用；请单独审核缺失清单并在备份后清理。")
         else:
-            print("[CLEAN] 数据库与磁盘文件一致，无需清理。")
+            print("[CLEAN] 数据库与扫描文件列表无缺失差异。")
 
     except Exception as e:
-        # 清理失败不应影响主流程
-        print(f"[WARN] 同步清理数据库残留记录失败（已忽略，不影响主流程）：{e}")
+        # 清理统计失败也不能触发删除；回滚未提交的临时操作。
+        conn.rollback()
+        print(f"[WARN] 扫描差异统计失败（数据库记录保持不变）：{e}")
 
     cur_test = conn.cursor()
     # 只统计当前 IMAGE_DIR 下的已分析照片，避免数据库里其它路径/历史残留影响进度计算

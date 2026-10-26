@@ -41,7 +41,7 @@ old/
 scripts/sync_db_to_pi.py
 /ref
 *.pdf
-/.zcode//.cache/
+/.zcode/
 holidays.json
 
 # 运行时缓存（缩略图 / 模拟渲染缓存）

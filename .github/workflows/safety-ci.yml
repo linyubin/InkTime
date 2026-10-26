@@ -1,0 +1,30 @@
+name: Safety and Python smoke tests
+
+on:
+  push:
+    branches: [local-fix, refactor/architecture-v1]
+  pull_request:
+    branches: [local-fix]
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile changed Python entrypoints and helpers
+        run: |
+          python -m compileall -q analyze_photos.py server.py webui.py render_daily_photo.py photo_scan_safety.py path_security.py scripts/backup_sqlite.py
+      - name: Run standard-library safety tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate core requirements syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for line in Path("requirements.txt").read_text().splitlines():
+              if not line.strip() or line.lstrip().startswith("#"):
+                  continue
+              assert "lunardate" not in line or line.strip() == "lunardate==0.3.0", line
+          PY
