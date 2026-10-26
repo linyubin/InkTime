@@ -25,7 +25,7 @@ import config as cfg
 from common import extract_date_from_exif
 
 
-TODAY = dt.date.today()
+# Business dates must be computed at the time of the operation, not at module import.
 
 # === 路径配置（来自 config.py） ===
 ROOT_DIR = Path(__file__).resolve().parent
@@ -293,7 +293,7 @@ def compute_recency_penalty(used_at) -> float:
     if not used_at:
         return 1.0
     try:
-        days_ago = (TODAY - dt.date.fromisoformat(str(used_at))).days
+        days_ago = (dt.date.today() - dt.date.fromisoformat(str(used_at))).days
         if days_ago < RESHOW_AFTER_DAYS:
             return RECENCY_PENALTY
     except Exception:
@@ -455,13 +455,13 @@ def weighted_sample_without_replacement(
     return chosen
 
 
-def mark_photo_used(path: str) -> None:
+def mark_photo_used(path: str, *, effective_day: Optional[dt.date] = None) -> None:
     """渲染成功后，将照片的 used_at 更新为今天（防重复展示）。"""
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.execute(
             "UPDATE photo_scores SET used_at = ? WHERE path = ?",
-            (TODAY.isoformat(), path),
+            ((effective_day or dt.date.today()).isoformat(), path),
         )
         conn.commit()
         conn.close()
@@ -1638,7 +1638,6 @@ def image_to_palette_bin(img: Image.Image, orientation: str = "portrait") -> byt
     - orientation="portrait" 期望 480×800；"landscape" 期望 800×480。
       两种尺寸字节数完全相同（384000），只是逻辑宽高互换。
     """
-    img = img.convert("RGB")
     expected = (
         int(getattr(cfg, "LANDSCAPE_CANVAS_WIDTH", 800)),
         int(getattr(cfg, "LANDSCAPE_CANVAS_HEIGHT", 480)),
@@ -1812,15 +1811,16 @@ def sync_latest_from_photo0(log=print) -> bool:
 
 
 def main():
+    today = dt.date.today()
     items = load_sim_rows()
     if not items:
         raise SystemExit("没有可用照片（exif_json 为空或解析失败）。")
 
     # ---------- 节假日模式（2026-09-12，设计见 docs/plans/2026-09-12-holiday-mode-design.md）----------
     from holidays import get_today_holiday
-    holiday = get_today_holiday(TODAY)
+    holiday = get_today_holiday(today)
     if holiday:
-        print(f"[HOLIDAY] 命中{holiday['name']} ({TODAY}, template={holiday['template']})")
+        print(f"[HOLIDAY] 命中{holiday['name']} ({today}, template={holiday['template']})")
 
     # AI 模式：候选取前 HOLIDAY_AI_CANDIDATES 张送远端 VLM 重排；失败整体回退
     ai_count = DAILY_PHOTO_QUANTITY
@@ -1830,7 +1830,7 @@ def main():
             ai_count = max(int(getattr(cfg, "HOLIDAY_AI_CANDIDATES", 10) or 10),
                            DAILY_PHOTO_QUANTITY)
 
-    photos, info = choose_photos_for_today(items, TODAY, count=ai_count)
+    photos, info = choose_photos_for_today(items, today, count=ai_count)
 
     ai_applied = False
     if holiday and ai_count > DAILY_PHOTO_QUANTITY:
