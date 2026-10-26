@@ -33,7 +33,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | Initial scanner/backup/path safety baseline | refactor/architecture-v1 | 7 tests passed after SQL escape fix; GitHub Actions run 40356478311 succeeded | Not deployed |
 | 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357191539 / 40357202612); browser/HTTPS staging untested | Not deployed |
 | 2026-10-27 | PR-04 business-date calculation and indexed palette fast path | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357547887 / 40357556226); actual rendering not tested | Not deployed |
-| 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | CI pending; tests cover manifest, validation, rollback and pointer traversal | Not integrated into live pipeline |
+| 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | 15/15 tests passed; Actions runs 40358002983 and 40358010523 succeeded | Not integrated into live pipeline |
 
 ## Rollout, verification and rollback
 
@@ -60,3 +60,10 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - HTTP Basic authentication must only be used over HTTPS via reverse proxy; credentials are otherwise exposed over unencrypted LAN.
 - Cross-site POSTs with mismatched Origin are rejected, but full CSRF-token integration remains pending. This is **not** production authorization acceptance.
 - Previously enabled \`/shutdown\` endpoint is removed; legacy clients must not depend on that route.
+
+## CI scope at latest verified implementation
+
+- **15 standard-library unit tests passed** (GitHub Actions run \`40358010523\`, head \`ac6ec854\`).
+- Tests cover admin auth policies, photo scanning errors, directory traversal, SQLite WAL backup, batch manifest/digest/dimensions, and pointer rollback.
+- Syntax compile checks pass for Python legacy entrypoints and the new helper files exercised by tests.
+- **Not covered**: full dependency installation, Docker/systemd integration, VLM calls, physical EPD, LAN/BLE round trips, end-to-end delivery ACK.
