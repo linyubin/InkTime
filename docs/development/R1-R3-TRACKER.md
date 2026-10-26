@@ -15,8 +15,8 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 ## R2 — Reliable publish and delivery
 
-- [ ] PR-04: Separate download events from display acknowledgments; eliminate frozen module-level business date.
-- [ ] PR-05: Immutable versioned image batches; staging, manifest, hash checks, atomic pointer, GC, old endpoint compatibility.
+- [ ] PR-04 (partial): Removed frozen module-level TODAY uses (render selection, recency penalty and used_at updates now evaluate date at call time). **Pending**: download/display events, device ACK and legacy compatibility.
+- [ ] PR-05 (partial): Added independently testable batch_storage validator/publisher, immutable version directory, manifest, SHA-256 and atomic pointer. **Pending**: render into isolated batch directories, integrate both pipelines and HTTP endpoints, multi-process serialization, durable fsync, GC and legacy endpoint compatibility.
 - [ ] PR-06: ESP32 versioned protocol, stream validation, persistent ACK event and real hardware fault injection.
 - [ ] PR-07: Durable jobs, single worker, cross-process locks, retry and restart recovery.
 
@@ -31,7 +31,9 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | Date | Change | Branch | Validation | Deployment |
 |---|---|---|---|---|
 | 2026-10-27 | Initial scanner/backup/path safety baseline | refactor/architecture-v1 | 7 tests passed after SQL escape fix; GitHub Actions run 40356478311 succeeded | Not deployed |
-| 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | CI pending and staging browser verification required | Not deployed |
+| 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357191539 / 40357202612); browser/HTTPS staging untested | Not deployed |
+| 2026-10-27 | PR-04 business-date calculation and indexed palette fast path | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357547887 / 40357556226); actual rendering not tested | Not deployed |
+| 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | CI pending; tests cover manifest, validation, rollback and pointer traversal | Not integrated into live pipeline |
 
 ## Rollout, verification and rollback
 
