@@ -44,7 +44,7 @@ def count_missing_paths(
         row = conn.execute(
             """
             SELECT COUNT(*) FROM photo_scores
-            WHERE path LIKE ? ESCAPE '\'
+            WHERE path LIKE ? ESCAPE '\\'
               AND NOT EXISTS (
                   SELECT 1 FROM _temp_existing_paths t
                   WHERE t.path = photo_scores.path
