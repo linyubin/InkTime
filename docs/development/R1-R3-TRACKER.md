@@ -38,7 +38,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | 15/15 tests passed; Actions runs 40358002983 and 40358010523 succeeded | Not integrated into live pipeline |
 | 2026-10-27 | PR-00 isolated SQLite restore drill: `df736b4502e48da092ad89cd456589342603d381`; `scripts/backup_sqlite.py`, `tests/test_sqlite_backup.py` | refactor/architecture-v1 | 5/5 local SQLite tests; CLI synthetic WAL backup+restore smoke passed; GitHub Actions push run 40387866390 and PR run 40387875186 succeeded; latest tracker head runs 40387921740 / 40387931738 succeeded (19/19 total tests) | Not deployed; no real NAS/production DB tested |
 
-| 2026-10-27 | PR-02 CSRF enforcement (pending CI at commit creation): signed cookie/header/form check in admin_security.py and server.py; browser adapter in static/admin_csrf.js loaded by admin HTML pages; redacted startup DOWNLOAD_KEY | refactor/architecture-v1 | Pure-Python CSRF cases and Node fetch/form adapter tests added; GitHub Actions result to be recorded after run | Not deployed; HTTPS browser and ESP32 not tested |
+| 2026-10-27 | PR-02 CSRF enforcement `c97c2ceccd40e1c3d6c33367c4ca5e6d7a4740d3`: signed cookie/header/form check in `admin_security.py` and `server.py`; browser adapter `static/admin_csrf.js` included in 10 admin HTML pages; redacted startup `DOWNLOAD_KEY` | refactor/architecture-v1 | 24/24 Python and 4/4 Node tests passed; Python compile and requirements checks passed; [push CI](https://github.com/linyubin/InkTime/actions/runs/40412885654) and [PR CI](https://github.com/linyubin/InkTime/actions/runs/40412890996) both success | Not deployed; HTTPS browser and ESP32 not tested |
 
 ## Rollout, verification and rollback
 
@@ -67,13 +67,14 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - HTTP Basic authentication must only be used over HTTPS via reverse proxy; credentials are otherwise exposed over unencrypted LAN.
 - Cross-site unsafe methods with mismatched Origin are rejected. Additionally all non-device POST/PUT/PATCH/DELETE requests require a valid password-bound signed CSRF cookie and matching X-InkTime-CSRF header (or csrf_token form field). The browser adapter sends it on same-origin fetch and HTML form submits; CLI clients must GET with Basic auth, retain the cookie and send the token on writes.
 - CSRF cookie is __Host-inktime-csrf with Secure, SameSite=Strict, Path=/ and no Domain. **Administrator write UI requires HTTPS**, including behind a TLS-terminating reverse proxy. Browser/HTTPS staging and proxy behavior remain unverified; do not deploy.
-- Rollback this PR-02 subpackage with git revert <CSRF_COMMIT_SHA> on the independent branch only; this restores previous Origin-only behavior, which is less secure. Never revert on production without evaluating the security downgrade.
+- Rollback this PR-02 subpackage with git revert c97c2ceccd40e1c3d6c33367c4ca5e6d7a4740d3 on the independent branch only; this restores previous Origin-only behavior, which is less secure. Never revert on production without evaluating the security downgrade.
 - Previously enabled \`/shutdown\` endpoint is removed; legacy clients must not depend on that route.
 
 ## CI scope at latest verified implementation
 
-- **CSRF change validation pending:** 5 additional Python security tests and 4 Node browser-adapter tests have been added; GitHub Actions must be checked before marking verified. This does not establish HTTPS browser or device acceptance.
+- **CSRF change CI verified at `c97c2cec`:** 24/24 Python tests and 4/4 Node tests passed, with Python compile and requirements checks successful (push `40412885654`, PR `40412890996`). This does **not** establish HTTPS browser or device acceptance.
 - **Prior verified baseline:** 15 standard-library unit tests passed (GitHub Actions run `40358010523`, head `ac6ec854`). The restore-drill change adds four tests (5 in `test_sqlite_backup.py` total). **Latest 19/19 unit tests passed**, with Python compilation and requirements syntax checks successful at head `0c7b6249` (Actions runs `40387921740` / `40387931738`).
 - Tests cover admin auth policies, photo scanning errors, directory traversal, SQLite WAL backup, batch manifest/digest/dimensions, and pointer rollback.
 - Syntax compile checks pass for Python legacy entrypoints and the new helper files exercised by tests.
-- **Not covered**: full dependency installation, Docker/systemd integration, VLM calls, physical EPD, LAN/BLE round trips, end-to-end delivery ACK.
+- **Not covered**: Flask/browser HTTPS integration, standalone `webui.py` launch-mode authorization, reverse proxy cookie forwarding, full dependency installation, Docker/systemd integration, VLM calls, physical EPD, LAN/BLE round trips, end-to-end delivery ACK.
+- **Next R1 work**: PR-02 staging HTTPS/browser integration and audit of the independent `webui.py` entrypoint (which does not share `server.py`'s `before_request` guard); then credential migration/rotation and PR-03 schema/config validation.
