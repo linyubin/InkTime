@@ -19,7 +19,10 @@ import threading
 from datetime import datetime
 import config as cfg
 from path_security import safe_join
-from admin_security import admin_authorized, is_device_protocol_path, allowed_origin
+from admin_security import (
+    CSRF_COOKIE_NAME, admin_authorized, is_device_protocol_path, allowed_origin,
+    make_csrf_token, valid_csrf_token,
+)
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
 import render_daily_photo as rdp
@@ -216,15 +219,29 @@ def _before_request():
     if not admin_authorized(request.headers.get("Authorization", ""), username, password):
         return Response("Authentication required", status=401,
                         headers={"WWW-Authenticate": 'Basic realm="InkTime Admin", charset="UTF-8"'})
-    if request.method not in ("GET", "HEAD", "OPTIONS") and not allowed_origin(
-        request.headers.get("Origin", ""), request.host
-    ):
-        return Response("Cross-origin write blocked", status=403)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if not allowed_origin(request.headers.get("Origin", ""), request.host):
+            return Response("Cross-origin write blocked", status=403)
+        submitted = (request.headers.get("X-InkTime-CSRF", "")
+                     or request.form.get("csrf_token", ""))
+        if not valid_csrf_token(
+            request.cookies.get(CSRF_COOKIE_NAME, ""), submitted, password
+        ):
+            return Response("CSRF token missing or invalid", status=403)
+    elif request.method in ("GET", "HEAD"):
+        cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+        if not valid_csrf_token(cookie, cookie, password):
+            g.csrf_cookie = make_csrf_token(password)
     return None
 
 
 @app.after_request
 def _after_request(resp):
+    # Admin token is only issued after successful authentication, never on device routes.
+    token = getattr(g, "csrf_cookie", None)
+    if token and resp.status_code < 400:
+        resp.set_cookie(CSRF_COOKIE_NAME, token, secure=True, httponly=False,
+                        samesite="Strict", path="/")
     # 仅记录 /static/inktime/ 前缀的传输类请求，避免 /review 图片刷屏
     if request.path.startswith("/static/inktime/"):
         dur_ms = (time.time() - getattr(g, "t0", time.time())) * 1000.0
@@ -1986,7 +2003,7 @@ if __name__ == "__main__":
     print(f"[InkTime] DB: {DB_PATH}")
     print(f"[InkTime] IMAGE_DIR: {IMAGE_DIR}")
     print(f"[InkTime] OUT: {BIN_OUTPUT_DIR}")
-    print(f"[InkTime] key: {DOWNLOAD_KEY}")
+    print("[InkTime] download key: [REDACTED]")
     print(f"[InkTime] listen: {FLASK_HOST}:{FLASK_PORT}")
     print(f"[InkTime] open: http://127.0.0.1:{FLASK_PORT}/  (本机)")
     # threaded=True:NAS 大图流式传输时不阻塞其它请求(单线程时 /sim 会排在图片流后面,点击详情像"没反应")

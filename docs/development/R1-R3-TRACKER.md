@@ -12,7 +12,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 - [x] PR-00 (partial): Independent branch, safety CI, unit tests, online WAL-aware SQLite backup; **new isolated restore drill** verifies integrity, photo_scores schema, row count and SHA-256 fingerprint of every row/column (including BLOB/NULL). Local synthetic test suite 5/5 passed; `--restore-drill` CLI smoke passed. **Pending**: production/NAS restore drill, environment dependency installation, human acceptance. No production data accessed.
 - [x] PR-01 (safety hotfix): Fail closed on unreadable folders and DirEntry errors; stop automatically deleting missing photo scores; count discrepancies in dry-run. **Pending**: backup + real NAS failure-injection validation; two-successful-scan revalidation/optional manual purge workflow.
-- [ ] PR-02 (partial): Fix safe path handling in server and WebUI; redact DOWNLOAD_KEY in transfer logs and daily orchestrator log. **Partially implemented**: admin HTTP Basic with no-password fail-closed behavior; Origin guard; removal of legacy /shutdown. **Pending**: CSRF tokens, device identity, Wi-Fi credential migration/rotation, endpoint validation, production HTTPS proxy.
+- [ ] PR-02 (partial): Fix safe path handling in server and WebUI; redact DOWNLOAD_KEY in transfer logs and daily orchestrator log. **Partially implemented**: admin HTTP Basic with no-password fail-closed behavior; Origin guard; removal of legacy /shutdown. **Implemented in branch (not deployed)**: signed double-submit CSRF token on all non-device unsafe HTTP methods; Secure/Strict host-only cookie, same-origin browser fetch/form adapter, password rotation invalidates token. **Pending**: browser/HTTPS staging acceptance, device identity, Wi-Fi credential migration/rotation, endpoint validation, production HTTPS proxy. Plain HTTP admin writes now fail closed because Secure cookies require HTTPS.
 - [ ] PR-03 (partial): Split broken requirements entry and repair cache .gitignore. **Pending**: versioned database migrations, configuration validation, repository cleanup.
 
 ## R2 — Reliable publish and delivery
@@ -37,6 +37,8 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | PR-04 business-date calculation and indexed palette fast path | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357547887 / 40357556226); actual rendering not tested | Not deployed |
 | 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | 15/15 tests passed; Actions runs 40358002983 and 40358010523 succeeded | Not integrated into live pipeline |
 | 2026-10-27 | PR-00 isolated SQLite restore drill: `df736b4502e48da092ad89cd456589342603d381`; `scripts/backup_sqlite.py`, `tests/test_sqlite_backup.py` | refactor/architecture-v1 | 5/5 local SQLite tests; CLI synthetic WAL backup+restore smoke passed; GitHub Actions push run 40387866390 and PR run 40387875186 succeeded; latest tracker head runs 40387921740 / 40387931738 succeeded (19/19 total tests) | Not deployed; no real NAS/production DB tested |
+
+| 2026-10-27 | PR-02 CSRF enforcement (pending CI at commit creation): signed cookie/header/form check in admin_security.py and server.py; browser adapter in static/admin_csrf.js loaded by admin HTML pages; redacted startup DOWNLOAD_KEY | refactor/architecture-v1 | Pure-Python CSRF cases and Node fetch/form adapter tests added; GitHub Actions result to be recorded after run | Not deployed; HTTPS browser and ESP32 not tested |
 
 ## Rollout, verification and rollback
 
@@ -63,11 +65,14 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - Configure \`INKTIME_ADMIN_PASSWORD\` before server deployment; optional \`INKTIME_ADMIN_USERNAME\` defaults to \`admin\`. Without password, non-device routes deliberately respond 503.
 - Device routes under \`/static/inktime/\`, \`/api/device_log/\`, \`/api/device_register/\` keep existing DOWNLOAD_KEY semantics during compatibility period.
 - HTTP Basic authentication must only be used over HTTPS via reverse proxy; credentials are otherwise exposed over unencrypted LAN.
-- Cross-site POSTs with mismatched Origin are rejected, but full CSRF-token integration remains pending. This is **not** production authorization acceptance.
+- Cross-site unsafe methods with mismatched Origin are rejected. Additionally all non-device POST/PUT/PATCH/DELETE requests require a valid password-bound signed CSRF cookie and matching X-InkTime-CSRF header (or csrf_token form field). The browser adapter sends it on same-origin fetch and HTML form submits; CLI clients must GET with Basic auth, retain the cookie and send the token on writes.
+- CSRF cookie is __Host-inktime-csrf with Secure, SameSite=Strict, Path=/ and no Domain. **Administrator write UI requires HTTPS**, including behind a TLS-terminating reverse proxy. Browser/HTTPS staging and proxy behavior remain unverified; do not deploy.
+- Rollback this PR-02 subpackage with git revert <CSRF_COMMIT_SHA> on the independent branch only; this restores previous Origin-only behavior, which is less secure. Never revert on production without evaluating the security downgrade.
 - Previously enabled \`/shutdown\` endpoint is removed; legacy clients must not depend on that route.
 
 ## CI scope at latest verified implementation
 
+- **CSRF change validation pending:** 5 additional Python security tests and 4 Node browser-adapter tests have been added; GitHub Actions must be checked before marking verified. This does not establish HTTPS browser or device acceptance.
 - **Prior verified baseline:** 15 standard-library unit tests passed (GitHub Actions run `40358010523`, head `ac6ec854`). The restore-drill change adds four tests (5 in `test_sqlite_backup.py` total). **Latest 19/19 unit tests passed**, with Python compilation and requirements syntax checks successful at head `0c7b6249` (Actions runs `40387921740` / `40387931738`).
 - Tests cover admin auth policies, photo scanning errors, directory traversal, SQLite WAL backup, batch manifest/digest/dimensions, and pointer rollback.
 - Syntax compile checks pass for Python legacy entrypoints and the new helper files exercised by tests.

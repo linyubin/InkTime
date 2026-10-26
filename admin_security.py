@@ -2,7 +2,42 @@
 import base64
 import binascii
 import hmac
+import hashlib
+import re
+import secrets
 from urllib.parse import urlsplit
+
+# A signed double-submit token is bound to the current admin password.
+# The cookie is host-only, Secure and SameSite=Strict at the Flask boundary.
+CSRF_COOKIE_NAME = "__Host-inktime-csrf"
+_CSRF_RE = re.compile(r"^[A-Za-z0-9_-]{43}\.[0-9a-f]{64}$")
+
+
+def _csrf_signature(nonce: str, password: str) -> str:
+    return hmac.new(
+        password.encode("utf-8"), b"inktime:csrf:v1:" + nonce.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def make_csrf_token(password: str) -> str:
+    """Create a per-browser session token; changing the admin password revokes it."""
+    if not password:
+        raise ValueError("Admin password must be configured")
+    nonce = secrets.token_urlsafe(32)
+    return nonce + "." + _csrf_signature(nonce, password)
+
+
+def valid_csrf_token(cookie: str, submitted: str, password: str) -> bool:
+    """Require a matching browser cookie and header/form value with a valid MAC."""
+    if not password or not isinstance(cookie, str) or not isinstance(submitted, str):
+        return False
+    if not cookie or not submitted or not hmac.compare_digest(cookie, submitted):
+        return False
+    if not _CSRF_RE.fullmatch(cookie):
+        return False
+    nonce, signature = cookie.split(".", 1)
+    return hmac.compare_digest(signature, _csrf_signature(nonce, password))
 
 
 _DEVICE_PREFIXES = ("/static/inktime/", "/api/device_log/", "/api/device_register/")

@@ -16,9 +16,13 @@ jobs:
           python-version: '3.11'
       - name: Compile changed Python entrypoints and helpers
         run: |
-          python -m compileall -q analyze_photos.py server.py webui.py render_daily_photo.py photo_scan_safety.py path_security.py scripts/backup_sqlite.py
+          python -m compileall -q analyze_photos.py server.py webui.py render_daily_photo.py photo_scan_safety.py path_security.py admin_security.py scripts/backup_sqlite.py
       - name: Run standard-library safety tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate browser CSRF adapter
+        run: |
+          node --check static/admin_csrf.js
+          node --test tests/test_admin_csrf_js.cjs
       - name: Validate core requirements syntax
         run: |
           python - <<'PY'
