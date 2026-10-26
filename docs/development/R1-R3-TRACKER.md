@@ -10,7 +10,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 ## R1 — Data integrity and safety
 
-- [x] PR-00 (partial): Create independent branch, safety CI, unit tests, online SQLite backup. **Pending**: CI result, production restore drill, environment dependency installation.
+- [x] PR-00 (partial): Independent branch, safety CI, unit tests, online WAL-aware SQLite backup; **new isolated restore drill** verifies integrity, photo_scores schema, row count and SHA-256 fingerprint of every row/column (including BLOB/NULL). Local synthetic test suite 5/5 passed; `--restore-drill` CLI smoke passed. **Pending**: production/NAS restore drill, environment dependency installation, human acceptance. No production data accessed.
 - [x] PR-01 (safety hotfix): Fail closed on unreadable folders and DirEntry errors; stop automatically deleting missing photo scores; count discrepancies in dry-run. **Pending**: backup + real NAS failure-injection validation; two-successful-scan revalidation/optional manual purge workflow.
 - [ ] PR-02 (partial): Fix safe path handling in server and WebUI; redact DOWNLOAD_KEY in transfer logs and daily orchestrator log. **Partially implemented**: admin HTTP Basic with no-password fail-closed behavior; Origin guard; removal of legacy /shutdown. **Pending**: CSRF tokens, device identity, Wi-Fi credential migration/rotation, endpoint validation, production HTTPS proxy.
 - [ ] PR-03 (partial): Split broken requirements entry and repair cache .gitignore. **Pending**: versioned database migrations, configuration validation, repository cleanup.
@@ -36,11 +36,13 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357191539 / 40357202612); browser/HTTPS staging untested | Not deployed |
 | 2026-10-27 | PR-04 business-date calculation and indexed palette fast path | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357547887 / 40357556226); actual rendering not tested | Not deployed |
 | 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | 15/15 tests passed; Actions runs 40358002983 and 40358010523 succeeded | Not integrated into live pipeline |
+| 2026-10-27 | PR-00 isolated SQLite restore drill: `df736b4502e48da092ad89cd456589342603d381`; `scripts/backup_sqlite.py`, `tests/test_sqlite_backup.py` | refactor/architecture-v1 | 5/5 local SQLite tests; CLI synthetic WAL backup+restore smoke passed; Actions push run 40387866390 **queued at time of record**; full-suite CI not yet confirmed | Not deployed; no real NAS/production DB tested |
 
 ## Rollout, verification and rollback
 
 1. Deploy server before any new-device protocol, keeping legacy routes during the transition.
 2. Back up database using \`python scripts/backup_sqlite.py --database photos.db --out-dir backups\`. Backups should be stored separately from the active host.
+   For an isolated automated restore rehearsal on an authorized **staging copy only**, add `--restore-drill`; this restores into a disposable temporary directory and compares every `photo_scores` column/row plus schema. It does **not** perform a production recovery or prove NAS hardware reliability.
 3. Confirm \`PRAGMA integrity_check\` of the backup, then restore to a separate test database and compare row counts.
 4. Verify image scanner with root and nested directory failures before enabling regular schedules.
 5. Run \`python -m unittest discover -s tests -p 'test_*.py' -v\` and check GitHub Actions.
@@ -53,6 +55,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - **R1 hotfix changes behavior**: missing photos are retained in the photo score DB rather than automatically purged.
 - Repeated forced scans require a mounted photo library; no production testing is performed by GitHub-only editing.
 - New CI executes standard-library tests; it does not replace full dependency installation, image rendering tests or physical EPD verification.
+- Restore drill is a synthetic/offline validation only; a production recovery exercise still requires an operator, an off-host backup, disk-capacity checks, and independent verification. Roll back the helper with `git revert df736b4502e48da092ad89cd456589342603d381` on this branch; original DB files and existing backups are not modified by the drill.
 - Issues cannot be used until GitHub Issues is enabled for this repository.
 
 ## Admin authentication deployment gate
@@ -65,7 +68,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 ## CI scope at latest verified implementation
 
-- **15 standard-library unit tests passed** (GitHub Actions run \`40358010523\`, head \`ac6ec854\`).
+- **Prior verified baseline:** 15 standard-library unit tests passed (GitHub Actions run `40358010523`, head `ac6ec854`). The restore-drill change adds four tests (5 in `test_sqlite_backup.py` total); full-suite CI for `df736b45` was queued at the time of this record, not yet confirmed.
 - Tests cover admin auth policies, photo scanning errors, directory traversal, SQLite WAL backup, batch manifest/digest/dimensions, and pointer rollback.
 - Syntax compile checks pass for Python legacy entrypoints and the new helper files exercised by tests.
 - **Not covered**: full dependency installation, Docker/systemd integration, VLM calls, physical EPD, LAN/BLE round trips, end-to-end delivery ACK.
