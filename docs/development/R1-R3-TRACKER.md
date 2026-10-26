@@ -36,7 +36,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | Added admin authentication, unsafe Origin check, removed /shutdown | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357191539 / 40357202612); browser/HTTPS staging untested | Not deployed |
 | 2026-10-27 | PR-04 business-date calculation and indexed palette fast path | refactor/architecture-v1 | GitHub Actions succeeded (runs 40357547887 / 40357556226); actual rendering not tested | Not deployed |
 | 2026-10-27 | PR-05 standalone immutable-batch storage primitives | refactor/architecture-v1 | 15/15 tests passed; Actions runs 40358002983 and 40358010523 succeeded | Not integrated into live pipeline |
-| 2026-10-27 | PR-00 isolated SQLite restore drill: `df736b4502e48da092ad89cd456589342603d381`; `scripts/backup_sqlite.py`, `tests/test_sqlite_backup.py` | refactor/architecture-v1 | 5/5 local SQLite tests; CLI synthetic WAL backup+restore smoke passed; Actions push run 40387866390 **queued at time of record**; full-suite CI not yet confirmed | Not deployed; no real NAS/production DB tested |
+| 2026-10-27 | PR-00 isolated SQLite restore drill: `df736b4502e48da092ad89cd456589342603d381`; `scripts/backup_sqlite.py`, `tests/test_sqlite_backup.py` | refactor/architecture-v1 | 5/5 local SQLite tests; CLI synthetic WAL backup+restore smoke passed; GitHub Actions push run 40387866390 and PR run 40387875186 succeeded; latest tracker head runs 40387921740 / 40387931738 succeeded (19/19 total tests) | Not deployed; no real NAS/production DB tested |
 
 ## Rollout, verification and rollback
 
@@ -68,7 +68,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 ## CI scope at latest verified implementation
 
-- **Prior verified baseline:** 15 standard-library unit tests passed (GitHub Actions run `40358010523`, head `ac6ec854`). The restore-drill change adds four tests (5 in `test_sqlite_backup.py` total); full-suite CI for `df736b45` was queued at the time of this record, not yet confirmed.
+- **Prior verified baseline:** 15 standard-library unit tests passed (GitHub Actions run `40358010523`, head `ac6ec854`). The restore-drill change adds four tests (5 in `test_sqlite_backup.py` total). **Latest 19/19 unit tests passed**, with Python compilation and requirements syntax checks successful at head `0c7b6249` (Actions runs `40387921740` / `40387931738`).
 - Tests cover admin auth policies, photo scanning errors, directory traversal, SQLite WAL backup, batch manifest/digest/dimensions, and pointer rollback.
 - Syntax compile checks pass for Python legacy entrypoints and the new helper files exercised by tests.
 - **Not covered**: full dependency installation, Docker/systemd integration, VLM calls, physical EPD, LAN/BLE round trips, end-to-end delivery ACK.
