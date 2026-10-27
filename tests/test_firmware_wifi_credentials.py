@@ -15,7 +15,7 @@ FIRMWARE = (
 
 def function_body(source: str, name: str) -> str:
     """Return a function's C++ body for narrow source-level invariant checks."""
-    match = re.search(r"\b" + re.escape(name) + r"\s*\([^;]*?\)\s*\{", source, re.S)
+    match = re.search(r"^\s*(?:static\s+)?void\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{", source, re.S | re.M)
     if not match:
         raise AssertionError(f"missing function: {name}")
     # Only use this helper on simple sections without braces in quoted strings.
