@@ -16,6 +16,7 @@ from unittest.mock import Mock
 from flask import Flask, abort, jsonify, request
 
 from device_endpoint_security import validate_device_endpoint
+from download_key_security import authorized_download_key
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
 
@@ -89,7 +90,8 @@ class EndpointValidationTests(unittest.TestCase):
             endpoint = directory / "endpoint.json"
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_ENDPOINT_FILE": endpoint,
-                "DOWNLOAD_KEY": "test-key", "request": request,
+                "DOWNLOAD_KEYS": ("test-key",), "authorized_download_key": authorized_download_key,
+                "request": request,
                 "abort": abort, "jsonify": jsonify, "datetime": datetime,
                 "json": json, "validate_device_endpoint": validate_device_endpoint,
             }

@@ -198,8 +198,12 @@ ENABLE_BLE_PUSH    = True   # True: render 后 BLE 推送到 nRF5 设备（push_
 ENABLE_ESP32_SERVE = True   # True: render 后临时启动 server.py 供 ESP32 主动拉取
 
 # ───── ESP32 拉取（server.py）── 仅 ENABLE_ESP32_SERVE=True 时生效 ─────
-# 为防止照片隐私泄露，建议为 ESP32 下载路径加一个随机前缀作为密钥
-# 前缀修改后，请同步修改 esp32/ink-display-7C-photo/ink-display-7C-photo.ino 固件中的 DAILY_PHOTO_PATH_PREFIX 字段
+# 兼容旧部署：config.py 的 DOWNLOAD_KEY 仍是默认值。
+# 环境变量 INKTIME_DOWNLOAD_KEY 显式覆盖当前 key；
+# 可选 INKTIME_DOWNLOAD_KEY_PREVIOUS 只在迁移期临时接受旧 key。
+# 生产密钥必须来自受限配置，不要写入 Git 或终端历史。
+# 旧 ESP32 固件仍携带编译期路径，轮换前必须完成设备侧迁移。
+# 新 key 建议使用 secrets.token_urlsafe(32) 生成。
 DOWNLOAD_KEY = "yourdownloadkey"
 
 # Flask 静态服务

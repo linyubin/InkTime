@@ -20,6 +20,7 @@ from datetime import datetime
 import config as cfg
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
+from download_key_security import resolve_download_keys, authorized_download_key
 from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
@@ -28,9 +29,11 @@ import render_daily_photo as rdp
 ROOT_DIR = Path(__file__).resolve().parent
 
 # --- config ---
-DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
-if not DOWNLOAD_KEY:
-    raise SystemExit("config.py 里没有配置 DOWNLOAD_KEY")
+try:
+    DOWNLOAD_KEYS = resolve_download_keys(getattr(cfg, "DOWNLOAD_KEY", ""), os.environ)
+except ValueError as exc:
+    raise SystemExit(f"Invalid download-key configuration: {exc}") from None
+DOWNLOAD_KEY = DOWNLOAD_KEYS[0]  # active; previous key requires explicit opt-in
 
 DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
 IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
@@ -1031,7 +1034,7 @@ def sim_render():
 
 @app.get("/static/inktime/<key>/photo_<int:idx>.bin")
 def esp_photo(key: str, idx: int):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
         abort(404)
@@ -1053,7 +1056,7 @@ def esp_photo(key: str, idx: int):
 
 @app.get("/static/inktime/<key>/latest.bin")
 def esp_latest(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
     # 被实际拉取/推送时，标记为已展示
@@ -1078,7 +1081,7 @@ def esp_latest(key: str):
 @app.get("/static/inktime/<key>/photo_<int:idx>.json")
 def esp_photo_sidecar(key: str, idx: int):
     """返回 photo_<idx>.bin 对应的朝向 sidecar（orientation/w/h）。不标已用。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
         abort(404)
@@ -1089,7 +1092,7 @@ def esp_photo_sidecar(key: str, idx: int):
 @app.get("/static/inktime/<key>/latest.json")
 def esp_latest_sidecar(key: str):
     """返回 latest.bin 对应的朝向 sidecar。不标已用。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "latest.json"
     return _send_static_file(p)
@@ -1098,7 +1101,7 @@ def esp_latest_sidecar(key: str):
 @app.get("/static/inktime/<key>/calib_p.bin")
 def esp_calib_portrait(key: str):
     """竖屏标定卡（480×800），由 render_calib_cards.py 预生成。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "calib_p.bin"
     return _send_static_file(p)
@@ -1107,7 +1110,7 @@ def esp_calib_portrait(key: str):
 @app.get("/static/inktime/<key>/calib_l.bin")
 def esp_calib_landscape(key: str):
     """横屏标定卡（800×480），由 render_calib_cards.py 预生成。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "calib_l.bin"
     return _send_static_file(p)
@@ -1115,7 +1118,7 @@ def esp_calib_landscape(key: str):
 
 @app.get("/static/inktime/<key>/preview.png")
 def esp_preview(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "preview.png"
     return _send_static_file(p)
@@ -1129,7 +1132,7 @@ def esp_time(key: str):
     顺带从这里拿准确时间，避免 NTP 失败导致 sleepUntilNextSchedule 算错下次唤醒。
     复用与其他 ESP32 接口相同的 <key> 鉴权。
     """
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     return str(int(time.time()))
 
@@ -1173,7 +1176,7 @@ def _devlog_load_max_ls(key: str) -> int:
 
 @app.post("/api/device_log/<key>")
 def esp_device_log(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
     raw = request.get_data(as_text=True)
@@ -1244,7 +1247,7 @@ def _load_device_endpoint() -> dict:
 
 @app.post("/api/device_register/<key>")
 def esp_device_register(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
     # Use the direct peer address, never a client-supplied Forwarded/XFF header.
