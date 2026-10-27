@@ -136,16 +136,16 @@ class FirmwareCredentialPolicyTests(unittest.TestCase):
         self.assertIn("g_configPortalActive = apOk;", portal)
 
     def test_download_key_never_reflected_in_form_or_status(self):
-        form = function_body(self.source, "buildConfigPage")
-        self.assertNotIn("htmlEscape(g_cfg.download_key)", form)
+        self.assertNotIn("htmlEscape(g_cfg.download_key)", self.source)
+        self.assertNotIn("html += g_cfg.download_key", self.source)
         status = function_body(self.source, "handleDeviceStatus")
         self.assertNotIn("download_key", status)
         self.assertNotIn("dl_key", status)
 
     def test_download_key_url_not_logged_in_firmware(self):
-        self.assertNotRegex(self.source, r'DBG_PRINTF\\([^;]*url\\.c_str\\(\\)')
-        self.assertNotRegex(self.source, r'pushLog\\([^;]*\\+ url\\)')
-        self.assertNotRegex(self.source, r'\\+ " " \\+ url')
+        self.assertNotIn("url.c_str()", self.source)
+        self.assertNotIn(' + " " + url', self.source)
+        self.assertNotIn(' + " | GET " + url', self.source)
         self.assertIn('journalSetServer(g_cfg.backend_hostport,', self.source)
 
     def test_ap_configuration_entrypoints_retained(self):
