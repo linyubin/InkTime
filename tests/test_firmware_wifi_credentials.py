@@ -111,6 +111,43 @@ class FirmwareCredentialPolicyTests(unittest.TestCase):
         self.assertIn('prefs.begin("dashcfg", false)', reset)
         self.assertIn("prefs.clear();", reset)
 
+    def test_download_key_not_embedded_in_firmware(self):
+        self.assertNotIn("DAILY_PHOTO_PATH_PREFIX", self.source)
+        self.assertIn('cfg.download_key     = prefs.getString("dl_key", "")', self.source)
+        self.assertIn('prefs.putString("dl_key", key)', self.source)
+        self.assertIn('"/static/inktime/" + cfg.download_key + "/"', self.source)
+
+    def test_download_key_grammar_and_fail_closed(self):
+        self.assertIn("key.length() < 24 || key.length() > 128", self.source)
+        self.assertIn("if (!validDownloadKey(cfg.download_key)) return", self.source)
+        boot = function_body(self.source, "setup")
+        self.assertIn("!validDownloadKey(g_cfg.download_key)", boot)
+        self.assertIn("startConfigPortal();", boot)
+
+    def test_download_key_ap_only_provisioning(self):
+        handler = function_body(self.source, "handleSave")
+        self.assertIn('server.arg("dl_key")', handler)
+        self.assertIn("if (!g_configPortalActive)", handler)
+        self.assertIn("server.send(403", handler)
+        self.assertIn("if (!saveDownloadKey(submittedKey))", handler)
+        self.assertIn("server.send(500", handler)
+        self.assertLess(handler.index("saveDownloadKey(submittedKey)"), handler.index("saveConfig(newCfg)"))
+        portal = function_body(self.source, "startConfigPortal")
+        self.assertIn("g_configPortalActive = apOk;", portal)
+
+    def test_download_key_never_reflected_in_form_or_status(self):
+        form = function_body(self.source, "buildConfigPage")
+        self.assertNotIn("htmlEscape(g_cfg.download_key)", form)
+        status = function_body(self.source, "handleDeviceStatus")
+        self.assertNotIn("download_key", status)
+        self.assertNotIn("dl_key", status)
+
+    def test_download_key_url_not_logged_in_firmware(self):
+        self.assertNotRegex(self.source, r'DBG_PRINTF\\([^;]*url\\.c_str\\(\\)')
+        self.assertNotRegex(self.source, r'pushLog\\([^;]*\\+ url\\)')
+        self.assertNotRegex(self.source, r'\\+ " " \\+ url')
+        self.assertIn('journalSetServer(g_cfg.backend_hostport,', self.source)
+
     def test_ap_configuration_entrypoints_retained(self):
         portal = function_body(self.source, "startConfigPortal")
         self.assertIn("WiFi.softAP(", portal)

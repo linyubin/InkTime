@@ -47,3 +47,15 @@ Treat historically published secrets as compromised.
 - Automated tests cover the pure helper, real server route bodies in an
   isolated Flask test client and all-device-route AST checks; they do not
   establish full server startup, HTTPS browser, NAS or physical ESP32 success.
+
+
+## 2026-10-27 — Device-side NVS provisioning (source-only, no flashing)
+
+- Firmware no longer contains a built-in download-key path literal. A key is read from `dashcfg/dl_key` and validated as a single ASCII URL segment, 24–128 characters in `[A-Za-z0-9_-]`.
+- Missing/invalid keys force the device into the existing per-device-password AP provisioning portal, even when Wi-Fi STA profiles exist. The AP form accepts a new key without echoing existing values. LAN `/save` requests cannot change the key.
+- On AP save, the new key is validated and written to NVS before Wi-Fi settings; failure returns HTTP 500 without restarting. Empty key with no valid saved key returns HTTP 400. Existing valid key is preserved if the field is blank.
+- Device photo, time, registration, calibration and journal upload URLs derive from the NVS key. Debug, fetch and journal logs no longer print the full bearer URL; HTTP itself remains **unencrypted**.
+- **Migration is not automatic**. Stage server with new `INKTIME_DOWNLOAD_KEY` and optional previous key, provision each device physically via its unique AP password, verify it, then revoke the old key. A missing key on an upgraded device will prevent normal photo retrieval until manually provisioned.
+- **Security limitations**: the AP form is not a cryptographically authenticated management API beyond WPA2 association; NVS is not encrypted unless ESP32 Flash Encryption is enabled; the device's LAN HTTP control endpoints remain separately unauthenticated. A physical attacker or LAN sniffer can still obtain bearer credentials. Previously published keys and old firmware images remain compromised.
+- **No Arduino compile, NVS hardware, AP WPA2, EPD display, device HTTP, NAS, or HTTPS browser tests performed**. Only source-level regression tests and Actions CI can be recorded here.
+- **Rollback**: revert the source commit on `refactor/architecture-v1` only; reverting to the old firmware would restore a known exposed download key, **not a safe production rollback**. Preserve a sanitized firmware recovery image and NVS backup for physical migration.
