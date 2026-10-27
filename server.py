@@ -19,10 +19,7 @@ import threading
 from datetime import datetime
 import config as cfg
 from path_security import safe_join
-from admin_security import (
-    CSRF_COOKIE_NAME, admin_authorized, is_device_protocol_path, allowed_origin,
-    make_csrf_token, valid_csrf_token,
-)
+from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
 import render_daily_photo as rdp
@@ -171,6 +168,7 @@ def _load_all_md_list() -> list[str]:
     return md_list
 
 app = Flask(__name__)
+install_admin_security(app, allow_device_routes=True)
 
 # ── 合并版式管理 WebUI（原 8766 端口的 webui.py）──────────────
 # webui.py 现以 Blueprint 提供：/manager（相册管理）、/style-editor（版式编辑器）、
@@ -206,42 +204,12 @@ ensure_transfer_history()
 
 
 @app.before_request
-def _before_request():
+def _before_request() -> None:
     g.t0 = time.time()
-    # The device download/log/register protocol retains DOWNLOAD_KEY authentication.
-    # All other routes, including private photo resources, require admin credentials.
-    if is_device_protocol_path(request.path):
-        return None
-    username = os.environ.get("INKTIME_ADMIN_USERNAME", "admin")
-    password = os.environ.get("INKTIME_ADMIN_PASSWORD", "")
-    if not password:
-        return Response("Administrator access disabled: set INKTIME_ADMIN_PASSWORD", status=503)
-    if not admin_authorized(request.headers.get("Authorization", ""), username, password):
-        return Response("Authentication required", status=401,
-                        headers={"WWW-Authenticate": 'Basic realm="InkTime Admin", charset="UTF-8"'})
-    if request.method not in ("GET", "HEAD", "OPTIONS"):
-        if not allowed_origin(request.headers.get("Origin", ""), request.host):
-            return Response("Cross-origin write blocked", status=403)
-        submitted = (request.headers.get("X-InkTime-CSRF", "")
-                     or request.form.get("csrf_token", ""))
-        if not valid_csrf_token(
-            request.cookies.get(CSRF_COOKIE_NAME, ""), submitted, password
-        ):
-            return Response("CSRF token missing or invalid", status=403)
-    elif request.method in ("GET", "HEAD"):
-        cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
-        if not valid_csrf_token(cookie, cookie, password):
-            g.csrf_cookie = make_csrf_token(password)
-    return None
 
 
 @app.after_request
 def _after_request(resp):
-    # Admin token is only issued after successful authentication, never on device routes.
-    token = getattr(g, "csrf_cookie", None)
-    if token and resp.status_code < 400:
-        resp.set_cookie(CSRF_COOKIE_NAME, token, secure=True, httponly=False,
-                        samesite="Strict", path="/")
     # 仅记录 /static/inktime/ 前缀的传输类请求，避免 /review 图片刷屏
     if request.path.startswith("/static/inktime/"):
         dur_ms = (time.time() - getattr(g, "t0", time.time())) * 1000.0

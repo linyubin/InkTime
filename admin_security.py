@@ -67,3 +67,44 @@ def allowed_origin(origin: str, host: str) -> bool:
         return parsed.scheme in ("http", "https") and parsed.netloc.lower() == host.lower()
     except ValueError:
         return False
+
+def install_admin_security(app, *, allow_device_routes: bool = False) -> None:
+    """Install the same Basic/Origin/CSRF boundary in server and standalone WebUI.
+
+    Device routes must opt in explicitly and continue checking DOWNLOAD_KEY in
+    their route handler. Missing admin configuration fails closed (503).
+    """
+    import os
+    from flask import Response, g, request
+
+    @app.before_request
+    def _require_administrator():
+        if allow_device_routes and is_device_protocol_path(request.path):
+            return None
+        username = os.environ.get("INKTIME_ADMIN_USERNAME", "admin")
+        password = os.environ.get("INKTIME_ADMIN_PASSWORD", "")
+        if not password:
+            return Response("Administrator access disabled: set INKTIME_ADMIN_PASSWORD", status=503)
+        if not admin_authorized(request.headers.get("Authorization", ""), username, password):
+            return Response("Authentication required", status=401,
+                            headers={"WWW-Authenticate": 'Basic realm="InkTime Admin", charset="UTF-8"'})
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            if not allowed_origin(request.headers.get("Origin", ""), request.host):
+                return Response("Cross-origin write blocked", status=403)
+            submitted = (request.headers.get("X-InkTime-CSRF", "")
+                         or request.form.get("csrf_token", ""))
+            if not valid_csrf_token(request.cookies.get(CSRF_COOKIE_NAME, ""), submitted, password):
+                return Response("CSRF token missing or invalid", status=403)
+        elif request.method in ("GET", "HEAD"):
+            cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+            if not valid_csrf_token(cookie, cookie, password):
+                g.csrf_cookie = make_csrf_token(password)
+        return None
+
+    @app.after_request
+    def _set_csrf_cookie(response):
+        token = getattr(g, "csrf_cookie", None)
+        if token and response.status_code < 400:
+            response.set_cookie(CSRF_COOKIE_NAME, token, secure=True, httponly=False,
+                                samesite="Strict", path="/")
+        return response

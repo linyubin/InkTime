@@ -7,6 +7,8 @@ import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime
+import os
+from admin_security import install_admin_security
 import config as cfg
 from path_security import safe_join
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
@@ -668,18 +670,30 @@ def api_selftest_report():
     return jsonify(_SELFTEST_REPORT)
 
 
-if __name__ == '__main__':
-    # 兼容旧的独立启动方式（systemd inktime-webui / docker supervisord）。
-    # 合并后的正式入口是 server.py：所有功能统一挂在 FLASK_PORT(8765)。
+def create_standalone_app() -> Flask:
+    """Create the optional legacy WebUI with the *same* admin security as server.py.
+
+    The standalone instance intentionally does not allow device-route exceptions.
+    """
     app = Flask(__name__)
+    install_admin_security(app, allow_device_routes=False)
     app.register_blueprint(bp)
 
-    @app.route('/')
+    @app.get("/")
     def _index():
-        return redirect('/manager')
+        return redirect("/manager")
 
-    print(f"==================================================")
-    print(f"InkTime Independent WebUI Manager")
-    print(f"启动 URL: http://{WEBUI_HOST}:{WEBUI_PORT}  (建议改用 server.py 统一入口)")
-    print(f"==================================================")
-    app.run(host=WEBUI_HOST, port=WEBUI_PORT, debug=True)
+    return app
+
+
+if __name__ == "__main__":
+    # Legacy entrypoint only. Prefer server.py; never expose Werkzeug debugger.
+    if not os.environ.get("INKTIME_ADMIN_PASSWORD"):
+        raise SystemExit(
+            "INKTIME_ADMIN_PASSWORD is required for standalone WebUI; "
+            "use a private environment file and an HTTPS reverse proxy."
+        )
+    app = create_standalone_app()
+    print("[InkTime] standalone WebUI running on 127.0.0.1 "
+          "(localhost only, HTTPS reverse proxy required)")
+    app.run(host="127.0.0.1", port=WEBUI_PORT, debug=False)
