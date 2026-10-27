@@ -57,7 +57,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 | 2026-10-28 | R1/PR-03 WebUI SQLite read-only/schema-gated policy `2f3f8ffb` | refactor/architecture-v1 | **92/92 Python + 4/4 Node**, [Push CI 40568792533](https://github.com/linyubin/InkTime/actions/runs/40568792533), [PR CI 40568800180](https://github.com/linyubin/InkTime/actions/runs/40568800180) SUCCESS; synthetic SQLite/source only, no NAS/browser/hardware | Not deployed |
 
-| 2026-10-28 | R1/PR-03 server request SQLite read-only/write helpers, no raw sqlite3.connect; source and synthetic tests | refactor/architecture-v1 | CI pending for this commit; no full Flask/NAS/browser/hardware acceptance | Not deployed |
+| 2026-10-28 | R1/PR-03 server request SQLite read-only/write helpers, no raw sqlite3.connect: `d0d2bace` | refactor/architecture-v1 | **95/95 Python + 4/4 Node**, [Push CI 40594717633](https://github.com/linyubin/InkTime/actions/runs/40594717633) and [PR CI 40594730351](https://github.com/linyubin/InkTime/actions/runs/40594730351) SUCCESS; synthetic/source only; no full Flask/NAS/browser/hardware acceptance | Not deployed |
 
 ## Rollout, verification and rollback
 
@@ -209,6 +209,6 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 ## 2026-10-28 — R1/PR-03 server request SQLite policy
 
 - **Changed**: server's five read locations use v2-validated `mode=ro` + `query_only=ON` helper; transfer history and startup WAL use v2-validated `mode=rw` helper. Existing queries and response behavior retained; no implicit database creation.
-- **Validation**: synthetic migration/SQLite and AST source-policy regression tests; CI result to be added after Actions completes. No full Flask server, NAS concurrency/recovery, HTTPS browser or ESP32 hardware test.
-- **Rollback**: revert the implementation commit on `refactor/architecture-v1` only, then rerun CI. This restores unsafe raw SQLite open behavior; not recommended for production. No schema changes or data restoration are needed for this source-only patch.
+- **Validation**: 95/95 Python and 4/4 Node tests, GitHub Actions Push `40594717633` and PR `40594730351` both SUCCESS on implementation commit `d0d2bace23f570959f0843813c34f71b312770e3`. Tests are synthetic SQLite and AST source-policy checks only. No full Flask server, NAS concurrency/recovery, HTTPS browser or ESP32 hardware test.
+- **Rollback**: `git revert d0d2bace23f570959f0843813c34f71b312770e3` on `refactor/architecture-v1` only, then rerun CI. This restores unsafe raw SQLite open behavior; not recommended for production. No schema changes or data restoration are needed for this source-only patch.
 - **Next**: startup configuration validation, controlled fresh-install initialization, dependency checks; then R1 staging acceptance. Do not mark R1 Gate passed without external tests.
