@@ -45,7 +45,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 | 2026-10-27 | PR-02 random per-device AP passphrase `8c30d3b8`, saved in dashcfg NVS and displayed on EPD | refactor/architecture-v1 | 47/47 Python + 4/4 Node tests; [push CI](https://github.com/linyubin/InkTime/actions/runs/40458555711) and [PR CI](https://github.com/linyubin/InkTime/actions/runs/40458561039) SUCCESS; **static firmware tests only** | Not deployed/flashed |
 
-| 2026-10-27 | PR-02 server-side staged download-key rotation `2fb34d4e` + Unicode path guard `020a3387`; env override, explicit legacy key, 10 guarded routes | refactor/architecture-v1 | 54/54 Python + 4/4 Node tests passed at `2fb34d4e` (Push `40467194648`, PR `40467198112`); latest fix CI pending; no full server/ESP32/NAS tests | Not deployed |
+| 2026-10-27 | PR-02 server-side staged download-key rotation `2fb34d4e` + Unicode path guard `020a3387`; env override, explicit legacy key, 10 guarded routes | refactor/architecture-v1 | 54/54 Python + 4/4 Node tests passed at `dc36d74a` (Push `40467269486`, PR `40467276695`), including Unicode guard and compileall helper; no full server/ESP32/NAS tests | Not deployed |
 
 ## Rollout, verification and rollback
 
@@ -134,7 +134,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 - **Code**: `download_key_security.py`, `server.py`, `config-example.py`, new `tests/test_download_key_security.py`, updated `tests/test_device_endpoint_security.py`.
 - **Compatibility**: no environment overrides preserves `config.py DOWNLOAD_KEY`. Explicit `INKTIME_DOWNLOAD_KEY` overrides it; optional `INKTIME_DOWNLOAD_KEY_PREVIOUS` temporarily accepts one old key. No credentials changed.
-- **Validation**: 54/54 Python and 4/4 Node tests passed for implementation `2fb34d4e` (Push `40467194648`, PR `40467198112`); Unicode path rejection fix `020a3387` pending final CI. Isolated unit/Flask route tests and all-route AST checks; no full server startup, browser, NAS or ESP32 hardware verification.
+- **Validation**: 54/54 Python and 4/4 Node tests passed for implementation + Unicode path rejection + helper compileall at `dc36d74a` (Push `40467269486`, PR `40467276695`). Isolated unit/Flask route tests and all-route AST checks; no full server startup, browser, NAS or ESP32 hardware verification.
 - **Risks**: old firmware still embeds exposed download path; dual-key overlap extends exposure. Device HTTP paths remain bearer tokens on cleartext LAN, and device log filenames can expose the key.
-- **Rollback**: revert `020a3387` and `2fb34d4e` in reverse chronological order on `refactor/architecture-v1` only, then rerun CI. Reverting a real service without a device migration plan risks outages and secret reuse.
+- **Rollback**: revert `dc36d74a`, `020a3387`, and `2fb34d4e` in reverse chronological order on `refactor/architecture-v1` only, then rerun CI. Reverting a real service without a device migration plan risks outages and secret reuse.
 - **Next**: firmware NVS download-key provisioning, secret-free device logging, server-side old-key usage metrics and removal. Then R1/PR-03 migrations/config validation and R1 Gate acceptance.
