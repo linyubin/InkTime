@@ -78,6 +78,39 @@ class FirmwareCredentialPolicyTests(unittest.TestCase):
         self.assertIn("clearConfigNVS();", boot)
         self.assertLess(boot.index("clearConfigNVS();"), boot.index("loadConfig(g_cfg);"))
 
+    def test_no_shared_ap_password(self):
+        self.assertNotIn('"12345678"', self.source)
+        self.assertIn("WiFi.softAP(apSsid.c_str(), g_apPassword.c_str())", self.source)
+
+    def test_ap_password_is_generated_and_stored_in_nvs(self):
+        self.assertIn('prefs.getString("ap_pwd", "")', self.source)
+        self.assertIn('prefs.putString("ap_pwd", password)', self.source)
+        self.assertIn("esp_random()", self.source)
+        self.assertIn("snprintf(generated, sizeof(generated)", self.source)
+
+    def test_random_ap_password_after_wifi_radio_is_enabled(self):
+        body = function_body(self.source, "startConfigPortal")
+        self.assertLess(body.index("wifiHardResetForPortal();"),
+                        body.index("g_apPassword = loadOrCreateApPassword();"))
+        self.assertLess(body.index("g_apPassword = loadOrCreateApPassword();"),
+                        body.index("showNetworkInfoScreen(true, false);"))
+        self.assertLess(body.index("showNetworkInfoScreen(true, false);"),
+                        body.index("WiFi.softAP("))
+
+    def test_ap_nvs_failure_does_not_start_open_ap(self):
+        self.assertIn('if (!prefs.begin("dashcfg", false))', self.source)
+        self.assertIn('if (prefs.putString("ap_pwd", password) != password.length())', self.source)
+        body = function_body(self.source, "startConfigPortal")
+        self.assertIn("if (g_apPassword.length() != 16)", body)
+        self.assertIn("goDeepSleepMinutes(30);", body)
+
+    def test_ap_screen_shows_current_secret_and_factory_reset_clears_it(self):
+        display = function_body(self.source, "showNetworkInfoScreen")
+        self.assertIn('("Pass: " + g_apPassword).c_str()', display)
+        reset = function_body(self.source, "clearConfigNVS")
+        self.assertIn('prefs.begin("dashcfg", false)', reset)
+        self.assertIn("prefs.clear();", reset)
+
     def test_ap_configuration_entrypoints_retained(self):
         portal = function_body(self.source, "startConfigPortal")
         self.assertIn("WiFi.softAP(", portal)

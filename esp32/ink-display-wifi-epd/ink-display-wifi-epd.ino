@@ -6,7 +6,7 @@
  * 功能：
  *   1. 支持保存 3 组 NVS WiFi 配置（不再注入固件内置备用网络），启动时扫描周围
  *      网络并自动连接信号最强的已保存组；一组都连不上时进入 AP 配网模式
- *      （SSID: InkTime-xxxx / 密码: 12345678），并刷新屏幕提示 AP 模式
+ *      （SSID: InkTime-xxxx / 密码: 屏幕显示的每设备随机口令），并刷新屏幕提示 AP 模式
  *   2. 配网后通过 WiFi 连接服务器，HTTP 下载当日照片 .bin 文件
  *   3. ESP32epdx 低层驱动 (EPD.h) 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
@@ -120,6 +120,7 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 // ============================================================
 Preferences prefs;
 WebServer   server(80);
+static String g_apPassword;  // 每设备独立 AP 口令；仅显示在本机屏幕
 
 // ── 多组 WiFi 配置 ──
 // 最多 3 组凭据。组0 沿用旧 NVS 键 ssid/pass（升级固件后已有配置自动成为组0），
@@ -630,8 +631,8 @@ String buildConfigPage() {
   html += F("<div class='note'>支持保存 ");
   html += String(WIFI_PROFILE_COUNT);
   html += F(" 组 WiFi：设备启动时扫描周围网络，自动连接信号最强的已保存组。");
-  html += F("密码留空表示保持不变；SSID 留空表示删除该组（固件内置的备用网络");
-  html += F("删除后重启会自动补回）。隐藏 SSID（不广播）的网络无法被扫描匹配。</div>");
+  html += F("密码留空表示保持不变；SSID 留空表示删除该组。");
+  html += F("隐藏 SSID（不广播）的网络无法被扫描匹配。</div>");
 
   // 3 组 WiFi 编辑：每组 = 扫描下拉 + SSID 输入 + 密码输入
   for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
@@ -1637,6 +1638,30 @@ void goDeepSleepMinutes(uint32_t minutes) {
   esp_deep_sleep_start();
 }
 
+// AP 口令保存在 dashcfg NVS，BOOT 恢复出厂会清空它。
+// 必须先启用 Wi-Fi 射频，再从 esp_random() 生成不可预测口令。
+// NVS 不可写时拒绝开启 AP，不能回退到共享密码或开放热点。
+static String loadOrCreateApPassword() {
+  if (!prefs.begin("dashcfg", false)) {
+    DBG_PRINTLN("[AP] NVS 不可用，拒绝配网");
+    return "";
+  }
+  String password = prefs.getString("ap_pwd", "");
+  if (password.length() != 16) {
+    char generated[17];
+    snprintf(generated, sizeof(generated), "%08lX%08lX",
+             (unsigned long)esp_random(), (unsigned long)esp_random());
+    password = String(generated);
+    if (prefs.putString("ap_pwd", password) != password.length()) {
+      prefs.end();
+      DBG_PRINTLN("[AP] 无法持久化随机密码，拒绝配网");
+      return "";
+    }
+  }
+  prefs.end();
+  return password;
+}
+
 // ============================================================
 //  AP 配网模式
 // ============================================================
@@ -1645,15 +1670,21 @@ void startConfigPortal() {
 
   // 进入配网统一刷新屏幕提示（热点名/密码/配置地址 192.168.4.1）：
   // 无论从哪条路径进来（无配置 / 多组全连不上 / 配网超时休眠后再醒）都会显示。
+  // 先启动 Wi-Fi RF 保证硬件 RNG 有熵，后取得/生成 AP 密码。
+  wifiHardResetForPortal();
+  g_apPassword = loadOrCreateApPassword();
+  if (g_apPassword.length() != 16) {
+    DBG_PRINTLN("[AP] 密码不可用，拒绝开启配网 AP");
+    goDeepSleepMinutes(30);
+    return;
+  }
+
+  // 仅在本机墨水屏显示 AP 凭据，不输出到串口或设备日志。
   showNetworkInfoScreen(true, false);
 
-  wifiHardResetForPortal();
-
   // AP 名称：InkTime-<MAC后4位>
-  String apSsid     = "InkTime-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
-  const char* apPwd = "12345678";
-
-  bool apOk = WiFi.softAP(apSsid.c_str(), apPwd);
+  String apSsid = "InkTime-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
+  bool apOk = WiFi.softAP(apSsid.c_str(), g_apPassword.c_str());
 
   DBG_PRINTF("[CFG] AP 启动 %s\n", apOk ? "成功" : "失败");
   journalEvent(EV_AP, "ssid=%s ok=%d", apSsid.c_str(), (int)apOk);
@@ -2646,7 +2677,7 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess) {   // 前置声明在文�
     textY += 30;
     Paint_DrawString_EN(textX, textY, ("SSID: " + apSsid).c_str(), &Font24, RED0, WHITE0);
     textY += 30;
-    Paint_DrawString_EN(textX, textY, "Pass: 12345678", &Font24, BLACK0, WHITE0);
+    Paint_DrawString_EN(textX, textY, ("Pass: " + g_apPassword).c_str(), &Font24, BLACK0, WHITE0);
     textY += 40;
     Paint_DrawString_EN(textX, textY, "Then visit:", &Font20, BLACK0, WHITE0);
     textY += 30;
