@@ -2,11 +2,12 @@
 
 ## Scope and version contract
 
-This work package introduces `db_schema.py` and `scripts/migrate_sqlite.py`.
-It **does not** change the runtime DB startup, automatically run migrations, touch
-real photo libraries, or deploy. It is intentionally a bounded, opt-in migration
-primitive; PR-03 remains incomplete until config validation, runtime integration,
-dependency install, and Docker/systemd acceptance.
+This workstream introduced `db_schema.py` and `scripts/migrate_sqlite.py`.
+The server and analyzer now require v2 schema at startup and never perform
+implicit schema migrations. The CLI remains an opt-in, backed-up migration
+primitive; no real photo libraries were touched or deployed. PR-03 remains
+incomplete until config validation, remaining connection policy, dependency
+installation, and Docker/systemd acceptance.
 
 - **v0 (legacy)**: `photo_scores` exists with `path`; some optional columns may
   be missing. Migration adds missing columns using `ALTER TABLE ... ADD COLUMN`,
@@ -18,9 +19,9 @@ dependency install, and Docker/systemd acceptance.
   fail closed. Existing `photo_scores` table is mandatory: an unexpected
   empty/wrong DB is **not** silently initialized.
 
-No column is dropped, renamed or rewritten. Existing application entrypoints
-retain their current schema creation behavior for now; the versioned CLI is not
-yet wired into `server.py` or `analyze_photos.py`.
+No column is dropped, renamed or rewritten. Neither `server.py` nor
+`analyze_photos.py` runs the migration CLI automatically: both require an
+existing, explicitly migrated v2 database.
 
 ## Safe staging procedure
 
@@ -93,10 +94,10 @@ analyzer and migrated an isolated staging copy using the explicit CLI. Do not
 point this branch at a production database before planning an authorized
 maintenance window and backup/restore rehearsal.
 
-The analyzer still uses its old unversioned CREATE/ALTER logic and has not yet
-been integrated with the schema gate. SQLite connections used by request
-handlers/WebUI still need a common busy_timeout/URI-mode policy. These are
-separate remaining PR-03 work packages.
+The analyzer now has its own read-only preflight and existing-only writable
+connection gate (see below). SQLite connections used by request handlers and
+WebUI still need a common busy_timeout/URI-mode policy. These are separate
+remaining PR-03 work packages.
 
 **Rollback**: revert the server startup-gate implementation commit on the
 independent branch, rerun tests, and restore code only; no database rollback is
@@ -130,3 +131,10 @@ concurrent writers, Docker/systemd, browser or ESP32 hardware exercised.
 development branch and rerun CI. This restores unversioned implicit DDL,
 so it is **not** an approved production rollback. Data recovery, if needed,
 must use a verified pre-migration backup on a stopped staging DB.
+
+**CI evidence**: analyzer gate implementation commit
+`a560f2c3b3f421462c16adaf6030d4851af40011`; [Push CI
+40542143006](https://github.com/linyubin/InkTime/actions/runs/40542143006)
+and [PR CI 40542151490](https://github.com/linyubin/InkTime/actions/runs/40542151490)
+both SUCCESS, 85/85 Python and 4/4 Node tests, Python compile and requirements
+checks. This is synthetic/source testing, **not a real analyzer startup**.

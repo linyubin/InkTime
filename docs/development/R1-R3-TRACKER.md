@@ -180,11 +180,11 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - Read-only startup gate is not a full Flask boot or NAS migration acceptance. The code deliberately blocks legacy/missing databases until an explicit operator migration. Analyzer still creates/ALTERs unversioned schemas; that must be addressed separately before R1 can close.
 
 
-## 2026-10-28 — PR-03 analyzer startup schema gate (implementation pending CI)
+## 2026-10-28 — PR-03 analyzer startup schema gate (source + CI verified)
 
 - **Scope**: remove `analyze_photos.ensure_table()` legacy implicit CREATE/ALTER; preflight v2 before scanning/filelist writes; open writable SQLite in existing-only `mode=rw` and revalidate v2 on the actual connection; configure busy_timeout=5000ms and require WAL.
-- **Tests**: seven new synthetic SQLite/source tests covering v2 writes, timeout/WAL, legacy/missing/future/incomplete rejection, invalid timeout, and preflight ordering. CI outcome to be appended after GitHub Actions completes.
+- **Tests**: seven new synthetic SQLite/source tests covering v2 writes, timeout/WAL, legacy/missing/future/incomplete rejection, invalid timeout, and preflight ordering. Implementation `a560f2c3b3f421462c16adaf6030d4851af40011`; [Push CI 40542143006](https://github.com/linyubin/InkTime/actions/runs/40542143006) and [PR CI 40542151490](https://github.com/linyubin/InkTime/actions/runs/40542151490) both SUCCESS: **85/85 Python + 4/4 Node** tests, compileall and requirements checks.
 - **Compatibility**: old and new empty databases cannot be analyzed until explicitly initialized/migrated on a verified staging copy. The server already has the same v2 gate. Fresh-install DB initialization is a separate unimplemented work package.
-- **Rollback**: revert the implementation commit on `refactor/architecture-v1` only and rerun tests. It would restore unversioned schema mutation, so it must **not** be deployed as a safe rollback.
+- **Rollback**: `git revert a560f2c3b3f421462c16adaf6030d4851af40011` on `refactor/architecture-v1` only and rerun tests. It would restore unversioned schema mutation, so it must **not** be deployed as a safe rollback.
 - **Validation gap**: no full analyzer run, real NAS, browser HTTPS, Docker/systemd, ESP32 compile or physical hardware. R1 Gate remains OPEN. No production changes, merge, or firmware flash.
 - **Next**: server/WebUI SQLite connection policy, configuration validation, staging boot and recovery drill.
