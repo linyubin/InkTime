@@ -42,7 +42,7 @@ class DownloadKeySecurityTests(unittest.TestCase):
         self.assertEqual(keys, ("newKey", "oldKey"))
         for candidate in ("newKey", "oldKey"):
             self.assertTrue(authorized_download_key(candidate, keys))
-        for candidate in ("badKey", "newKey/extra", "", None):
+        for candidate in ("badKey", "newKey/extra", "", None, "密钥", "newKey\u00e9"):
             self.assertFalse(authorized_download_key(candidate, keys))
         self.assertFalse(authorized_download_key("oldKey", ("newKey",)))
 

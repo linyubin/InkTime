@@ -28,7 +28,7 @@ def resolve_download_keys(config_key: object, environ: Mapping[str, str]) -> tup
 
 def authorized_download_key(presented: object, keys: tuple[str, ...]) -> bool:
     """Authorize exact match against active and explicitly enabled previous key."""
-    if not isinstance(presented, str) or not presented or not keys:
+    if not isinstance(presented, str) or not _KEY_RE.fullmatch(presented) or not keys:
         return False
     matched = False
     for candidate in keys:
