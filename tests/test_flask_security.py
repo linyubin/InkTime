@@ -67,7 +67,7 @@ class AdminGuardFlaskTests(unittest.TestCase):
         app = self.make_app()
         with app.test_client() as client:
             client.get("/admin-read", headers=basic(), base_url="https://inktime.test")
-            cookie = client.get_cookie(CSRF_COOKIE_NAME)
+            cookie = client.get_cookie(CSRF_COOKIE_NAME, domain="inktime.test")
             self.assertIsNotNone(cookie)
             self.assertEqual(client.post("/admin-write", headers=basic(), base_url="https://inktime.test").status_code, 403)
             self.assertEqual(client.post("/admin-write", headers={**basic(), "Origin": "https://evil.test",
