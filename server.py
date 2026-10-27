@@ -21,6 +21,7 @@ import config as cfg
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
+from db_schema import MigrationError, require_current_schema
 from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
@@ -36,28 +37,31 @@ except ValueError as exc:
 DOWNLOAD_KEY = DOWNLOAD_KEYS[0]  # active; previous key requires explicit opt-in
 
 DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
+# Startup is read-only until the schema is verified. Do not silently create
+# photos.db or apply legacy DDL: migrations require an explicit verified backup.
+try:
+    require_current_schema(DB_PATH)
+except MigrationError as exc:
+    raise SystemExit(f"InkTime database startup blocked: {exc}") from None
+
 IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
 BIN_OUTPUT_DIR = resolve_path(getattr(cfg, "BIN_OUTPUT_DIR", "./output"), "./output")
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _init_db_pragmas() -> None:
-    """启动时建索引并切 WAL：/review 的排序/筛选此前对 3 万行做逐行 json_extract
-    全表扫描（每页两次、实测 ~1.6s/次）；exif_datetime 列与 JSON 同源，建索引后
-    毫秒级。WAL 让读写不再互斥。"""
-    if not DB_PATH.exists():
-        return
+    """Enable WAL only after the v2 schema gate; never modify schema on startup."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_photo_scores_exif_datetime "
-                     "ON photo_scores(exif_datetime)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_photo_scores_md "
-                     "ON photo_scores(substr(exif_datetime, 6, 2) || '-' || substr(exif_datetime, 9, 2))")
-        conn.commit()
-        conn.close()
-    except sqlite3.Error:
-        pass
+        conn = sqlite3.connect(DB_PATH.resolve().as_uri() + "?mode=rw",
+                               uri=True, timeout=5.0)
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode.lower() != "wal":
+                raise MigrationError(f"SQLite WAL unavailable: {mode}")
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise SystemExit(f"InkTime database WAL initialization failed: {exc}") from None
 
 
 _init_db_pragmas()
@@ -181,31 +185,7 @@ from webui import bp as webui_bp
 app.register_blueprint(webui_bp)
 
 
-def ensure_transfer_history() -> None:
-    """创建传输日志表（对齐 analyze_photos.py 的 CREATE TABLE IF NOT EXISTS 模式）。"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS transfer_history (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts           TEXT,
-            method       TEXT,
-            path         TEXT,
-            idx          INTEGER,
-            status       INTEGER,
-            bytes        INTEGER,
-            duration_ms  REAL,
-            client_ip    TEXT,
-            user_agent   TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-ensure_transfer_history()
-
+# transfer_history is created by explicit v2 migration, never by server import.
 
 @app.before_request
 def _before_request() -> None:

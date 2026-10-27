@@ -1,6 +1,7 @@
 """R1 PR-03: isolated, offline, versioned SQLite migration safety tests."""
 from __future__ import annotations
 
+import ast
 import sqlite3
 import subprocess
 import sys
@@ -8,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations
+from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema
 from scripts.backup_sqlite import _photo_scores_fingerprint, restore_drill
 from scripts.migrate_sqlite import inspect_database, migrate_database
 
@@ -48,6 +49,74 @@ class MigrationTests(unittest.TestCase):
             ).fetchone())
         with sqlite3.connect(result.backup_path) as original:
             self.assertEqual(_photo_scores_fingerprint(original), before)
+
+    def test_runtime_gate_accepts_migrated_v2_without_schema_mutation(self):
+        migrate_database(self.db, self.backups)
+        with sqlite3.connect(self.db) as conn:
+            before = conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+            row_count = conn.execute("SELECT COUNT(*) FROM photo_scores").fetchone()
+        require_current_schema(self.db)
+        require_current_schema(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(before, conn.execute(
+                "SELECT sql FROM sqlite_master ORDER BY name").fetchall())
+            self.assertEqual(row_count, conn.execute(
+                "SELECT COUNT(*) FROM photo_scores").fetchone())
+
+    def test_runtime_gate_rejects_legacy_without_upgrading(self):
+        with sqlite3.connect(self.db) as conn:
+            before = _photo_scores_fingerprint(conn)
+        with self.assertRaisesRegex(MigrationError, "expected v2"):
+            require_current_schema(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(_photo_scores_fingerprint(conn), before)
+        self.assertFalse(self.backups.exists())
+
+    def test_runtime_gate_rejects_missing_db_without_creating_it(self):
+        absent = self.root / "missing.db"
+        with self.assertRaisesRegex(MigrationError, "existing SQLite database"):
+            require_current_schema(absent)
+        self.assertFalse(absent.exists())
+
+    def test_runtime_gate_rejects_future_version(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=99")
+        with self.assertRaises(MigrationError):
+            require_current_schema(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 99)
+
+    def test_runtime_gate_rejects_corrupt_v2_schema(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=2")
+        with self.assertRaises(MigrationError):
+            require_current_schema(self.db)
+
+    def test_runtime_gate_supports_uri_reserved_filename(self):
+        migrate_database(self.db, self.backups)
+        require_current_schema(self.db)  # fixture filename contains '#' and '?'
+
+    def test_runtime_gate_rejects_non_database_file(self):
+        path = self.root / "not_sqlite.db"
+        path.write_bytes(b"not a sqlite database")
+        with self.assertRaises(MigrationError):
+            require_current_schema(path)
+        self.assertEqual(path.read_bytes(), b"not a sqlite database")
+
+    def test_server_preflight_precedes_startup_writes(self):
+        source = (Path(__file__).resolve().parents[1] / "server.py").read_text()
+        tree = ast.parse(source)
+        # No implicit CREATE TABLE / CREATE INDEX or ignored schema errors.
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS transfer_history", source)
+        self.assertNotIn("CREATE INDEX IF NOT EXISTS idx_photo_scores", source)
+        self.assertNotIn("def ensure_transfer_history(", source)
+        self.assertLess(source.index("require_current_schema(DB_PATH)"),
+                        source.index("BIN_OUTPUT_DIR.mkdir("))
+        self.assertLess(source.index("require_current_schema(DB_PATH)"),
+                        source.index("_init_db_pragmas()\n\n#"))
+        self.assertIn("raise SystemExit(f\"InkTime database startup blocked:", source)
+        self.assertIsInstance(tree, ast.Module)
 
     def test_repeat_is_idempotent_and_creates_no_second_backup(self):
         first = migrate_database(self.db, self.backups)

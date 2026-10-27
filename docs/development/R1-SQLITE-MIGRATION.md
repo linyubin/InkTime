@@ -76,3 +76,33 @@ Replace the example backup filename with the actual printed path.
 **Verification scope**: synthetic SQLite/WAL and CLI tests in GitHub Actions.
 No real NAS database, multi-process service restart, Docker/systemd, browser,
 ESP32 hardware, or production rollback has been tested. R1 Gate remains open.
+
+## Server startup v2 gate (R1/PR-03 follow-up, source/CI only)
+
+The server now requires an **existing, already-migrated v2** SQLite database.
+On import/start it performs a read-only URI preflight (including v2 table,
+columns and indexes). Missing, legacy v0/v1, future or corrupt schemas block
+startup with a migration instruction. It does not create an empty DB or
+automatically migrate it. After the schema gate, server enables WAL, and WAL
+initialization errors also block startup. The old server-side implicit index
+creation and transfer_history table creation are removed.
+
+**Breaking change**: a fresh install or old database will no longer start the
+server until the operator has initialized the database through the legacy
+analyzer and migrated an isolated staging copy using the explicit CLI. Do not
+point this branch at a production database before planning an authorized
+maintenance window and backup/restore rehearsal.
+
+The analyzer still uses its old unversioned CREATE/ALTER logic and has not yet
+been integrated with the schema gate. SQLite connections used by request
+handlers/WebUI still need a common busy_timeout/URI-mode policy. These are
+separate remaining PR-03 work packages.
+
+**Rollback**: revert the server startup-gate implementation commit on the
+independent branch, rerun tests, and restore code only; no database rollback is
+needed because the preflight is read-only. This re-enables unsafe implicit DDL
+on server startup and is not an approved production security rollback.
+
+**Validation boundary**: synthetic SQLite/WAL tests and GitHub Actions only;
+no real NAS database, full server process, HTTPS browser, Docker/systemd,
+physical ESP32, or production rollout has been tested.

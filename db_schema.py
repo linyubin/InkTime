@@ -6,6 +6,7 @@ backup while holding SQLite's single-writer lock before any schema change.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 SCHEMA_VERSION = 2
 
@@ -86,6 +87,29 @@ def current_version(conn: sqlite3.Connection) -> int:
             f"database user_version {version} is newer than supported {SCHEMA_VERSION}"
         )
     return version
+
+
+def require_current_schema(database: Path) -> None:
+    """Read-only startup gate: require an existing, fully migrated v2 database.
+
+    Never creates a missing DB, changes schema, or implicitly upgrades legacy
+    data. Operators must migrate an offline staging copy with a verified backup.
+    """
+    path = Path(database).expanduser().resolve()
+    if not path.is_file():
+        raise MigrationError(f"existing SQLite database required: {path}")
+    try:
+        # Path.as_uri() percent-encodes '#' and '?' in filenames.
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+            version = current_version(conn)
+            if version != SCHEMA_VERSION:
+                raise MigrationError(
+                    f"database schema v{version}; expected v{SCHEMA_VERSION}. "
+                    "Run explicit backed-up migration before starting server."
+                )
+            verify_latest_schema(conn)
+    except sqlite3.Error as exc:
+        raise MigrationError(f"database preflight failed: {exc}") from exc
 
 
 def apply_migrations(conn: sqlite3.Connection) -> tuple[int, int]:
