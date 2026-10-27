@@ -148,6 +148,12 @@ class FirmwareCredentialPolicyTests(unittest.TestCase):
         self.assertNotIn(' + " | GET " + url', self.source)
         self.assertIn('journalSetServer(g_cfg.backend_hostport,', self.source)
 
+    def test_device_journal_does_not_log_bearer_url(self):
+        journal = (FIRMWARE.parent / "device_log.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("url.c_str()", journal)
+        self.assertIn('url += "/api/device_log/" + s_key;', journal)
+        self.assertIn("JLOG(\"[DEVLOG] 上传开始 cur=%u（URL 密钥已隐藏）", journal)
+
     def test_ap_configuration_entrypoints_retained(self):
         portal = function_body(self.source, "startConfigPortal")
         self.assertIn("WiFi.softAP(", portal)
