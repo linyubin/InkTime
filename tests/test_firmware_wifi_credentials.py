@@ -66,9 +66,9 @@ class FirmwareCredentialPolicyTests(unittest.TestCase):
     def test_boot_uses_saved_config_or_ap_portal(self):
         boot = function_body(self.source, "setup")
         self.assertIn("loadConfig(g_cfg);", boot)
-        self.assertRegex(boot, r"if\s*\(\s*!g_cfg\.valid\s*\)\s*\{")
+        self.assertRegex(boot, r"if\s*\(\s*!g_cfg\.valid\s*\|\|\s*!validDownloadKey\(g_cfg\.download_key\)\s*\)\s*\{")
         self.assertIn("startConfigPortal();", boot)
-        self.assertLess(boot.index("loadConfig(g_cfg);"), boot.index("if (!g_cfg.valid)"))
+        self.assertLess(boot.index("loadConfig(g_cfg);"), boot.index("if (!g_cfg.valid || !validDownloadKey(g_cfg.download_key))"))
         self.assertNotIn("prefs.putString", boot)
 
     def test_factory_reset_clears_nvs_without_reseeding(self):
