@@ -160,3 +160,10 @@ migrate or create databases, alter NVS, or touch production.
 branch and rerun tests. That reintroduces a potentially writable fallback
 and is not an approved production security rollback. No DB rollback is
 required because this policy performs no schema writes.
+
+
+## R1 PR-03 server request connection policy (2026-10-28)
+
+The server now routes its five read paths through `open_current_readonly_database` (`mode=ro`, `query_only=ON`, v2 revalidation, 5s busy timeout), and transfer-history inserts plus startup WAL initialization through `open_current_database` (`mode=rw`, v2 revalidation, WAL, 5s busy timeout). Raw `sqlite3.connect(DB_PATH)` calls are removed from `server.py`. This does not change the HTTP routes or intentionally change query results. The transfer-log insert remains best-effort: if the DB rejects writes, the request still returns its original response and logs an error; no implicit DB creation or migration occurs.
+
+**Validation**: synthetic SQLite connection tests and source-policy regression tests only. Full Flask server request traffic, simultaneous writers, real NAS WAL behavior, Docker/systemd and HTTPS browser remain untested. **Rollback**: revert the server connection-policy commit only on `refactor/architecture-v1`, rerun CI; this restores implicit writable SQLite opens and is not a production-safe rollback. No database migration or data rollback is required for this source-only change.

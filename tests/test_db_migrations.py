@@ -105,6 +105,48 @@ class MigrationTests(unittest.TestCase):
             require_current_schema(path)
         self.assertEqual(path.read_bytes(), b"not a sqlite database")
 
+    def test_server_connection_policy_has_no_raw_sqlite_open(self):
+        source = (Path(__file__).resolve().parents[1] / "server.py").read_text()
+        tree = ast.parse(source)
+        self.assertNotIn("sqlite3.connect(", source)
+        functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+        readers = ("_load_all_md_list", "load_rows", "load_sim_rows_for_dates",
+                   "get_photo_meta_by_path", "sim")
+        for name in readers:
+            with self.subTest(reader=name):
+                body = ast.get_source_segment(source, functions[name])
+                self.assertIn("open_current_readonly_database(DB_PATH)", body)
+                self.assertNotIn("open_current_database(DB_PATH)", body)
+        startup = ast.get_source_segment(source, functions["_init_db_pragmas"])
+        self.assertIn("open_current_database(DB_PATH)", startup)
+        after = ast.get_source_segment(source, functions["_after_request"])
+        self.assertIn("open_current_database(DB_PATH)", after)
+        self.assertNotIn("open_current_readonly_database(DB_PATH)", after)
+
+    def test_server_read_policy_fails_closed_for_legacy_and_missing_db(self):
+        # The server uses the exact same helper: exercise the real connection
+        # against both legacy and absent files without importing live server.
+        with self.assertRaises(MigrationError):
+            open_current_readonly_database(self.db)
+        missing = self.root / "server_missing.db"
+        with self.assertRaises(MigrationError):
+            open_current_readonly_database(missing)
+        self.assertFalse(missing.exists())
+
+    def test_server_read_and_write_helpers_on_migrated_v2(self):
+        migrate_database(self.db, self.backups)
+        with closing(open_current_readonly_database(self.db)) as read:
+            self.assertEqual(read.execute("PRAGMA query_only").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                read.execute("INSERT INTO transfer_history(method) VALUES('bad')")
+        with closing(open_current_database(self.db, busy_timeout_ms=1500)) as write:
+            self.assertEqual(write.execute("PRAGMA busy_timeout").fetchone()[0], 1500)
+            self.assertEqual(write.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            write.execute("INSERT INTO transfer_history(method) VALUES(?)", ("GET",))
+            write.commit()
+        with closing(open_current_readonly_database(self.db)) as read:
+            self.assertEqual(read.execute("SELECT method FROM transfer_history").fetchone()[0], "GET")
+
     def test_server_preflight_precedes_startup_writes(self):
         source = (Path(__file__).resolve().parents[1] / "server.py").read_text()
         tree = ast.parse(source)

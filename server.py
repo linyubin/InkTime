@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from flask import Flask, abort, send_file, Response, request, redirect, g, render_template, jsonify
 import mimetypes
-import sqlite3
+from contextlib import closing
 import json
 import html
 import hashlib
@@ -21,7 +21,10 @@ import config as cfg
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from db_schema import MigrationError, require_current_schema
+from db_schema import (
+    MigrationError, require_current_schema, open_current_database,
+    open_current_readonly_database,
+)
 from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
@@ -50,17 +53,11 @@ BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _init_db_pragmas() -> None:
-    """Enable WAL only after the v2 schema gate; never modify schema on startup."""
+    """Validate writable v2 connection and WAL before serving requests."""
     try:
-        conn = sqlite3.connect(DB_PATH.resolve().as_uri() + "?mode=rw",
-                               uri=True, timeout=5.0)
-        try:
-            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-            if mode.lower() != "wal":
-                raise MigrationError(f"SQLite WAL unavailable: {mode}")
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
+        with closing(open_current_database(DB_PATH)):
+            pass  # shared helper validates schema, busy_timeout and WAL
+    except MigrationError as exc:
         raise SystemExit(f"InkTime database WAL initialization failed: {exc}") from None
 
 
@@ -157,7 +154,7 @@ def _load_all_md_list() -> list[str]:
         if isinstance(cached, list):
             return [str(x) for x in cached]
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
     rows = c.execute("SELECT path, exif_json FROM photo_scores").fetchall()
     conn.close()
@@ -216,7 +213,7 @@ def _after_request(resp):
         except Exception as e:
             print(f"[transfer_log] write file failed: {e}")
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = open_current_database(DB_PATH)
             conn.execute(
                 "INSERT INTO transfer_history(ts,method,path,idx,status,bytes,duration_ms,client_ip,user_agent) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -393,7 +390,7 @@ def load_rows(page: int = 1, page_size: int = REVIEW_PAGE_SIZE, md: str = "", so
 
     offset = (page - 1) * page_size
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
 
     # exif_datetime 列与 exif_json.$.datetime 同源（analyze 管线写入时同步），
@@ -486,7 +483,7 @@ def load_sim_rows_for_dates(dates: list[str]):
     if not safe_dates:
         return []
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
 
     dt_expr = "json_extract(exif_json, '$.datetime')"
@@ -538,7 +535,7 @@ def get_photo_meta_by_path(abs_path: str):
     if db_path_guess and db_path_guess != abs_path:
         candidates.append(db_path_guess)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
     row = None
     for key in candidates:
@@ -873,7 +870,7 @@ def sim():
             # 注意 p 是本地路径，DB 里存的可能是 UNC 路径，比较时要用 DB 格式归一化。
             db_p = _to_db_path(str(p))
             if not any(_to_db_path(str(r[0])).lower() == db_p.lower() for r in sim_rows):
-                conn = sqlite3.connect(DB_PATH)
+                conn = open_current_readonly_database(DB_PATH)
                 c = conn.cursor()
                 row = c.execute("""
                     SELECT path, caption, type, memory_score, beauty_score,
