@@ -6,6 +6,7 @@ backup while holding SQLite's single-writer lock before any schema change.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 SCHEMA_VERSION = 2
@@ -100,7 +101,7 @@ def require_current_schema(database: Path) -> None:
         raise MigrationError(f"existing SQLite database required: {path}")
     try:
         # Path.as_uri() percent-encodes '#' and '?' in filenames.
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
             version = current_version(conn)
             if version != SCHEMA_VERSION:
                 raise MigrationError(
