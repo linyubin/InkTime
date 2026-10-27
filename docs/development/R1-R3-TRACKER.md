@@ -43,7 +43,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 | 2026-10-27 | PR-02 standalone WebUI authorization consolidated: `a7bd9d40`; cookie domain test fix `8feff86a` | refactor/architecture-v1 | 29/29 Python + 4/4 Node tests; Push CI `40425111257`, PR CI `40425117265` both succeeded | Not deployed; no HTTPS browser or ESP32 validation |
 | 2026-10-27 | PR-02 CSRF enforcement `c97c2ceccd40e1c3d6c33367c4ca5e6d7a4740d3`: signed cookie/header/form check in `admin_security.py` and `server.py`; browser adapter `static/admin_csrf.js` included in 10 admin HTML pages; redacted startup `DOWNLOAD_KEY` | refactor/architecture-v1 | 24/24 Python and 4/4 Node tests passed; Python compile and requirements checks passed; [push CI](https://github.com/linyubin/InkTime/actions/runs/40412885654) and [PR CI](https://github.com/linyubin/InkTime/actions/runs/40412890996) both success | Not deployed; HTTPS browser and ESP32 not tested |
 
-| 2026-10-27 | PR-02 per-device AP password generated with hardware RNG after RF start, persisted to dashcfg/ap_pwd, displayed on EPD | refactor/architecture-v1 | Firmware source static test and GitHub CI pending; no Arduino build/hardware validation | Not deployed/flashed |
+| 2026-10-27 | PR-02 random per-device AP passphrase `8c30d3b8`, saved in dashcfg NVS and displayed on EPD | refactor/architecture-v1 | 47/47 Python + 4/4 Node tests; [push CI](https://github.com/linyubin/InkTime/actions/runs/40458555711) and [PR CI](https://github.com/linyubin/InkTime/actions/runs/40458561039) SUCCESS; **static firmware tests only** | Not deployed/flashed |
 
 ## Rollout, verification and rollback
 
@@ -123,6 +123,6 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 - **Implementation**: removed common AP passphrase; random 16-hex-character passphrase generated after Wi-Fi RF start, stored in existing NVS namespace, displayed only on EPD. NVS failure prevents starting AP.
 - **Compatibility**: existing STA slots untouched; BOOT factory reset clears \`dashcfg/ap_pwd\` and generates a new AP password at the next provisioning attempt.
-- **Validation**: GitHub Actions status to be recorded after run. Source-static tests are not a firmware compile or ESP32 hardware test.
-- **Rollback**: revert the implementation commit on this development branch only; doing so would restore a public shared AP password. No such downgrade should be deployed. Do not revert the device itself without a secure local recovery path.
+- **Validation**: code commit `8c30d3b867fcef0d1530873a8cb6742d4e16f830`. Push Actions run `40458555711` and PR Actions run `40458561039` succeeded, 47/47 Python plus 4/4 Node tests; these static firmware checks are not a firmware compile or ESP32 hardware test.
+- **Rollback**: `git revert 8c30d3b867fcef0d1530873a8cb6742d4e16f830` on this development branch only; doing so would restore a public shared AP password. No such downgrade should be deployed. Do not revert the device itself without a secure local recovery path.
 - **Next**: migrate the hardcoded photo download key to NVS provisioning with server-side dual-key transition and explicit device compatibility checks. R1 Gate remains blocked by HTTPS-browser, NAS-recovery and ESP32-hardware tests.
