@@ -55,7 +55,7 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 
 | 2026-10-28 | R1/PR-03 analyzer v2 fail-closed startup and existing-only SQLite connection `a560f2c3` | refactor/architecture-v1 | 85/85 Python + 4/4 Node; [Push CI 40542143006](https://github.com/linyubin/InkTime/actions/runs/40542143006) and [PR CI 40542151490](https://github.com/linyubin/InkTime/actions/runs/40542151490) SUCCESS; isolated synthetic/AST only | Not deployed; no real analyzer/NAS/ESP32 validation |
 
-| 2026-10-28 | R1/PR-03 WebUI read-only SQLite v2 connection policy (code commit pending) | refactor/architecture-v1 | 7 new synthetic/source tests; CI status pending; no NAS/browser/hardware | Not deployed |
+| 2026-10-28 | R1/PR-03 WebUI SQLite read-only/schema-gated policy `2f3f8ffb` | refactor/architecture-v1 | **92/92 Python + 4/4 Node**, [Push CI 40568792533](https://github.com/linyubin/InkTime/actions/runs/40568792533), [PR CI 40568800180](https://github.com/linyubin/InkTime/actions/runs/40568800180) SUCCESS; synthetic SQLite/source only, no NAS/browser/hardware | Not deployed |
 
 ## Rollout, verification and rollback
 
@@ -194,11 +194,11 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - **Next**: server/WebUI SQLite connection policy, configuration validation, staging boot and recovery drill.
 
 
-## 2026-10-28 — R1 / PR-03 WebUI DB read policy (CI pending)
+## 2026-10-28 — R1 / PR-03 WebUI DB read policy (CI verified; staging pending)
 
 - **Code**: \`db_schema.open_current_readonly_database()\` uses existing-only SQLite \`mode=ro\`, \`PRAGMA query_only=ON\`, configurable 1..60000ms timeout (default 5000), and validates v2 on the opened connection. \`webui._get_conn()\` no longer silently falls back to a writable connection or returns an empty DB on missing files.
 - **Scope**: seven synthetic/source tests. No schema mutation, migrations, NAS files, deployment, ESP32 firmware changes, or PR merge.
 - **Compatibility**: standalone WebUI previously returned empty results for missing DB and could reopen a broken DB in read/write mode; now it fails closed. Operators must explicitly initialize/migrate a staging DB before use.
-- **Validation**: record GitHub Actions push/PR results after the code commit. These are not real HTTPS/browser/NAS tests.
+- **Validation**: implementation commit `2f3f8ffbaa8de6fc07cff9c4607dded0f13f166e`; [Push 40568792533](https://github.com/linyubin/InkTime/actions/runs/40568792533) and [PR 40568800180](https://github.com/linyubin/InkTime/actions/runs/40568800180) SUCCESS: 92/92 Python tests, 4/4 Node tests, Python compilation and requirements syntax. These are synthetic/source tests, not real HTTPS/browser/NAS tests.
 - **Rollback**: revert this work-package commit on \`refactor/architecture-v1\` and rerun tests; reverting restores unsafe fallback behavior, not suitable for production. Read-only code needs no DB data rollback.
 - **Next**: unify \`server.py\` request-handler SQLite connection policy; add configuration validation and explicit new-install initialization. R1 Gate stays OPEN until NAS recovery, HTTPS/browser and ESP32 hardware acceptance.
