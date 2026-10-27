@@ -19,6 +19,7 @@ import threading
 from datetime import datetime
 import config as cfg
 from path_security import safe_join
+from device_endpoint_security import validate_device_endpoint
 from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
@@ -1230,10 +1231,14 @@ DEVICE_ENDPOINT_FILE = DEVICE_LOG_DIR / "endpoint.json"
 
 
 def _load_device_endpoint() -> dict:
+    """Reject malformed or legacy unsafe endpoints before any HTTP callback."""
     try:
         rec = json.loads(DEVICE_ENDPOINT_FILE.read_text(encoding="utf-8"))
-        return rec if isinstance(rec, dict) else {}
-    except Exception:
+        if not isinstance(rec, dict):
+            return {}
+        ip, port = validate_device_endpoint(rec.get("ip"), rec.get("port", 80))
+        return {**rec, "ip": ip, "port": port}
+    except (OSError, ValueError, TypeError):
         return {}
 
 
@@ -1242,14 +1247,14 @@ def esp_device_register(key: str):
     if key != DOWNLOAD_KEY:
         abort(404)
 
-    ip = request.remote_addr or ""
-    if not ip:
-        return "no ip", 400
-    body = request.get_json(force=True, silent=True) or {}
+    # Use the direct peer address, never a client-supplied Forwarded/XFF header.
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return "invalid registration", 400
     try:
-        port = int(body.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
+        ip, port = validate_device_endpoint(request.remote_addr, body.get("port", 80))
+    except ValueError:
+        return "invalid LAN endpoint", 400
     rec = {
         "ip": ip,
         "port": port,
@@ -1278,6 +1283,16 @@ import subprocess
 import sys
 
 import requests
+
+
+def _device_request(method: str, url: str, *, timeout: float,
+                    data: dict | None = None):
+    """Never follow redirects or environment HTTP proxies for device callbacks."""
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.request(method, url, timeout=timeout, data=data,
+                               allow_redirects=False)
+
 
 SELECT_CANDIDATE_LIMIT = 120        # 候选池最多返回给前端的张数（按 final_score 截断）
 _SELECT_CACHE: dict[str, object] = {"built_at": 0.0, "payload": None}
@@ -1541,20 +1556,15 @@ def _lan_push_now() -> None:
     设备 IP/端口来自 /api/device_register 的最近一次注册（常开模式下设备
     上线及每次每日刷新后都会重登）。设备返回的拉取日志尾部回显到任务日志。
     """
-    ep = _load_device_endpoint()
-    ip = str(ep.get("ip") or "").strip()
-    try:
-        port = int(ep.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    if not ip:
-        _push_log("[LAN] 未找到已注册的常开设备（需在设备 /debug 页开启常开模式并上线）")
+    base = _device_base_url()
+    if not base:
+        _push_log("[LAN] 未找到有效的局域网设备地址（需设备重新注册）")
         return
 
-    url = f"http://{ip}:{port}/fetch?idx=0"
+    url = f"{base}/fetch?idx=0"
     _push_log(f"[LAN] GET {url} （设备拉取+渲染约 10-40 秒，超时 {_LAN_PUSH_TIMEOUT_SEC}s）...")
     try:
-        resp = requests.get(url, timeout=_LAN_PUSH_TIMEOUT_SEC)
+        resp = _device_request("GET", url, timeout=_LAN_PUSH_TIMEOUT_SEC)
     except requests.RequestException as e:
         _push_log(f"[LAN] 推送失败：{e.__class__.__name__}: {e}")
         return
@@ -1666,15 +1676,10 @@ _DEVICE_RENDER_TIMEOUT_SEC = 150  # 拉取/渲染/标定测试一轮 10-40s，�
 
 
 def _device_base_url() -> str | None:
-    ep = _load_device_endpoint()
-    ip = str(ep.get("ip") or "").strip()
-    if not ip:
+    ep = _load_device_endpoint()  # already validated; no arbitrary URL parts
+    if not ep:
         return None
-    try:
-        port = int(ep.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    return f"http://{ip}:{port}"
+    return f"http://{ep['ip']}:{ep['port']}"
 
 
 def _device_http(method: str, path: str, timeout: float,
@@ -1684,10 +1689,7 @@ def _device_http(method: str, path: str, timeout: float,
     if not base:
         return 503, "设备未注册（需唤醒设备或开启常开模式，设备上线后会自动注册）"
     try:
-        if method == "GET":
-            resp = requests.get(base + path, timeout=timeout)
-        else:
-            resp = requests.post(base + path, data=data, timeout=timeout)
+        resp = _device_request(method, base + path, timeout=timeout, data=data)
     except requests.RequestException as e:
         return 503, f"设备请求失败：{e.__class__.__name__}: {e}"
     resp.encoding = "utf-8"   # ESP32 输出恒为 UTF-8；防 Content-Type 未带 charset 时被按 latin-1 解码
@@ -1745,13 +1747,11 @@ def api_device_set_endpoint():
 
     设备自动注册失败时的兜底：注册成功后设备会以真实连接源覆盖此记录。
     """
-    ip = str(request.form.get("ip", "")).strip()
     try:
-        port = int(request.form.get("port", "80") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or not (1 <= port <= 65535):
-        return jsonify({"error": "IP 或端口格式不正确"}), 400
+        ip, port = validate_device_endpoint(
+            request.form.get("ip", ""), request.form.get("port", "80"))
+    except ValueError:
+        return jsonify({"error": "仅允许有效的局域网 IPv4 地址和端口"}), 400
 
     old = _load_device_endpoint()
     rec = {"ip": ip, "port": port,
