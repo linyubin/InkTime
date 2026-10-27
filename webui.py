@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 from flask import Blueprint, Flask, redirect, render_template, jsonify, send_file, abort, request
-import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime
 import os
 from admin_security import install_admin_security
+from db_schema import open_current_readonly_database
 import config as cfg
 from path_security import safe_join
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
@@ -94,13 +94,8 @@ def _safe_join(base: Path, rel: str) -> Path:
 
 
 def _get_conn():
-    if not DB_PATH.exists():
-        return None
-    uri = f"file:{DB_PATH.as_posix()}?mode=ro"
-    try:
-        return sqlite3.connect(uri, uri=True)
-    except sqlite3.OperationalError:
-        return sqlite3.connect(DB_PATH)
+    """Read-only v2 SQLite connection; never create or silently reopen for writes."""
+    return open_current_readonly_database(DB_PATH)
 
 
 @bp.route('/manager')

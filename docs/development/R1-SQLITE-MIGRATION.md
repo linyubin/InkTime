@@ -138,3 +138,25 @@ must use a verified pre-migration backup on a stopped staging DB.
 and [PR CI 40542151490](https://github.com/linyubin/InkTime/actions/runs/40542151490)
 both SUCCESS, 85/85 Python and 4/4 Node tests, Python compile and requirements
 checks. This is synthetic/source testing, **not a real analyzer startup**.
+
+
+## WebUI read-only connection policy (R1/PR-03; source/CI only)
+
+\`webui._get_conn()\` now delegates to \`db_schema.open_current_readonly_database()\`.
+Every WebUI DB read uses an existing-only \`mode=ro\` SQLite URI (including
+percent-encoded \`#\`/\`?\` filenames), \`PRAGMA query_only=ON\`, 5-second
+\`busy_timeout\`, and a same-connection schema v2 validation. It never falls
+back to \`sqlite3.connect(DB_PATH)\` on an error; missing, old, future and
+inconsistent databases fail closed. This deliberately replaces the legacy
+empty-response fallback with an error until the operator migrates the DB.
+
+**Verification boundary**: isolated synthetic SQLite tests and WebUI AST
+checks; not a complete Flask/browser startup, real NAS database, HTTPS proxy
+or ESP32 device acceptance. Request-handler SQLite connections in
+\`server.py\` still need to adopt the same policy. This change does not
+migrate or create databases, alter NVS, or touch production.
+
+**Rollback**: revert the specific WebUI policy commit on the development
+branch and rerun tests. That reintroduces a potentially writable fallback
+and is not an approved production security rollback. No DB rollback is
+required because this policy performs no schema writes.

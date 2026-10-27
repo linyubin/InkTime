@@ -153,6 +153,44 @@ def open_current_database(
         raise MigrationError(f"analyzer database connection failed: {exc}") from exc
 
 
+
+def open_current_readonly_database(
+    database: Path, *, busy_timeout_ms: int = 5000
+) -> sqlite3.Connection:
+    """Open existing v2 DB for WebUI reads; never fall back to writable mode.
+
+    The returned connection is read-only and query_only; caller must close it.
+    Validate on this same connection to catch schema drift after startup.
+    """
+    if (not isinstance(busy_timeout_ms, int) or isinstance(busy_timeout_ms, bool)
+            or not 1 <= busy_timeout_ms <= 60000):
+        raise ValueError("busy_timeout_ms must be 1..60000")
+    path = Path(database).expanduser().resolve()
+    if not path.is_file():
+        raise MigrationError(f"existing SQLite database required: {path}")
+    try:
+        conn = sqlite3.connect(
+            path.as_uri() + "?mode=ro", uri=True,
+            timeout=busy_timeout_ms / 1000,
+        )
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+            conn.execute("PRAGMA query_only = ON")
+            version = current_version(conn)
+            if version != SCHEMA_VERSION:
+                raise MigrationError(
+                    f"database schema v{version}; expected v{SCHEMA_VERSION}. "
+                    "Run explicit backed-up migration before opening WebUI."
+                )
+            verify_latest_schema(conn)
+            return conn
+        except BaseException:
+            conn.close()
+            raise
+    except sqlite3.Error as exc:
+        raise MigrationError(f"WebUI database read failed: {exc}") from exc
+
+
 def apply_migrations(conn: sqlite3.Connection) -> tuple[int, int]:
     """Upgrade an existing DB inside the caller's explicit transaction.
 

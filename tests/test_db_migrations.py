@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema, open_current_database
+from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema, open_current_database, open_current_readonly_database
 from scripts.backup_sqlite import _photo_scores_fingerprint, restore_drill
 from scripts.migrate_sqlite import inspect_database, migrate_database
 
@@ -273,6 +273,60 @@ class MigrationTests(unittest.TestCase):
         for invalid in (0, -1, 60001, True, 1.5, "5000"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 open_current_database(self.db, busy_timeout_ms=invalid)
+
+    def test_webui_readonly_connection_accepts_v2_and_cannot_write(self):
+        migrate_database(self.db, self.backups)
+        with closing(open_current_readonly_database(self.db, busy_timeout_ms=1250)) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 1250)
+            self.assertEqual(conn.execute("PRAGMA query_only").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM photo_scores").fetchone()[0], 2)
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("UPDATE photo_scores SET caption='bad'")
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute("CREATE TABLE bad_schema_change (id INTEGER)")
+
+    def test_webui_readonly_connection_rejects_legacy_without_modification(self):
+        with sqlite3.connect(self.db) as conn:
+            before = conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+        with self.assertRaisesRegex(MigrationError, "expected v2"):
+            open_current_readonly_database(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(before, conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall())
+
+    def test_webui_readonly_connection_rejects_missing_file(self):
+        missing = self.root / "missing_webui.db"
+        with self.assertRaisesRegex(MigrationError, "existing SQLite database"):
+            open_current_readonly_database(missing)
+        self.assertFalse(missing.exists())
+
+    def test_webui_readonly_connection_rejects_corrupt_v2(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=2")
+        with self.assertRaises(MigrationError):
+            open_current_readonly_database(self.db)
+
+    def test_webui_readonly_connection_rejects_future_version(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=99")
+        with self.assertRaises(MigrationError):
+            open_current_readonly_database(self.db)
+
+    def test_webui_readonly_connection_rejects_invalid_timeouts(self):
+        for invalid in (0, -1, 60001, True, 1.5, "5000"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                open_current_readonly_database(self.db, busy_timeout_ms=invalid)
+
+    def test_webui_readonly_connection_source_never_falls_back_to_write(self):
+        source = (Path(__file__).resolve().parents[1] / "webui.py").read_text()
+        tree = ast.parse(source)
+        helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "_get_conn")
+        body = ast.get_source_segment(source, helper)
+        self.assertIn("open_current_readonly_database(DB_PATH)", body)
+        self.assertNotIn("sqlite3.connect(", source)
+        self.assertNotIn("return None", body)
 
     def test_analyzer_source_no_implicit_ddl_and_preflights_before_filelist(self):
         source = (Path(__file__).resolve().parents[1] / "analyze_photos.py").read_text()
