@@ -24,7 +24,7 @@ class MigrationTests(unittest.TestCase):
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("CREATE TABLE photo_scores(path TEXT PRIMARY KEY, raw_json BLOB)")
             conn.executemany("INSERT INTO photo_scores VALUES (?, ?)", [
-                ("one.jpg", b"\\x00\\xff"),
+                ("one.jpg", bytes([0, 255])),
                 ("two.jpg", None),
             ])
 
@@ -39,7 +39,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM photo_scores").fetchone()[0], 2)
-            self.assertEqual(conn.execute("SELECT raw_json FROM photo_scores WHERE path='one.jpg'").fetchone()[0], b"\\x00\\xff")
+            self.assertEqual(conn.execute("SELECT raw_json FROM photo_scores WHERE path='one.jpg'").fetchone()[0], bytes([0, 255]))
             self.assertTrue(set(PHOTO_COLUMNS).issubset({
                 row[1] for row in conn.execute('PRAGMA table_info("photo_scores")')
             }))
@@ -55,6 +55,26 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(second.backup_path)
         self.assertEqual((second.previous_version, second.version), (2, 2))
         self.assertEqual(list(self.backups.glob("*.db")), [first.backup_path])
+
+    def test_v1_to_v2_adds_only_transfer_history_and_indexes(self):
+        migrate_database(self.db, self.backups)
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("DROP TABLE transfer_history")
+            conn.execute("DROP INDEX idx_photo_scores_exif_datetime")
+            conn.execute("DROP INDEX idx_photo_scores_md")
+            conn.execute("PRAGMA user_version=1")
+            columns_before = {
+                row[1] for row in conn.execute('PRAGMA table_info("photo_scores")')
+            }
+        second = migrate_database(self.db, self.backups)
+        self.assertEqual((second.previous_version, second.version), (1, 2))
+        with sqlite3.connect(self.db) as conn:
+            columns_after = {
+                row[1] for row in conn.execute('PRAGMA table_info("photo_scores")')
+            }
+            self.assertEqual(columns_before, columns_after)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM photo_scores").fetchone()[0], 2)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
 
     def test_failure_rolls_back_schema_and_version_and_retains_backup(self):
         with sqlite3.connect(self.db) as conn:

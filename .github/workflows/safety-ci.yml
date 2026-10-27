@@ -16,7 +16,7 @@ jobs:
           python-version: '3.11'
       - name: Compile changed Python entrypoints and helpers
         run: |
-          python -m compileall -q analyze_photos.py server.py webui.py render_daily_photo.py photo_scan_safety.py path_security.py admin_security.py device_endpoint_security.py download_key_security.py scripts/backup_sqlite.py
+          python -m compileall -q analyze_photos.py server.py webui.py render_daily_photo.py photo_scan_safety.py path_security.py admin_security.py device_endpoint_security.py download_key_security.py db_schema.py scripts/backup_sqlite.py scripts/migrate_sqlite.py
       - name: Install lightweight HTTP integration test dependencies
         run: python -m pip install 'Flask==3.1.2' 'Pillow==12.0.0'
       - name: Run standard-library safety tests
