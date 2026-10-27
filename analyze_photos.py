@@ -23,6 +23,7 @@ import config as cfg
 from common import normalize_type_to_list, parse_datetime_from_filename, resolve_chat_endpoint
 import shutil
 from photo_scan_safety import scandir_with_retries, ScanIncompleteError, count_missing_paths
+from db_schema import MigrationError, require_current_schema, open_current_database
 
 _yolo_model = None
 _pose_model = None
@@ -433,112 +434,6 @@ def encode_image_to_b64(path: Path) -> str:
         # 不再盲目返回原始损坏字节，而是抛出异常，让主循环捕获并跳过该损坏或不支持的图片
         raise RuntimeError(f"图片损坏或格式不支持（Pillow 无法解码）：{e}")
 
-
-def ensure_table(conn: sqlite3.Connection) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS photo_scores (
-            path              TEXT PRIMARY KEY,
-            caption           TEXT,
-            type              TEXT,
-            memory_score      REAL,
-            beauty_score      REAL,
-            reason            TEXT,
-            width             INTEGER,
-            height            INTEGER,
-            orientation       TEXT,
-            used_at           TEXT,
-            exif_json         TEXT,
-            raw_json          TEXT,
-            exif_datetime     TEXT,
-            exif_make         TEXT,
-            exif_model        TEXT,
-            exif_iso          INTEGER,
-            exif_exposure_time REAL,
-            exif_f_number     REAL,
-            exif_focal_length REAL,
-            exif_gps_lat      REAL,
-            exif_gps_lon      REAL,
-            exif_gps_alt      REAL,
-            side_caption      TEXT,
-            exif_city         TEXT
-        )
-        """
-    )
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_json TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN width INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN height INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN orientation TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN used_at TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_datetime TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_make TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_model TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_iso INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_exposure_time REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_f_number REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_focal_length REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_lat REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_lon REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_alt REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN side_caption TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_city TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN subjects_json TEXT")
-    except sqlite3.OperationalError:
-        pass
-    conn.commit()
 
 # 生成一句话文案
 def _thinking_control() -> dict:
@@ -1175,6 +1070,13 @@ def extract_json_from_text(text: str) -> str:
 def main():
     filelist_path = ROOT_DIR / "filelist.txt"
 
+    # 任何扫描、filelist 写入或照片评分前先确认数据库已显式迁移。
+    # 只读预检不会创建数据库；实际写连接还会再次校验以避免竞态。
+    try:
+        require_current_schema(DB_PATH)
+    except MigrationError as exc:
+        raise SystemExit(f"InkTime analyzer database startup blocked: {exc}") from None
+
     print(f"[INFO] AI 端点：{API_ENDPOINT}（协议 {API_PROTOCOL}，模型 {MODEL_NAME}）")
     print("[INFO] 正在扫描图片目录……")
     imgs = list_images()
@@ -1187,8 +1089,7 @@ def main():
     if not imgs:
         raise SystemExit("[INFO] 所有图片都被 Screenshot 过滤规则排除了，没有可处理的图片。")
 
-    conn = sqlite3.connect(DB_PATH)
-    ensure_table(conn)
+    conn = open_current_database(DB_PATH)
     city_resolver = get_city_resolver()
 
     # =======================

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import closing
 import sqlite3
 import subprocess
 import sys
@@ -9,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema
+from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema, open_current_database
 from scripts.backup_sqlite import _photo_scores_fingerprint, restore_drill
 from scripts.migrate_sqlite import inspect_database, migrate_database
 
@@ -220,6 +221,76 @@ class MigrationTests(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
         self.assertFalse(self.backups.exists())
+
+    def test_analyzer_connection_requires_existing_migrated_v2_and_wal(self):
+        migrate_database(self.db, self.backups)
+        with closing(open_current_database(self.db, busy_timeout_ms=1250)) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 1250)
+            self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM photo_scores").fetchone()[0], 2)
+            conn.execute("UPDATE photo_scores SET caption=? WHERE path=?", ("ok", "one.jpg"))
+            conn.commit()
+        with sqlite3.connect(self.db) as check:
+            self.assertEqual(check.execute(
+                "SELECT caption FROM photo_scores WHERE path='one.jpg'"
+            ).fetchone()[0], "ok")
+
+    def test_analyzer_connection_refuses_legacy_without_schema_writes(self):
+        with sqlite3.connect(self.db) as conn:
+            original = conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+        with self.assertRaisesRegex(MigrationError, "expected v2"):
+            open_current_database(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall(), original)
+
+    def test_analyzer_connection_refuses_missing_database_without_creation(self):
+        absent = self.root / "no-db.db"
+        with self.assertRaisesRegex(MigrationError, "existing SQLite database"):
+            open_current_database(absent)
+        self.assertFalse(absent.exists())
+
+    def test_analyzer_connection_refuses_incomplete_v2(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=2")
+        with self.assertRaises(MigrationError):
+            open_current_database(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertIsNone(conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='transfer_history'"
+            ).fetchone())
+
+    def test_analyzer_connection_refuses_future_schema(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA user_version=99")
+        with self.assertRaises(MigrationError):
+            open_current_database(self.db)
+
+    def test_analyzer_connection_rejects_invalid_busy_timeout(self):
+        migrate_database(self.db, self.backups)
+        for invalid in (0, -1, 60001, True, 1.5, "5000"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                open_current_database(self.db, busy_timeout_ms=invalid)
+
+    def test_analyzer_source_no_implicit_ddl_and_preflights_before_filelist(self):
+        source = (Path(__file__).resolve().parents[1] / "analyze_photos.py").read_text()
+        tree = ast.parse(source)
+        self.assertNotIn("def ensure_table(", source)
+        self.assertNotIn("ALTER TABLE photo_scores", source)
+        self.assertNotIn("CREATE TABLE IF NOT EXISTS photo_scores", source)
+        self.assertNotIn("sqlite3.connect(DB_PATH)", source)
+        self.assertIn("conn = open_current_database(DB_PATH)", source)
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        lines = source.splitlines()
+        main_source = "\n".join(lines[main.lineno - 1:main.end_lineno])
+        self.assertLess(main_source.index("require_current_schema(DB_PATH)"),
+                        main_source.index("list_images()"))
+        self.assertLess(main_source.index("require_current_schema(DB_PATH)"),
+                        main_source.index('filelist_path.write_text('))
+        self.assertLess(main_source.index("require_current_schema(DB_PATH)"),
+                        main_source.index("open_current_database(DB_PATH)"))
 
 
 if __name__ == "__main__":

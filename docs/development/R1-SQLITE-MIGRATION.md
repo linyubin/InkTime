@@ -106,3 +106,27 @@ on server startup and is not an approved production security rollback.
 **Validation boundary**: synthetic SQLite/WAL tests and GitHub Actions only;
 no real NAS database, full server process, HTTPS browser, Docker/systemd,
 physical ESP32, or production rollout has been tested.
+
+## Analyzer startup v2 gate (R1/PR-03 follow-up, CI-only)
+
+`analyze_photos.py` no longer creates or ALTERs `photo_scores` on launch.
+It checks the existing v2 database **before scanning or rewriting filelist.txt**.
+Its subsequent writable SQLite connection opens with `mode=rw` (never
+`mode=rwc`), verifies the schema again, uses a 5-second busy timeout and
+requires WAL mode. A missing, legacy, malformed or future DB fails closed.
+Only the explicit, backed-up operator migration CLI can change schema.
+
+**New installation**: this branch cannot bootstrap an empty photo database
+through the analyzer. An operator must prepare a legacy-compatible
+`photo_scores` database on a staging copy and run the migration CLI. A
+dedicated, backed-up initialization workflow remains a separate design item.
+Existing deployments require a staged DB migration before adopting this code.
+
+**Validation boundary**: isolated SQLite tests and source-level startup order
+checks; no actual photo scan, model invocation, full analyzer process, NAS
+concurrent writers, Docker/systemd, browser or ESP32 hardware exercised.
+
+**Rollback**: revert the analyzer gate implementation on the isolated
+development branch and rerun CI. This restores unversioned implicit DDL,
+so it is **not** an approved production rollback. Data recovery, if needed,
+must use a verified pre-migration backup on a stopped staging DB.

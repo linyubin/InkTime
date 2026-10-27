@@ -113,6 +113,46 @@ def require_current_schema(database: Path) -> None:
         raise MigrationError(f"database preflight failed: {exc}") from exc
 
 
+
+def open_current_database(
+    database: Path, *, busy_timeout_ms: int = 5000
+) -> sqlite3.Connection:
+    """Open an existing v2 database for analyzer writes; never auto-migrate.
+
+    Validate again on the actual writable connection to avoid relying solely
+    on an earlier read-only preflight. The caller owns and must close the
+    returned connection. Failed validation always closes it.
+    """
+    if not isinstance(busy_timeout_ms, int) or isinstance(busy_timeout_ms, bool) or not 1 <= busy_timeout_ms <= 60000:
+        raise ValueError("busy_timeout_ms must be 1..60000")
+    path = Path(database).expanduser().resolve()
+    if not path.is_file():
+        raise MigrationError(f"existing SQLite database required: {path}")
+    try:
+        conn = sqlite3.connect(
+            path.as_uri() + "?mode=rw", uri=True,
+            timeout=busy_timeout_ms / 1000,
+        )
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+            version = current_version(conn)
+            if version != SCHEMA_VERSION:
+                raise MigrationError(
+                    f"database schema v{version}; expected v{SCHEMA_VERSION}. "
+                    "Run explicit backed-up migration before starting analyzer."
+                )
+            verify_latest_schema(conn)
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode.lower() != "wal":
+                raise MigrationError(f"SQLite WAL unavailable: {mode}")
+            return conn
+        except BaseException:
+            conn.close()
+            raise
+    except sqlite3.Error as exc:
+        raise MigrationError(f"analyzer database connection failed: {exc}") from exc
+
+
 def apply_migrations(conn: sqlite3.Connection) -> tuple[int, int]:
     """Upgrade an existing DB inside the caller's explicit transaction.
 
