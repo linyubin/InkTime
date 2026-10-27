@@ -4,14 +4,14 @@
  * InkTime ESP32 WiFi 墨水屏驱动
  *
  * 功能：
- *   1. 支持保存 3 组 WiFi 配置（含一组固件内置备用网络），启动时扫描周围
+ *   1. 支持保存 3 组 NVS WiFi 配置（不再注入固件内置备用网络），启动时扫描周围
  *      网络并自动连接信号最强的已保存组；一组都连不上时进入 AP 配网模式
  *      （SSID: InkTime-xxxx / 密码: 12345678），并刷新屏幕提示 AP 模式
  *   2. 配网后通过 WiFi 连接服务器，HTTP 下载当日照片 .bin 文件
  *   3. ESP32epdx 低层驱动 (EPD.h) 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
  *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网；
- *      内置备用 WiFi 会在下次启动时自动补回）
+ *      不再自动恢复任何旧网络凭据）
  *   6. 常开模式（/debug 页开关，NVS 持久化）：开启后不再休眠，Web 常驻，
  *      局域网 server 可向设备 /fetch 主动推送照片；每日定时拉取照常执行
  *
@@ -127,11 +127,6 @@ WebServer   server(80);
 // 按信号强度从高到低逐组尝试；一组都不可见则直接进 AP 配网（不盲试，省电省时）。
 // 注意：隐藏 SSID（不广播）的网络扫描不到，不会被尝试。
 static const int WIFI_PROFILE_COUNT = 3;
-
-// 固件内置备用网络：若没有任何槽位保存它，自动写入首个空槽位（优先组1，
-// 避开用户主配置；恢复出厂清空 NVS 后下次启动也会重新补入）。
-static const char* BUILTIN_WIFI_SSID = "lybclj123";
-static const char* BUILTIN_WIFI_PASS = "woshi123";
 
 struct Config {
   String  wifi_ssid[WIFI_PROFILE_COUNT];  // WiFi SSID（组0 为主配置）
@@ -292,27 +287,6 @@ void loadConfig(Config &cfg) {
   DBG_PRINTF("[CFG] last_ori=%s\n",   cfg.last_orientation.c_str());
   DBG_PRINTF("[CFG] valid=%s\n",      cfg.valid ? "true" : "false");
 #endif
-}
-
-// 固件内置备用 WiFi：若没有任何槽位保存它，写入首个空槽位（优先组1，避开
-// 用户主配置）。同步写 NVS + 内存；恢复出厂（clearConfigNVS）后下次启动重新补入。
-static void ensureBuiltinWifiProfile(Config &cfg) {
-  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
-    if (cfg.wifi_ssid[i] == BUILTIN_WIFI_SSID) return;   // 已保存过，不重复
-  }
-  for (int i = 1; i < WIFI_PROFILE_COUNT; ++i) {
-    if (cfg.wifi_ssid[i].length() == 0) {
-      cfg.wifi_ssid[i] = BUILTIN_WIFI_SSID;
-      cfg.wifi_pass[i] = BUILTIN_WIFI_PASS;
-      prefs.begin("dashcfg", false);
-      prefs.putString((String("ssid") + String(i)).c_str(), cfg.wifi_ssid[i]);
-      prefs.putString((String("pass") + String(i)).c_str(), cfg.wifi_pass[i]);
-      prefs.end();
-      cfg.valid = true;
-      DBG_PRINTF("[CFG] 内置备用 WiFi 已写入组 %d: %s\n", i + 1, BUILTIN_WIFI_SSID);
-      return;
-    }
-  }
 }
 
 void saveConfig(const Config &cfg) {
@@ -2783,9 +2757,9 @@ void setup() {
   // 5. 初始化随机数种子
   randomSeed(esp_random());
 
-  // 6. 加载 NVS 配置 + 补入固件内置备用 WiFi（lybclj123）
+  // 6. 仅加载已有 NVS 配置；空槽位保持空，不写入任何固件内置 WiFi 凭据。
+  //    首次启动或恢复出厂后，无已保存网络时由下方 !g_cfg.valid 分支进入 AP 配网。
   loadConfig(g_cfg);
-  ensureBuiltinWifiProfile(g_cfg);
   g_alwaysOnMode = loadAlwaysOnMode();   // 常开模式（NVS 持久化，跨重启生效）
   DBG_PRINTF("[CFG] always_on=%s\n", g_alwaysOnMode ? "true" : "false");
 
