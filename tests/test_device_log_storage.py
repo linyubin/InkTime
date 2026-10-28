@@ -57,6 +57,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
             }
             extract_function("server.py", "_devlog_path", ns)
             extract_function("server.py", "_devlog_load_max_ls", ns)
