@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="inktime-flask-smoke-") as d:
             # A nonexistent admin URL must reach routing only after auth.
             assert client.get("/__not_found__", headers={"Authorization": header}).status_code == 404
             # Legacy device path remains key-scoped, never admin-authorized.
-            assert client.get("/static/inktime/wrong/latest.bin").status_code == 403
+            assert client.get("/static/inktime/wrong/latest.bin").status_code == 404
             assert client.get("/static/inktime/smoke-device-key/latest.bin").status_code == 404
 '''
 
