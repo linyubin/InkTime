@@ -15,7 +15,8 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import device_log_paths, device_log_lock, append_private_device_log, read_device_log_lines
+from device_log_storage import (device_log_paths, device_log_lock, append_private_device_log,
+                                read_device_log_lines, recover_incomplete_private_device_log_tail)
 from download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +70,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "append_private_device_log": append_private_device_log,
                 "device_log_lock": device_log_lock,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
@@ -113,6 +115,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 }),
                 "device_log_paths": device_log_paths,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "resolve_download_keys": resolve_download_keys,
                 "abort": abort,
                 "json": json, "datetime": datetime,
@@ -268,6 +271,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "device_log_lock": device_log_lock,
                 "append_private_device_log": append_private_device_log,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
@@ -347,6 +351,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "append_private_device_log": append_private_device_log,
                 "device_log_lock": device_log_lock,
                 "DOWNLOAD_KEYS": ("legacySecret",),
@@ -383,6 +388,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "os": SimpleNamespace(environ={}),
                 "device_log_paths": device_log_paths,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "resolve_download_keys": resolve_download_keys,
                 "abort": abort, "json": json, "datetime": datetime,
                 "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
@@ -459,6 +465,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "device_log_lock": device_log_lock,
                 "append_private_device_log": append_private_device_log,
                 "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
@@ -489,6 +496,120 @@ class DeviceLogFilenameTests(unittest.TestCase):
                            side_effect=OSError("simulated duplicate sync failure")):
                     duplicate_failed = client.post("/log/legacySecret", data=payload)
                 self.assertEqual(duplicate_failed.status_code, 500)
+
+
+    @unittest.skipUnless(hasattr(os, "pread") and hasattr(os, "O_NOFOLLOW"),
+                         "requires POSIX no-follow recovery")
+    def test_recovery_truncates_only_unterminated_tail_and_is_idempotent(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            path.write_bytes(b'{"ls":1}\\n{"ls":2')
+            with device_log_lock(path):
+                self.assertEqual(recover_incomplete_private_device_log_tail(path), len(b'{"ls":2'))
+                self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
+            self.assertEqual(path.read_bytes(), b'{"ls":1}\\n')
+            self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
+            path.write_bytes(b'{"ls":3}')
+            self.assertEqual(recover_incomplete_private_device_log_tail(path), len(b'{"ls":3}'))
+            self.assertEqual(path.read_bytes(), b"")
+
+    @unittest.skipUnless(hasattr(os, "pread") and hasattr(os, "O_NOFOLLOW"),
+                         "requires POSIX no-follow recovery")
+    def test_recovery_missing_complete_and_oversized_tail_fail_safe(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
+            self.assertFalse(path.exists())
+            path.write_bytes(b'{"ls":1}\\n')
+            self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
+            payload = b'{"ls":1}\\n' + b"x" * 32
+            path.write_bytes(payload)
+            with self.assertRaisesRegex(OSError, "exceeds safe recovery limit"):
+                recover_incomplete_private_device_log_tail(path, max_tail_bytes=16)
+            self.assertEqual(path.read_bytes(), payload)
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "symlink"),
+                         "requires no-follow file opening")
+    def test_recovery_refuses_symlink_and_hardlink_without_modifying_victim(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            path = device_log_paths(root, "testKey")[1]
+            victim = root / "victim.txt"
+            victim.write_bytes(b'{"ls":7')
+            path.symlink_to(victim)
+            with self.assertRaises(OSError):
+                recover_incomplete_private_device_log_tail(path)
+            path.unlink()
+            os.link(victim, path)
+            with self.assertRaises(OSError):
+                recover_incomplete_private_device_log_tail(path)
+            self.assertEqual(victim.read_bytes(), b'{"ls":7')
+
+    def test_flask_retry_recovers_unterminated_tail_without_acknowledging_fragment(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            legacy, opaque = device_log_paths(directory, "legacySecret")
+            legacy.write_bytes(b'{"ls":1}\\n')
+            opaque.write_bytes(b'{"ls":2}\\n{"ls":3')
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "device_log_lock": device_log_lock,
+                "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+            with app.test_client() as client:
+                payload = '{"ls":3,"t":"RETRY"}\\n'
+                result = client.post("/log/legacySecret", data=payload)
+                self.assertEqual((result.status_code, result.get_data(as_text=True)), (200, "OK n=1"))
+                self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
+            self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [2, 3])
+            self.assertEqual(legacy.read_bytes(), b'{"ls":1}\\n')
+
+    def test_flask_recovery_fsync_failure_returns_500_and_retry_recovers(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            _, opaque = device_log_paths(directory, "legacySecret")
+            opaque.write_bytes(b'{"ls":1}\\n{"ls":2')
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "device_log_lock": device_log_lock,
+                "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+            with app.test_client() as client:
+                with patch("device_log_storage.os.fsync",
+                           side_effect=OSError("simulated recovery fsync failure")):
+                    self.assertEqual(client.post("/log/legacySecret", data='{"ls":2}\\n').status_code, 500)
+                self.assertEqual(ns["_devlog_max_ls"], {})
+                result = client.post("/log/legacySecret", data='{"ls":2}\\n')
+                self.assertEqual((result.status_code, result.get_data(as_text=True)), (200, "OK n=1"))
+            self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [1, 2])
 
 if __name__ == "__main__":
     unittest.main()

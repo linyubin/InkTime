@@ -22,7 +22,8 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from device_log_storage import device_log_paths, device_log_lock, append_private_device_log, read_device_log_lines
+from device_log_storage import (device_log_paths, device_log_lock, append_private_device_log,
+                                read_device_log_lines, recover_incomplete_private_device_log_tail)
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
     open_current_readonly_database,
@@ -1182,6 +1183,9 @@ def esp_device_log(key: str):
         # A process-local cursor cannot be trusted across server workers.
         with device_log_lock(_devlog_path(key)):
             try:
+                removed = recover_incomplete_private_device_log_tail(_devlog_path(key))
+                if removed:
+                    print(f"[device_log] recovered {removed} uncommitted tail bytes")
                 max_ls = _devlog_load_max_ls(key)
             except OSError:
                 print("[device_log] historical journal read failed")

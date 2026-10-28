@@ -114,6 +114,72 @@ def sync_existing_private_device_log(path: Path) -> None:
         os.close(directory_fd)
 
 
+
+def recover_incomplete_private_device_log_tail(
+    path: Path, *, max_tail_bytes: int = 64 * 1024
+) -> int:
+    """Remove an unacknowledged, unterminated JSONL tail before cursor recovery.
+
+    The caller MUST hold device_log_lock(path). The server only acknowledges
+    newline-terminated records after fsync, so an unterminated final record
+    cannot have been successfully ACKed by the current writer. Preserve every
+    preceding complete line, including one whose fsync previously failed.
+    Oversized fragments fail closed rather than silently discarding data.
+    Never repair legacy plaintext-key files or rotated generations.
+    """
+    path = Path(path)
+    if not re.fullmatch(r"device-[0-9a-f]{64}\.log", path.name):
+        raise ValueError("recovery requires an opaque active journal")
+    if type(max_tail_bytes) is not int or max_tail_bytes < 1:
+        raise ValueError("max_tail_bytes must be positive")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or not hasattr(os, "pread"):
+        raise OSError("safe POSIX journal recovery is unavailable")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+    except FileNotFoundError:
+        return 0
+    try:
+        flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path.name, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return 0
+        try:
+            info = os.fstat(fd)
+            _require_regular_single_link(info)
+            size = info.st_size
+            if not size:
+                return 0
+            last = os.pread(fd, 1, size - 1)
+            if last == b"\n":
+                return 0
+            if len(last) != 1:
+                raise OSError("journal changed during tail inspection")
+            length = min(size, max_tail_bytes)
+            tail = os.pread(fd, length, size - length)
+            if len(tail) != length:
+                raise OSError("journal changed during tail inspection")
+            last_newline = tail.rfind(b"\n")
+            if last_newline < 0 and size > max_tail_bytes:
+                raise OSError("unterminated journal tail exceeds safe recovery limit")
+            offset = size - length + last_newline + 1 if last_newline >= 0 else 0
+            current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if ((current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)
+                    or os.fstat(fd).st_size != size):
+                raise OSError("journal changed before tail recovery")
+            os.ftruncate(fd, offset)
+            # Recovery is not acknowledged until both truncation and its
+            # directory metadata are synchronized. Retry is safe after failure.
+            os.fsync(fd)
+            os.fsync(directory_fd)
+            return size - offset
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
+
+
 def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
     """Append JSONL with private permissions; fail closed on unsafe targets.
 
