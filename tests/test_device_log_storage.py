@@ -503,11 +503,11 @@ class DeviceLogFilenameTests(unittest.TestCase):
     def test_recovery_truncates_only_unterminated_tail_and_is_idempotent(self):
         with TemporaryDirectory() as d:
             path = device_log_paths(Path(d), "testKey")[1]
-            path.write_bytes(b'{"ls":1}\\n{"ls":2')
+            path.write_bytes(b'{"ls":1}\n{"ls":2')
             with device_log_lock(path):
                 self.assertEqual(recover_incomplete_private_device_log_tail(path), len(b'{"ls":2'))
                 self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
-            self.assertEqual(path.read_bytes(), b'{"ls":1}\\n')
+            self.assertEqual(path.read_bytes(), b'{"ls":1}\n')
             self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
             path.write_bytes(b'{"ls":3}')
             self.assertEqual(recover_incomplete_private_device_log_tail(path), len(b'{"ls":3}'))
@@ -520,9 +520,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
             path = device_log_paths(Path(d), "testKey")[1]
             self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
             self.assertFalse(path.exists())
-            path.write_bytes(b'{"ls":1}\\n')
+            path.write_bytes(b'{"ls":1}\n')
             self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
-            payload = b'{"ls":1}\\n' + b"x" * 32
+            payload = b'{"ls":1}\n' + b"x" * 32
             path.write_bytes(payload)
             with self.assertRaisesRegex(OSError, "exceeds safe recovery limit"):
                 recover_incomplete_private_device_log_tail(path, max_tail_bytes=16)
@@ -549,8 +549,8 @@ class DeviceLogFilenameTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             directory = Path(d)
             legacy, opaque = device_log_paths(directory, "legacySecret")
-            legacy.write_bytes(b'{"ls":1}\\n')
-            opaque.write_bytes(b'{"ls":2}\\n{"ls":3')
+            legacy.write_bytes(b'{"ls":1}\n')
+            opaque.write_bytes(b'{"ls":2}\n{"ls":3')
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
@@ -571,18 +571,18 @@ class DeviceLogFilenameTests(unittest.TestCase):
             def upload(key):
                 return endpoint(key)
             with app.test_client() as client:
-                payload = '{"ls":3,"t":"RETRY"}\\n'
+                payload = '{"ls":3,"t":"RETRY"}\n'
                 result = client.post("/log/legacySecret", data=payload)
                 self.assertEqual((result.status_code, result.get_data(as_text=True)), (200, "OK n=1"))
                 self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
             self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [2, 3])
-            self.assertEqual(legacy.read_bytes(), b'{"ls":1}\\n')
+            self.assertEqual(legacy.read_bytes(), b'{"ls":1}\n')
 
     def test_flask_recovery_fsync_failure_returns_500_and_retry_recovers(self):
         with TemporaryDirectory() as d:
             directory = Path(d)
             _, opaque = device_log_paths(directory, "legacySecret")
-            opaque.write_bytes(b'{"ls":1}\\n{"ls":2')
+            opaque.write_bytes(b'{"ls":1}\n{"ls":2')
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
@@ -605,9 +605,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
             with app.test_client() as client:
                 with patch("device_log_storage.os.fsync",
                            side_effect=OSError("simulated recovery fsync failure")):
-                    self.assertEqual(client.post("/log/legacySecret", data='{"ls":2}\\n').status_code, 500)
+                    self.assertEqual(client.post("/log/legacySecret", data='{"ls":2}\n').status_code, 500)
                 self.assertEqual(ns["_devlog_max_ls"], {})
-                result = client.post("/log/legacySecret", data='{"ls":2}\\n')
+                result = client.post("/log/legacySecret", data='{"ls":2}\n')
                 self.assertEqual((result.status_code, result.get_data(as_text=True)), (200, "OK n=1"))
             self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [1, 2])
 
