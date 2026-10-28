@@ -45,3 +45,12 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - 本轮 **没有**修改历史文件内容、权限、目录结构或生产数据。旧日志过大、权限不足或不支持 POSIX no-follow 时会拒绝读取，需人工离线检查，不能自动删除或放宽权限。
 - 初次 CI 因新测试 JSONL 换行转义错误失败 1/153，修复提交 `b1587ca5` 后 Push [40696479322](https://github.com/linyubin/InkTime/actions/runs/40696479322) 与 PR [40696487199](https://github.com/linyubin/InkTime/actions/runs/40696487199) 均 SUCCESS：153 Python、4 Node。未验证真实 NAS、HTTPS 浏览器、Docker/systemd、ESP32 和人工签核。
 - 未解决：祖先目录符号链接、并发轮转、跨进程上传游标、`fsync` 持久化及 HTTP bearer 密钥暴露。仅允许在开发分支逆序 `git revert b1587ca5`、`git revert e1cea979` 并重跑 CI；回退会重新允许历史日志符号链接跟随，**不是生产安全回滚**。R1 Gate 仍 OPEN。
+
+## 2026-10-29 — 跨进程日志锁与轮转游标恢复（仅开发分支）
+
+- 服务端为每个哈希日志文件创建长期保留的 `device-<sha256(key)>.log.lock`，以 POSIX `flock` 排他锁保护「磁盘游标恢复 → 过滤重复 `ls` → 追加/轮转」完整事务。锁文件以 `0600` 创建；符号链接、硬链接、特殊文件和被替换的锁 inode 都拒绝使用。
+- **禁止定时清理或手动删除仍在使用的 `.lock` 文件。** 删除后重新创建会产生不同 inode，可能导致两个进程同时持有不同锁。所有并行运行的服务器 worker 必须统一升级到这一版本；混用旧版写入者不安全。
+- 服务器每次请求都在锁内从磁盘读取最大 `ls`，不再信任进程内缓存；读取旧/新文件的 `.log` 和 `.log.1`，避免轮转后、首次写入前崩溃造成游标倒退。旧日志保持只读；设备 API 格式不变。
+- 隔离验证命令：`python -m unittest discover -s tests -p 'test_device_log_storage.py' -v`。CI [Push 40726336429](https://github.com/linyubin/InkTime/actions/runs/40726336429) 与 [PR 40726349050](https://github.com/linyubin/InkTime/actions/runs/40726349050) 均通过：156 Python + 4 Node（全量），含两个独立进程的锁序列化测试。
+- **未验证**：NAS/NFS/SMB 跨主机锁语义、外部日志轮转、上层目录符号链接、锁等待上限、磁盘满/掉电后的持久性、真实 ESP32 上传、HTTPS 浏览器、Docker/systemd 和人工签核。当前写入尚未 `fsync`，HTTP 200 不应被解释为掉电后必然持久；共享密钥的多设备 `ls` 冲突仍存在。
+- 回滚仅限独立开发分支撤销 `834bf426` 并重跑 CI；这会恢复多进程重复写入/轮转竞争，**不能作为生产安全回滚**。不要在生产 NAS 上删除锁文件或操作历史日志。R1 Gate 仍为 OPEN。
