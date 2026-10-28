@@ -29,7 +29,6 @@ from db_schema import (
 from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
-import render_daily_photo as rdp
 
 ROOT_DIR = Path(__file__).resolve().parent
 
@@ -67,6 +66,10 @@ def _init_db_pragmas() -> None:
 
 
 _init_db_pragmas()
+
+# Rendering imports create output directories; load only after the config,
+# schema and WAL startup gates have completed successfully.
+import render_daily_photo as rdp
 
 # 传输日志 / 拉取检测哨兵目录（由 inktime_daily.sh 读写）
 TMP_DIR = ROOT_DIR / "tmp"
