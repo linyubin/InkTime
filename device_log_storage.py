@@ -83,3 +83,45 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
     finally:
         if fd >= 0:
             os.close(fd)
+
+def read_device_log_lines(path: Path, *, max_bytes: int = 16 * 1024 * 1024) -> list[str] | None:
+    """Read an existing journal without following a symlink or hardlink.
+
+    None means absent; unsafe/unreadable/oversized journals raise OSError.
+    The directory is opened no-follow and the basename is resolved relative
+    to that directory descriptor to avoid file-level path substitution.
+    No permissions, contents or directory entries are modified.
+    """
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe no-follow journal reads are unavailable")
+    path = Path(path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+    except FileNotFoundError:
+        return None
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path.name, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return None
+        try:
+            info = os.fstat(fd)
+            _require_regular_single_link(info)
+            if info.st_size > max_bytes:
+                raise OSError("device journal exceeds safe read limit")
+            with os.fdopen(fd, "rb") as stream:
+                fd = -1
+                payload = stream.read(max_bytes + 1)
+            if len(payload) > max_bytes:
+                raise OSError("device journal grew beyond safe read limit")
+            return payload.decode("utf-8", errors="replace").splitlines()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    finally:
+        os.close(directory_fd)

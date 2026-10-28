@@ -22,7 +22,7 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from device_log_storage import device_log_paths, append_private_device_log
+from device_log_storage import device_log_paths, append_private_device_log, read_device_log_lines
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
     open_current_readonly_database,
@@ -1150,13 +1150,10 @@ def _devlog_load_max_ls(key: str) -> int:
     """
     max_ls = 0
     for p in device_log_paths(DEVICE_LOG_DIR, key):
-        if not p.exists():
+        lines = read_device_log_lines(p)
+        if lines is None:
             continue
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
-        except OSError:
-            continue
-        for ln in lines:
+        for ln in lines[-500:]:
             try:
                 ls = int(json.loads(ln).get("ls", 0))
             except (ValueError, TypeError, AttributeError):
@@ -1176,7 +1173,12 @@ def esp_device_log(key: str):
         return "empty", 400
 
     if key not in _devlog_max_ls:
-        _devlog_max_ls[key] = _devlog_load_max_ls(key)
+        try:
+            _devlog_max_ls[key] = _devlog_load_max_ls(key)
+        except OSError:
+            # Do not accept a replay when historical cursor recovery is unsafe.
+            print("[device_log] historical journal read failed")
+            return "journal unavailable", 500
     max_ls = _devlog_max_ls[key]
 
     recv_iso = datetime.now().isoformat(timespec="seconds")

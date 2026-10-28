@@ -12,7 +12,7 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import device_log_paths, append_private_device_log
+from device_log_storage import device_log_paths, append_private_device_log, read_device_log_lines
 from download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024 * 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
                 "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
@@ -97,7 +98,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                     "INKTIME_DOWNLOAD_KEY_PREVIOUS": "oldKey",
                 }),
                 "device_log_paths": device_log_paths,
+                "read_device_log_lines": read_device_log_lines,
                 "resolve_download_keys": resolve_download_keys,
+                "abort": abort,
                 "json": json, "datetime": datetime,
                 "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
                 "render_template": lambda _name, **kw: kw,
@@ -184,6 +187,112 @@ class DeviceLogFilenameTests(unittest.TestCase):
             self.assertEqual(list(target.iterdir()), [])
 
 
+
+    def test_safe_reader_accepts_legacy_and_opaque_files_without_writing(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d) / "device"
+            self.assertIsNone(read_device_log_lines(directory / "missing.log"))
+            directory.mkdir()
+            legacy, opaque = device_log_paths(directory, "testKey")
+            legacy.write_text('{"ls":1}\\n', encoding="utf-8")
+            opaque.write_text('{"ls":2}\\n', encoding="utf-8")
+            self.assertEqual(read_device_log_lines(legacy), ['{"ls":1}'])
+            self.assertEqual(read_device_log_lines(opaque), ['{"ls":2}'])
+            self.assertEqual(legacy.read_text(), '{"ls":1}\\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_safe_reader_rejects_symlinks_hardlinks_and_oversized_files(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            victim = directory / "victim.txt"
+            victim.write_text('{"ls":999}\\n', encoding="utf-8")
+            legacy = device_log_paths(directory, "testKey")[0]
+            legacy.symlink_to(victim)
+            with self.assertRaises(OSError):
+                read_device_log_lines(legacy)
+            legacy.unlink()
+            os.link(victim, legacy)
+            with self.assertRaises(OSError):
+                read_device_log_lines(legacy)
+            legacy.unlink()
+            legacy.write_text("12345", encoding="utf-8")
+            with self.assertRaises(OSError):
+                read_device_log_lines(legacy, max_bytes=4)
+            self.assertEqual(victim.read_text(), '{"ls":999}\\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_safe_reader_rejects_symlinked_log_directory(self):
+        with TemporaryDirectory() as d:
+            outside = Path(d) / "outside"
+            outside.mkdir()
+            (outside / "legacy.log").write_text("private", encoding="utf-8")
+            link = Path(d) / "device"
+            link.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(OSError):
+                read_device_log_lines(link / "legacy.log")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_actual_upload_refuses_unsafe_legacy_cursor_recovery(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            legacy, opaque = device_log_paths(directory, "legacySecret")
+            victim = directory / "victim.txt"
+            victim.write_text('{"ls":900}\\n', encoding="utf-8")
+            legacy.symlink_to(victim)
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "read_device_log_lines": read_device_log_lines,
+                "append_private_device_log": append_private_device_log,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+            with app.test_client() as client:
+                r = client.post("/log/legacySecret", data='{"ls":1}\\n')
+            self.assertEqual(r.status_code, 500)
+            self.assertFalse(opaque.exists())
+            self.assertEqual(ns["_devlog_max_ls"], {})
+            self.assertEqual(victim.read_text(), '{"ls":900}\\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_actual_webui_refuses_symlinked_historical_journal(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            legacy = device_log_paths(directory, "oldKey")[0]
+            victim = directory / "victim.txt"
+            victim.write_text('{"t":"SECRET"}\\n', encoding="utf-8")
+            legacy.symlink_to(victim)
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVLOG_PAGE_SIZE": 500,
+                "cfg": SimpleNamespace(DOWNLOAD_KEY="oldKey"),
+                "os": SimpleNamespace(environ={}),
+                "device_log_paths": device_log_paths,
+                "read_device_log_lines": read_device_log_lines,
+                "resolve_download_keys": resolve_download_keys,
+                "abort": abort, "json": json, "datetime": datetime,
+                "_ANCHOR_RE": re.compile(r" anchor=(\\d+)"),
+                "render_template": lambda _name, **kw: kw,
+            }
+            endpoint = extract_function("webui.py", "devlog", ns)
+            app = Flask(__name__)
+            with app.test_request_context("/devlog"):
+                with self.assertRaises(Exception) as err:
+                    endpoint()
+            self.assertEqual(getattr(err.exception, "code", None), 503)
+            self.assertEqual(victim.read_text(), '{"t":"SECRET"}\\n')
 
 if __name__ == "__main__":
     unittest.main()

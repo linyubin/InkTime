@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import os
 from admin_security import install_admin_security
-from device_log_storage import device_log_paths
+from device_log_storage import device_log_paths, read_device_log_lines
 from download_key_security import resolve_download_keys
 from db_schema import open_current_readonly_database
 import config as cfg
@@ -358,13 +358,14 @@ def devlog():
     exists = False
     for key in reversed(keys):
         for p in device_log_paths(DEVICE_LOG_DIR, key):
-            if not p.is_file():
+            try:
+                lines = read_device_log_lines(p)
+            except OSError:
+                # Never display symlinked or substituted journal contents.
+                abort(503, description="device journal unavailable")
+            if lines is None:
                 continue
             exists = True
-            try:
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
             for ln in lines:
                 try:
                     ev = json.loads(ln)
