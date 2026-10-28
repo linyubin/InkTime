@@ -18,6 +18,7 @@ import os
 import threading
 from datetime import datetime
 import config as cfg
+from server_config_validation import validate_server_settings, ConfigurationError
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
@@ -34,12 +35,16 @@ ROOT_DIR = Path(__file__).resolve().parent
 
 # --- config ---
 try:
+    SERVER_SETTINGS = validate_server_settings(cfg)
+except ConfigurationError as exc:
+    raise SystemExit(f"Invalid server configuration: {exc}") from None
+try:
     DOWNLOAD_KEYS = resolve_download_keys(getattr(cfg, "DOWNLOAD_KEY", ""), os.environ)
 except ValueError as exc:
     raise SystemExit(f"Invalid download-key configuration: {exc}") from None
 DOWNLOAD_KEY = DOWNLOAD_KEYS[0]  # active; previous key requires explicit opt-in
 
-DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
+DB_PATH = resolve_path(SERVER_SETTINGS["DB_PATH"], "./photos.db")
 # Startup is read-only until the schema is verified. Do not silently create
 # photos.db or apply legacy DDL: migrations require an explicit verified backup.
 try:
@@ -47,8 +52,8 @@ try:
 except MigrationError as exc:
     raise SystemExit(f"InkTime database startup blocked: {exc}") from None
 
-IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
-BIN_OUTPUT_DIR = resolve_path(getattr(cfg, "BIN_OUTPUT_DIR", "./output"), "./output")
+IMAGE_DIR = resolve_path(SERVER_SETTINGS["IMAGE_DIR"])
+BIN_OUTPUT_DIR = resolve_path(SERVER_SETTINGS["BIN_OUTPUT_DIR"], "./output")
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -71,13 +76,13 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRANSFER_LOG = LOG_DIR / "transfer.log"           # 详细 HTTP 传输日志（ESP32 拉取等）
 LAST_FETCH_SENTINEL = TMP_DIR / "last_fetch.json"  # 拉取成功哨兵，供 inktime_daily.sh 轮询
 
-FLASK_HOST = str(getattr(cfg, "FLASK_HOST", "0.0.0.0") or "0.0.0.0")
-FLASK_PORT = int(getattr(cfg, "FLASK_PORT", 8765) or 8765)
+FLASK_HOST = SERVER_SETTINGS["FLASK_HOST"]
+FLASK_PORT = SERVER_SETTINGS["FLASK_PORT"]
 
 # 是否开启照片库 WebUI（跑通后建议关闭，只保留 ESP32 下载接口）
-ENABLE_REVIEW_WEBUI = bool(getattr(cfg, "ENABLE_REVIEW_WEBUI", True))
+ENABLE_REVIEW_WEBUI = SERVER_SETTINGS["ENABLE_REVIEW_WEBUI"]
 
-DAILY_PHOTO_QUANTITY = int(getattr(cfg, "DAILY_PHOTO_QUANTITY", 5) or 5)
+DAILY_PHOTO_QUANTITY = SERVER_SETTINGS["DAILY_PHOTO_QUANTITY"]
 if DAILY_PHOTO_QUANTITY < 1:
     DAILY_PHOTO_QUANTITY = 1
 
@@ -92,7 +97,7 @@ _MD_CACHE_TTL_SEC = 300.0  # 5 分钟
 # /sim_render 磁盘缓存：同一 (图片, mtime, 朝向, 抖动) 组合的渲染结果不变，
 # 直接命中缓存文件，省掉 2-6s 的 render+dither。
 SIM_RENDER_CACHE_DIR = ROOT_DIR / ".cache" / "sim_render"
-SIM_RENDER_CACHE_MAX = int(getattr(cfg, "SIM_RENDER_CACHE_MAX_ENTRIES", 300) or 300)
+SIM_RENDER_CACHE_MAX = SERVER_SETTINGS["SIM_RENDER_CACHE_MAX_ENTRIES"]
 
 
 def _sim_render_cache_path(key_src: str) -> Path:
