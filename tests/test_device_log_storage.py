@@ -7,6 +7,8 @@ import multiprocessing
 import os
 from pathlib import Path
 import re
+import stat
+from unittest.mock import patch
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -393,6 +395,100 @@ class DeviceLogFilenameTests(unittest.TestCase):
                     endpoint()
             self.assertEqual(getattr(err.exception, "code", None), 503)
             self.assertEqual(victim.read_text(), '{"t":"SECRET"}\n')
+
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory fsync")
+    def test_file_and_directory_fsync_before_success_and_duplicate_ack(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            real_fsync = os.fsync
+            calls = []
+
+            def trace(fd):
+                mode = os.fstat(fd).st_mode
+                calls.append("file" if stat.S_ISREG(mode) else "directory")
+                return real_fsync(fd)
+
+            with patch("device_log_storage.os.fsync", side_effect=trace):
+                append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
+            self.assertEqual(calls[-2:], ["file", "directory"])
+            calls.clear()
+            with patch("device_log_storage.os.fsync", side_effect=trace):
+                append_private_device_log(path, [], max_bytes=100)
+            self.assertEqual(calls[-2:], ["file", "directory"])
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory fsync")
+    def test_empty_retry_does_not_create_a_missing_journal(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            append_private_device_log(path, [], max_bytes=100)
+            self.assertFalse(path.exists())
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory fsync")
+    def test_directory_fsync_failure_is_not_silently_acknowledged(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            real_fsync = os.fsync
+
+            def fail_directory(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError("simulated directory sync failure")
+                return real_fsync(fd)
+
+            with patch("device_log_storage.os.fsync", side_effect=fail_directory):
+                with self.assertRaises(OSError):
+                    append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
+            # The append may be visible even though the API must return 500.
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
+            append_private_device_log(path, [], max_bytes=100)
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory fsync")
+    def test_flask_fsync_failure_returns_500_then_retry_syncs_duplicate(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            _, opaque = device_log_paths(directory, "legacySecret")
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "device_log_lock": device_log_lock,
+                "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+
+            payload = '{"ls":7,"t":"RETRY"}\n'
+            with app.test_client() as client:
+                with patch("device_log_storage.os.fsync",
+                           side_effect=OSError("simulated fsync failure")):
+                    failed = client.post("/log/legacySecret", data=payload)
+                self.assertEqual(failed.status_code, 500)
+                self.assertEqual(ns["_devlog_max_ls"], {})
+                self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [7])
+                recovered = client.post("/log/legacySecret", data=payload)
+                self.assertEqual((recovered.status_code, recovered.get_data(as_text=True)),
+                                 (200, "OK n=0"))
+                self.assertEqual(ns["_devlog_max_ls"]["legacySecret"], 7)
+                with patch("device_log_storage.os.fsync",
+                           side_effect=OSError("simulated duplicate sync failure")):
+                    duplicate_failed = client.post("/log/legacySecret", data=payload)
+                self.assertEqual(duplicate_failed.status_code, 500)
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,6 +81,39 @@ def device_log_lock(path: Path):
         os.close(directory_fd)
 
 
+def sync_existing_private_device_log(path: Path) -> None:
+    """Durably sync existing opaque journal generations before duplicate ACK.
+
+    A failed fsync may leave already-appended bytes visible in the page cache.
+    On a retry, the server can observe those bytes and filter all lines as
+    duplicates; that retry MUST sync the visible records before returning 200.
+    Missing journal generations are not created.
+    """
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe POSIX journal fsync is unavailable")
+    path = Path(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        directory_fd = os.open(path.parent, flags)
+    except FileNotFoundError:
+        return
+    try:
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        for name in (path.name + ".1", path.name):
+            try:
+                fd = os.open(name, file_flags, dir_fd=directory_fd)
+            except FileNotFoundError:
+                continue
+            try:
+                _require_regular_single_link(os.fstat(fd))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
     """Append JSONL with private permissions; fail closed on unsafe targets.
 
@@ -88,13 +121,14 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
     Rotation retains the previous generation. Concurrent callers must hold
     device_log_lock(path) around disk cursor recovery and this entire append.
     """
-    if not lines:
-        return
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("max_bytes must be a positive integer")
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise OSError("safe no-follow file opening is unavailable")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe POSIX journal writing is unavailable")
     path = Path(path)
+    if not lines:
+        sync_existing_private_device_log(path)
+        return
     directory = path.parent
     if directory.is_symlink():
         raise OSError("device journal directory must not be a symlink")
@@ -127,6 +161,17 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
         fd = -1
         with stream:
             stream.write("\n".join(lines) + "\n")
+            stream.flush()
+            # A successful HTTP 200 must not precede file-data durability.
+            os.fsync(stream.fileno())
+        # Also persist the newly created/rotated directory entries. Failure
+        # propagates to the handler (500); retry will sync duplicates again.
+        dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        dir_fd = os.open(directory, dir_flags)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         if fd >= 0:
             os.close(fd)

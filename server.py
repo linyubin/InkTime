@@ -1204,14 +1204,15 @@ def esp_device_log(key: str):
                 ev["ip"] = ip
                 out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
 
-            if out_lines:
-                try:
-                    append_private_device_log(
-                        _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
-                    )
-                except (OSError, ValueError) as exc:
-                    print(f"[device_log] write failed: {type(exc).__name__}")
-                    return "write failed", 500
+            # Also fsync on duplicate-only retries: a previous failed fsync
+            # may have left visible, but not yet durable, journal records.
+            try:
+                append_private_device_log(
+                    _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
+                )
+            except (OSError, ValueError) as exc:
+                print(f"[device_log] write failed: {type(exc).__name__}")
+                return "write failed", 500
             _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
             return f"OK n={len(out_lines)}", 200
     except (OSError, ValueError) as exc:
