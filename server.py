@@ -1154,14 +1154,14 @@ def _devlog_load_max_ls(key: str) -> int:
         # Include the previous generation: a crash between rename and first
         # append must not reset the accepted upload cursor.
         for candidate in (p.with_suffix(".log.1"), p):
-            lines = read_device_log_lines(candidate)
+            # Validate every complete record, not just the last 500 lines.
+            # A corrupt acknowledged record must block new ACKs, including
+            # when the corruption is in a rotated or legacy generation.
+            lines = read_device_log_lines(candidate, validate_jsonl=True)
             if lines is None:
                 continue
-            for ln in lines[-500:]:
-                try:
-                    ls = int(json.loads(ln).get("ls", 0))
-                except (ValueError, TypeError, AttributeError):
-                    continue
+            for ln in lines:
+                ls = json.loads(ln)["ls"]
                 if ls > max_ls:
                     max_ls = ls
     return max_ls
