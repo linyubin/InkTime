@@ -167,3 +167,43 @@ required because this policy performs no schema writes.
 The server now routes its five read paths through `open_current_readonly_database` (`mode=ro`, `query_only=ON`, v2 revalidation, 5s busy timeout), and transfer-history inserts plus startup WAL initialization through `open_current_database` (`mode=rw`, v2 revalidation, WAL, 5s busy timeout). Raw `sqlite3.connect(DB_PATH)` calls are removed from `server.py`. This does not change the HTTP routes or intentionally change query results. The transfer-log insert remains best-effort: if the DB rejects writes, the request still returns its original response and logs an error; no implicit DB creation or migration occurs.
 
 **Validation**: synthetic SQLite connection tests and source-policy regression tests only. Full Flask server request traffic, simultaneous writers, real NAS WAL behavior, Docker/systemd and HTTPS browser remain untested. **Rollback**: revert the server connection-policy commit only on `refactor/architecture-v1`, rerun CI; this restores implicit writable SQLite opens and is not a production-safe rollback. No database migration or data rollback is required for this source-only change.
+
+
+## R1 / PR-03 explicit first-install initialization (2026-10-28, CI pending)
+
+A new empty database must be initialized **only** by an operator, on an
+authorized staging or first-install host. Neither the server, WebUI nor the
+analyzer invokes the initializer automatically.
+
+\`\`\`bash
+# Preview only; no files are created.
+python -m scripts.init_sqlite --database /staging/photos.db
+# Explicit creation of an EMPTY v2 database; existing paths are rejected.
+python -m scripts.init_sqlite --database /staging/photos.db --create
+\`\`\`
+
+The parent directory must already exist. The initializer builds a private
+0600 temporary SQLite file in the same directory, creates the legacy
+\`photo_scores(path TEXT PRIMARY KEY)\` base, runs the existing v0→v2
+migrations inside one transaction, checks the schema and SQLite integrity,
+fsyncs the file, and atomically publishes it via \`os.link\` (no overwrite).
+It fsyncs the parent directory before reporting success. It does **not**
+populate photos, import old records, create parent directories, migrate an
+existing database or touch any NAS/production database. The new DB uses
+DELETE journal mode until its first runtime writable open enables WAL.
+
+**Safety/compatibility:** hard links and directory fsync are required
+(POSIX/local filesystem); unsupported filesystems fail closed. A crash
+after the atomic link but before directory fsync may leave an already
+published database even if the CLI reports an error: inspect and verify the
+path before retrying. Never delete or replace an existing path automatically.
+Existing deployments must use the separate backed-up migration CLI; never
+initialize over an old database. This is a *new installation* tool only.
+
+**Validation:** synthetic tests and GitHub Actions only. No full Flask
+startup, NAS/filesystem fault injection, Docker/systemd or physical device
+validation. **Rollback:** revert the initializer commit on the development
+branch; do not delete a successfully initialized DB as part of code rollback.
+For an empty disposable staging DB only, operators may archive/remove it
+after checking it has no data and no writers; production recovery needs a
+separate authorized plan.
