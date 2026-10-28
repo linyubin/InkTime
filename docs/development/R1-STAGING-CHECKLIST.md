@@ -45,6 +45,7 @@ preflight does not satisfy the R1 gate. Keep Draft PR #1 open.
 |---|---|---|
 | Staged database recovery | Backup fingerprint, row-count comparison, integrity check, separate restored filename | Synthetic SQLite only |
 | NAS root/child unreadable or disconnect | Repro steps, scan error, unchanged photo scores/filelist and no deletion | Synthetic fault injection only |
+| Two-scan missing-photo reconciliation | Two independent complete scans, mount identity, minimum expected count, matching sets, private report, manual candidate review | Synthetic read-only SQLite and local filesystem only; no NAS acceptance |
 | Database concurrent writer + restart | WAL state, busy-timeout/failure response, intact restored copy | Synthetic only |
 | Full Flask startup against staging v2 | Server logs, authenticated and unauthenticated HTTP status, no implicit migration | Disposable SQLite and test client |
 | HTTPS reverse proxy + browser | TLS certificate/hostname verification, Basic authentication only over HTTPS, CSRF cookie/form handling, same-origin checks | Unit/test client only |
