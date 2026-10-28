@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+import json
 import os
 import stat
 try:
@@ -242,13 +243,23 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
         if fd >= 0:
             os.close(fd)
 
-def read_device_log_lines(path: Path, *, max_bytes: int = 16 * 1024 * 1024) -> list[str] | None:
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError("non-standard JSON constant in device journal")
+
+
+def read_device_log_lines(
+    path: Path, *, max_bytes: int = 16 * 1024 * 1024,
+    validate_jsonl: bool = False,
+) -> list[str] | None:
     """Read an existing journal without following a symlink or hardlink.
 
     None means absent; unsafe/unreadable/oversized journals raise OSError.
     The directory is opened no-follow and the basename is resolved relative
     to that directory descriptor to avoid file-level path substitution.
-    No permissions, contents or directory entries are modified.
+    With validate_jsonl=True (for upload cursor recovery), reject any incomplete,
+    malformed or non-object record rather than silently losing an acknowledged
+    sequence number. This includes rotated and legacy generations. No journal
+    contents or directory entries are modified by this reader.
     """
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("max_bytes must be a positive integer")
@@ -277,7 +288,28 @@ def read_device_log_lines(path: Path, *, max_bytes: int = 16 * 1024 * 1024) -> l
                 payload = stream.read(max_bytes + 1)
             if len(payload) > max_bytes:
                 raise OSError("device journal grew beyond safe read limit")
-            return payload.decode("utf-8", errors="replace").splitlines()
+            if not validate_jsonl:
+                return payload.decode("utf-8", errors="replace").splitlines()
+            if payload and not payload.endswith(b"\\n"):
+                raise OSError("device journal has an unterminated record")
+            try:
+                decoded = payload.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise OSError("device journal has invalid UTF-8") from exc
+            # Split only on JSONL LF, not on Unicode separators within strings.
+            lines = decoded.split("\\n")[:-1] if payload else []
+            for line in lines:
+                try:
+                    record = json.loads(
+                        line, parse_constant=_reject_nonstandard_json_constant
+                    )
+                except (ValueError, TypeError) as exc:
+                    raise OSError("device journal contains malformed JSONL") from exc
+                if (not isinstance(record, dict)
+                        or type(record.get("ls")) is not int
+                        or record["ls"] < 1):
+                    raise OSError("device journal has an invalid sequence number")
+            return lines
         finally:
             if fd >= 0:
                 os.close(fd)
