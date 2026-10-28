@@ -169,24 +169,24 @@ The server now routes its five read paths through `open_current_readonly_databas
 **Validation**: synthetic SQLite connection tests and source-policy regression tests only. Full Flask server request traffic, simultaneous writers, real NAS WAL behavior, Docker/systemd and HTTPS browser remain untested. **Rollback**: revert the server connection-policy commit only on `refactor/architecture-v1`, rerun CI; this restores implicit writable SQLite opens and is not a production-safe rollback. No database migration or data rollback is required for this source-only change.
 
 
-## R1 / PR-03 explicit first-install initialization (2026-10-28, CI pending)
+## R1 / PR-03 explicit first-install initialization (2026-10-28, CI verified)
 
 A new empty database must be initialized **only** by an operator, on an
 authorized staging or first-install host. Neither the server, WebUI nor the
 analyzer invokes the initializer automatically.
 
-\`\`\`bash
+```bash
 # Preview only; no files are created.
 python -m scripts.init_sqlite --database /staging/photos.db
 # Explicit creation of an EMPTY v2 database; existing paths are rejected.
 python -m scripts.init_sqlite --database /staging/photos.db --create
-\`\`\`
+```
 
 The parent directory must already exist. The initializer builds a private
 0600 temporary SQLite file in the same directory, creates the legacy
-\`photo_scores(path TEXT PRIMARY KEY)\` base, runs the existing v0→v2
+`photo_scores(path TEXT PRIMARY KEY)` base, runs the existing v0→v2
 migrations inside one transaction, checks the schema and SQLite integrity,
-fsyncs the file, and atomically publishes it via \`os.link\` (no overwrite).
+fsyncs the file, and atomically publishes it via `os.link` (no overwrite).
 It fsyncs the parent directory before reporting success. It does **not**
 populate photos, import old records, create parent directories, migrate an
 existing database or touch any NAS/production database. The new DB uses
@@ -207,3 +207,5 @@ branch; do not delete a successfully initialized DB as part of code rollback.
 For an empty disposable staging DB only, operators may archive/remove it
 after checking it has no data and no writers; production recovery needs a
 separate authorized plan.
+
+**CI evidence:** implementation `7749652599ad345972779f4e04e8b38edafb1eda`, connection-close correction `46c8908e974d67fd9e0b13ecc4dcf8eef249a952`; [Push CI 40615241001](https://github.com/linyubin/InkTime/actions/runs/40615241001) and [PR CI 40615246843](https://github.com/linyubin/InkTime/actions/runs/40615246843) both SUCCESS (105 Python and 4 Node tests, Python compile and requirements checks). The CI uses a temporary local filesystem only; it does not establish NAS durability or full service startup.
