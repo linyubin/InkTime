@@ -39,6 +39,8 @@ with tempfile.TemporaryDirectory(prefix="inktime-scan-smoke-") as d:
     cfg.NAS_RETRY_TIMES = 2
     cfg.NAS_RETRY_SLEEP_SEC = 0
     cfg.EXCLUDE_KEYWORDS = []
+    if mode == "remount_log":
+        cfg.NAS_MOUNT_URL = "smb://user:very-secret@nas.local/private"
     sys.modules["config"] = cfg
     import analyze_photos as analyzer
     analyzer.ROOT_DIR = root
@@ -72,7 +74,17 @@ with tempfile.TemporaryDirectory(prefix="inktime-scan-smoke-") as d:
         return real_scandir(path)
 
     with patch("photo_scan_safety.os.scandir", side_effect=fake_scandir):
-        if mode == "transient":
+        if mode == "remount_log":
+            import io
+            from contextlib import redirect_stdout
+            with patch.object(analyzer.subprocess, "run") as run, \
+                    patch.object(analyzer, "_is_mount_ok", return_value=True), \
+                    redirect_stdout(io.StringIO()) as out:
+                assert analyzer._try_remount_nas()
+            assert run.called
+            assert "very-secret" not in out.getvalue(), out.getvalue()
+            assert "user:" not in out.getvalue(), out.getvalue()
+        elif mode == "transient":
             found = analyzer.list_images()
             assert {p.name for p in found} == {"a.jpg", "b.png"}, found
             assert calls["child"] == 2, calls
@@ -111,6 +123,9 @@ class AnalyzerScanSmokeTests(unittest.TestCase):
 
     def test_transient_child_error_retries_to_complete_snapshot(self):
         self._run("transient")
+
+    def test_nas_remount_logging_hides_url_credentials(self):
+        self._run("remount_log")
 
 
 if __name__ == "__main__":
