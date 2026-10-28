@@ -35,14 +35,14 @@ class DeviceLogFilenameTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             legacy, new = device_log_paths(Path(d), "legacySecret")
             self.assertEqual(legacy.name, "legacySecret.log")
-            self.assertRegex(new.name, r"^device-[a-f0-9]{64}\\.log$")
+            self.assertRegex(new.name, r"^device-[a-f0-9]{64}\.log$")
             self.assertNotIn("legacySecret", new.name)
             self.assertEqual((legacy, new), device_log_paths(Path(d), "legacySecret"))
             self.assertNotEqual(new, device_log_paths(Path(d), "otherSecret")[1])
 
     def test_untrusted_key_cannot_escape_directory(self):
         with TemporaryDirectory() as d:
-            for key in ("", "../escape", "a/b", "a.b", "bad\\nname", "密钥", "x" * 129, None):
+            for key in ("", "../escape", "a/b", "a.b", "bad\nname", "密钥", "x" * 129, None):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     device_log_paths(Path(d), key)
 
@@ -50,7 +50,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             directory = Path(d)
             legacy, opaque = device_log_paths(directory, "legacySecret")
-            legacy.write_text('{"ls":8,"t":"OLD"}\\n', encoding="utf-8")
+            legacy.write_text('{"ls":8,"t":"OLD"}\n', encoding="utf-8")
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024 * 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
@@ -67,13 +67,13 @@ class DeviceLogFilenameTests(unittest.TestCase):
             def upload(key):
                 return endpoint(key)
 
-            payload = '{"ls":8,"t":"DUP"}\\n{"ls":9,"t":"NEW"}\\n'
+            payload = '{"ls":8,"t":"DUP"}\n{"ls":9,"t":"NEW"}\n'
             with app.test_client() as client:
                 self.assertEqual(client.post("/log/wrong", data=payload).status_code, 404)
                 r = client.post("/log/legacySecret", data=payload)
                 self.assertEqual((r.status_code, r.get_data(as_text=True)), (200, "OK n=1"))
                 self.assertTrue(opaque.exists())
-                self.assertEqual(legacy.read_text(encoding="utf-8"), '{"ls":8,"t":"OLD"}\\n')
+                self.assertEqual(legacy.read_text(encoding="utf-8"), '{"ls":8,"t":"OLD"}\n')
                 self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [9])
                 self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
                 ns["_devlog_max_ls"].clear()  # simulated server restart
@@ -84,8 +84,8 @@ class DeviceLogFilenameTests(unittest.TestCase):
             directory = Path(d)
             old_legacy, _ = device_log_paths(directory, "oldKey")
             _, new_opaque = device_log_paths(directory, "newKey")
-            old_legacy.write_text('{"ls":1,"t":"OLD","b":1,"ms":0}\\n', encoding="utf-8")
-            new_opaque.write_text('{"ls":2,"t":"NEW","b":1,"ms":1}\\n', encoding="utf-8")
+            old_legacy.write_text('{"ls":1,"t":"OLD","b":1,"ms":0}\n', encoding="utf-8")
+            new_opaque.write_text('{"ls":2,"t":"NEW","b":1,"ms":1}\n', encoding="utf-8")
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVLOG_PAGE_SIZE": 500,
                 "cfg": SimpleNamespace(DOWNLOAD_KEY="oldKey"),
@@ -96,7 +96,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "device_log_paths": device_log_paths,
                 "resolve_download_keys": resolve_download_keys,
                 "json": json, "datetime": datetime,
-                "_ANCHOR_RE": re.compile(r" anchor=(\\d+)"),
+                "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
                 "render_template": lambda _name, **kw: kw,
             }
             result = extract_function("webui.py", "devlog", ns)()

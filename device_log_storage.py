@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 import re
 
-_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}\\Z", re.ASCII)
+_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}\Z", re.ASCII)
 
 
 def device_log_paths(directory: Path, key: str) -> tuple[Path, Path]:
