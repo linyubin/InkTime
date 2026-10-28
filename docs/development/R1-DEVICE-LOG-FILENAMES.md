@@ -37,3 +37,11 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - `tests/test_device_log_storage.py` 新增五项隔离文件系统测试；Push CI [40671934019](https://github.com/linyubin/InkTime/actions/runs/40671934019)、PR CI [40671942657](https://github.com/linyubin/InkTime/actions/runs/40671942657) 均通过，148 Python + 4 Node。**未做真实 NAS、HTTPS 浏览器或 ESP32 验收。**
 - 仍存在多进程轮转竞争、崩溃前未 fsync、旧日志/WebUI 读取路径可能跟随符号链接、设备身份和 HTTP bearer token 暴露问题。真实 NAS 生产数据不得用于本轮试验。
 - 回滚仅限开发分支 `git revert ca180e60` 并重新运行 CI；此操作会重新引入不安全的追加方式，**不是可直接部署的生产回滚方案**。R1 Gate 继续 OPEN。
+
+## 2026-10-28 — 历史日志读取防符号链接加固（开发分支）
+
+- `device_log_storage.read_device_log_lines()` 以 `O_DIRECTORY|O_NOFOLLOW` 打开日志目录，再以 `dir_fd` 和 `O_NOFOLLOW` 打开历史明文文件名与新哈希文件名，拒绝符号链接、硬链接、非普通文件；单文件最大读取 16 MiB。
+- `server.py` 恢复上传游标时遇到不安全/不可读日志，返回 HTTP 500，拒绝继续接收可能重复的事件；`webui.py` 遇到不安全日志返回 HTTP 503，不显示目标文件内容。不存在的日志仍按空日志处理。
+- 本轮 **没有**修改历史文件内容、权限、目录结构或生产数据。旧日志过大、权限不足或不支持 POSIX no-follow 时会拒绝读取，需人工离线检查，不能自动删除或放宽权限。
+- 初次 CI 因新测试 JSONL 换行转义错误失败 1/153，修复提交 `b1587ca5` 后 Push [40696479322](https://github.com/linyubin/InkTime/actions/runs/40696479322) 与 PR [40696487199](https://github.com/linyubin/InkTime/actions/runs/40696487199) 均 SUCCESS：153 Python、4 Node。未验证真实 NAS、HTTPS 浏览器、Docker/systemd、ESP32 和人工签核。
+- 未解决：祖先目录符号链接、并发轮转、跨进程上传游标、`fsync` 持久化及 HTTP bearer 密钥暴露。仅允许在开发分支逆序 `git revert b1587ca5`、`git revert e1cea979` 并重跑 CI；回退会重新允许历史日志符号链接跟随，**不是生产安全回滚**。R1 Gate 仍 OPEN。
