@@ -54,3 +54,12 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - 隔离验证命令：`python -m unittest discover -s tests -p 'test_device_log_storage.py' -v`。CI [Push 40726336429](https://github.com/linyubin/InkTime/actions/runs/40726336429) 与 [PR 40726349050](https://github.com/linyubin/InkTime/actions/runs/40726349050) 均通过：156 Python + 4 Node（全量），含两个独立进程的锁序列化测试。
 - **未验证**：NAS/NFS/SMB 跨主机锁语义、外部日志轮转、上层目录符号链接、锁等待上限、磁盘满/掉电后的持久性、真实 ESP32 上传、HTTPS 浏览器、Docker/systemd 和人工签核。当前写入尚未 `fsync`，HTTP 200 不应被解释为掉电后必然持久；共享密钥的多设备 `ls` 冲突仍存在。
 - 回滚仅限独立开发分支撤销 `834bf426` 并重跑 CI；这会恢复多进程重复写入/轮转竞争，**不能作为生产安全回滚**。不要在生产 NAS 上删除锁文件或操作历史日志。R1 Gate 仍为 OPEN。
+
+
+## 2026-10-29 — 日志 fsync 与重复上传确认门禁（开发分支）
+
+- 服务器在每次新设备日志追加后，先刷新 Python 缓冲、`fsync` 日志文件，再 `fsync` 日志目录，全部成功后才返回 HTTP 200。文件或目录同步失败返回 HTTP 500，不推进服务端诊断游标。
+- 上一次 `fsync` 失败后，数据可能已写入页缓存但尚未持久化；设备重试时服务端可能判定为重复。为避免未经同步便确认，**即使没有新事件**，也会在同一个跨进程锁内对现有哈希日志 `.log.1`、`.log` 和目录执行 `fsync`。不存在的日志文件不会被创建。
+- 验证：`python -m unittest discover -s tests -p 'test_device_log_storage.py' -v`；Push [40754304629](https://github.com/linyubin/InkTime/actions/runs/40754304629) / PR [40754314641](https://github.com/linyubin/InkTime/actions/runs/40754314641) **SUCCESS**，全量 160 Python + 4 Node。包括实际 Flask 上传处理函数的同步失败、重试、重复确认故障注入。
+- **仍未验证**：真实 NAS/NFS/SMB 的持久化与跨主机锁、掉电恢复、部分 JSONL 写入、上层目录符号链接、外部日志轮转、设备身份、HTTPS 浏览器、Docker/systemd、ESP32 真机和人工签核。即使系统调用成功，也不能在未验证存储硬件前宣称端到端掉电不丢数据。
+- 开发分支回滚：`git revert 312928f0` 并重新运行 CI；这会恢复 HTTP 200 先于数据持久化的风险，不可作为未经审批的生产回滚。R1 Gate 仍 **OPEN**。
