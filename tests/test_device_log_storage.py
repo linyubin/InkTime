@@ -611,5 +611,113 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 self.assertEqual((result.status_code, result.get_data(as_text=True)), (200, "OK n=1"))
             self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [1, 2])
 
+
+class DeviceLogIntegrityTests(unittest.TestCase):
+    """R1: malformed acknowledged JSONL must never silently reset the cursor."""
+
+    def _app(self, directory):
+        ns = {
+            "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024 * 1024,
+            "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+            "device_log_lock": device_log_lock,
+            "append_private_device_log": append_private_device_log,
+            "read_device_log_lines": read_device_log_lines,
+            "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
+            "DOWNLOAD_KEYS": ("legacySecret",),
+            "authorized_download_key": authorized_download_key,
+            "json": json, "datetime": datetime, "request": request,
+            "abort": abort, "Path": Path,
+        }
+        extract_function("server.py", "_devlog_path", ns)
+        extract_function("server.py", "_devlog_load_max_ls", ns)
+        endpoint = extract_function("server.py", "esp_device_log", ns)
+        app = Flask(__name__)
+
+        @app.post("/log/<key>")
+        def upload(key):
+            return endpoint(key)
+
+        return app, ns
+
+    def test_strict_reader_rejects_corrupt_complete_records_without_writes(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "legacySecret")[1]
+            valid = json.dumps({"ls": 1, "msg": "a\u2028b"}, ensure_ascii=False) + "\n"
+            path.write_bytes(valid.encode("utf-8"))
+            self.assertEqual(read_device_log_lines(path, validate_jsonl=True),
+                             [valid[:-1]])
+            invalid = (
+                b'{"ls":1}',                 # unterminated final line
+                b'{"ls":1}\nnot-json\n',
+                b'{"ls":true}\n',
+                b'{"ls":"2"}\n',
+                b'{"ls":1,"v":NaN}\n',
+                b'{"ls":1}\n\n',
+                b'{"ls":1}\n\xff\n',
+                b'[]\n',
+            )
+            for payload in invalid:
+                with self.subTest(payload=payload):
+                    path.write_bytes(payload)
+                    with self.assertRaises(OSError):
+                        read_device_log_lines(path, validate_jsonl=True)
+                    self.assertEqual(path.read_bytes(), payload)
+
+    def test_flask_rejects_malformed_complete_record_in_all_generations(self):
+        for generation in ("legacy", "legacy_rotated", "opaque", "opaque_rotated"):
+            with self.subTest(generation=generation), TemporaryDirectory() as d:
+                directory = Path(d)
+                legacy, opaque = device_log_paths(directory, "legacySecret")
+                targets = {
+                    "legacy": legacy,
+                    "legacy_rotated": legacy.with_suffix(".log.1"),
+                    "opaque": opaque,
+                    "opaque_rotated": opaque.with_suffix(".log.1"),
+                }
+                target = targets[generation]
+                payload = b'{"ls":2}\n{"ls":bad}\n'
+                target.write_bytes(payload)
+                app, ns = self._app(directory)
+                with app.test_client() as client:
+                    result = client.post("/log/legacySecret", data='{"ls":3}\n')
+                self.assertEqual(result.status_code, 500)
+                self.assertEqual(ns["_devlog_max_ls"], {})
+                self.assertEqual(target.read_bytes(), payload)
+                if target != opaque:
+                    self.assertFalse(opaque.exists())
+
+    def test_rotated_unterminated_record_fails_closed_without_truncation(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            _, opaque = device_log_paths(directory, "legacySecret")
+            rotated = opaque.with_suffix(".log.1")
+            payload = b'{"ls":7}\n{"ls":8'
+            rotated.write_bytes(payload)
+            app, ns = self._app(directory)
+            with app.test_client() as client:
+                result = client.post("/log/legacySecret", data='{"ls":8}\n')
+            self.assertEqual(result.status_code, 500)
+            self.assertEqual(rotated.read_bytes(), payload)
+            self.assertFalse(opaque.exists())
+            self.assertEqual(ns["_devlog_max_ls"], {})
+
+    def test_cursor_uses_all_valid_records_not_only_last_500(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            legacy, opaque = device_log_paths(directory, "legacySecret")
+            legacy.write_text("".join('{"ls":%d}\n' % i for i in
+                                      range(601, 0, -1)), encoding="utf-8")
+            app, _ = self._app(directory)
+            with app.test_client() as client:
+                self.assertEqual(
+                    client.post("/log/legacySecret", data='{"ls":600}\n').get_data(as_text=True),
+                    "OK n=0")
+                self.assertEqual(
+                    client.post("/log/legacySecret", data='{"ls":602}\n').get_data(as_text=True),
+                    "OK n=1")
+            self.assertEqual([json.loads(x)["ls"] for x in
+                              opaque.read_text(encoding="utf-8").splitlines()], [602])
+
+
 if __name__ == "__main__":
     unittest.main()
