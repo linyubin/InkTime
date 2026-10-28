@@ -6,18 +6,18 @@ preflight does not satisfy the R1 gate. Keep Draft PR #1 open.
 
 ## A. Prepare a reproducible staging environment
 
-1. Check out only \`refactor/architecture-v1\` in an isolated worktree, verify
+1. Check out only `refactor/architecture-v1` in an isolated worktree, verify
    the exact commit SHA, and ensure the staging host has no production mounts
    writable by the test user. Never run this branch with production credentials.
 2. Create a disposable Python 3.11 environment and install the declared runtime
    dependencies. CI now installs the same requirements but has no NAS/BLE device:
 
-   \`\`\`bash
+   ```bash
    python3.11 -m venv .venv
    .venv/bin/python -m pip install -r requirements.txt
    .venv/bin/python -m pip check
    .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
-   \`\`\`
+   ```
 
 3. Use a verified *staging* SQLite backup/restore, not a raw copy of a live
    WAL database. Follow [R1-SQLITE-MIGRATION.md](R1-SQLITE-MIGRATION.md).
@@ -26,12 +26,12 @@ preflight does not satisfy the R1 gate. Keep Draft PR #1 open.
 4. Run the **read-only application prerequisite check** with all arguments
    pointing to isolated paths:
 
-   \`\`\`bash
+   ```bash
    .venv/bin/python -m scripts.staging_preflight \
        --database /staging/inktime/photos.db \
        --images /staging/inktime/photos \
        --output /staging/inktime/output
-   \`\`\`
+   ```
 
    This checks SQLite v2 and integrity, plus the existence of the image and
    output directories. It does **not** probe output write permission, NAS
@@ -70,5 +70,5 @@ admin credentials out of Git, process arguments and test logs.
   exposing HTTP Basic authentication over plain HTTP.
 - Failed device test: preserve original firmware/NVS and stop deployment;
   do not flash real hardware without separate owner authorization.
-- Nothing in this checklist authorizes a merge into \`local-fix\`/\`main\`,
+- Nothing in this checklist authorizes a merge into `local-fix`/`main`,
   production deployment, restoration over live databases, or ESP32 flashing.
