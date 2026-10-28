@@ -22,7 +22,7 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from device_log_storage import device_log_paths, append_private_device_log, read_device_log_lines
+from device_log_storage import device_log_paths, device_log_lock, append_private_device_log, read_device_log_lines
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
     open_current_readonly_database,
@@ -1134,7 +1134,7 @@ def esp_time(key: str):
 
 DEVICE_LOG_DIR = LOG_DIR / "device"
 DEVICE_LOG_MAX_BYTES = 5 * 1024 * 1024   # >5MB 轮转为 .log.1（保留一代）
-_devlog_max_ls: dict[str, int] = {}      # key → 已落盘的最大事件行号 ls（去重用）
+_devlog_max_ls: dict[str, int] = {}      # 仅诊断缓存；每次请求必须在跨进程锁内从磁盘重读
 
 
 def _devlog_path(key: str) -> Path:
@@ -1150,16 +1150,19 @@ def _devlog_load_max_ls(key: str) -> int:
     """
     max_ls = 0
     for p in device_log_paths(DEVICE_LOG_DIR, key):
-        lines = read_device_log_lines(p)
-        if lines is None:
-            continue
-        for ln in lines[-500:]:
-            try:
-                ls = int(json.loads(ln).get("ls", 0))
-            except (ValueError, TypeError, AttributeError):
+        # Include the previous generation: a crash between rename and first
+        # append must not reset the accepted upload cursor.
+        for candidate in (p.with_suffix(".log.1"), p):
+            lines = read_device_log_lines(candidate)
+            if lines is None:
                 continue
-            if ls > max_ls:
-                max_ls = ls
+            for ln in lines[-500:]:
+                try:
+                    ls = int(json.loads(ln).get("ls", 0))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                if ls > max_ls:
+                    max_ls = ls
     return max_ls
 
 
@@ -1172,48 +1175,48 @@ def esp_device_log(key: str):
     if not raw:
         return "empty", 400
 
-    if key not in _devlog_max_ls:
-        try:
-            _devlog_max_ls[key] = _devlog_load_max_ls(key)
-        except OSError:
-            # Do not accept a replay when historical cursor recovery is unsafe.
-            print("[device_log] historical journal read failed")
-            return "journal unavailable", 500
-    max_ls = _devlog_max_ls[key]
-
     recv_iso = datetime.now().isoformat(timespec="seconds")
     ip = request.remote_addr or ""
-    accepted = 0
-    out_lines: list[str] = []
-    for ln in raw.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            ev = json.loads(ln)
-            ls = int(ev.get("ls", 0))
-            if not ls or ls <= max_ls:
-                continue   # 游标回绕/重传导致的重复，跳过
-            max_ls = ls
-        except Exception:
-            continue   # 损坏行丢弃，不影响其余行
-        ev["rcv"] = recv_iso
-        ev["ip"] = ip
-        out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
-        accepted += 1
+    try:
+        # Lock covers cursor recovery, deduplication and append/rotation.
+        # A process-local cursor cannot be trusted across server workers.
+        with device_log_lock(_devlog_path(key)):
+            try:
+                max_ls = _devlog_load_max_ls(key)
+            except OSError:
+                print("[device_log] historical journal read failed")
+                return "journal unavailable", 500
 
-    if out_lines:
-        try:
-            append_private_device_log(
-                _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
-            )
-        except (OSError, ValueError) as exc:
-            # Never print a bearer-key path or the submitted journal body.
-            print(f"[device_log] write failed: {type(exc).__name__}")
-            return "write failed", 500
-        _devlog_max_ls[key] = max_ls
+            out_lines: list[str] = []
+            for ln in raw.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    ev = json.loads(ln)
+                    ls = int(ev.get("ls", 0))
+                    if not ls or ls <= max_ls:
+                        continue
+                    max_ls = ls
+                except Exception:
+                    continue
+                ev["rcv"] = recv_iso
+                ev["ip"] = ip
+                out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
 
-    return f"OK n={accepted}", 200
+            if out_lines:
+                try:
+                    append_private_device_log(
+                        _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
+                    )
+                except (OSError, ValueError) as exc:
+                    print(f"[device_log] write failed: {type(exc).__name__}")
+                    return "write failed", 500
+            _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
+            return f"OK n={len(out_lines)}", 200
+    except (OSError, ValueError) as exc:
+        print(f"[device_log] journal lock failed: {type(exc).__name__}")
+        return "journal unavailable", 500
 
 
 # ── 常开设备注册（LAN 推送目标）─────────────────────────────

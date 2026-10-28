@@ -5,9 +5,14 @@ mechanism. Rotate historically exposed/low-entropy bearer keys separately.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 import stat
+try:
+    import fcntl
+except ImportError:  # POSIX-only; fail closed rather than omit locking.
+    fcntl = None
 from pathlib import Path
 import re
 
@@ -34,12 +39,54 @@ def _require_regular_single_link(info) -> None:
         raise OSError("device journal target is not a single-link regular file")
 
 
+@contextmanager
+def device_log_lock(path: Path):
+    """Exclusive cross-process lock for a single opaque device journal.
+
+    The lock file is persistent: unlinking it can split the lock into two
+    inodes. Cooperating writers must hold this lock across disk cursor
+    recovery, deduplication, append and rotation.
+    """
+    path = Path(path)
+    if not re.fullmatch(r"device-[0-9a-f]{64}\.log", path.name):
+        raise ValueError("lock requires an opaque device journal path")
+    if fcntl is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe POSIX device journal locking is unavailable")
+    directory = path.parent
+    if directory.is_symlink():
+        raise OSError("device journal directory must not be a symlink")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directory_fd = os.open(directory, dir_flags)
+    try:
+        lock_name = path.name + ".lock"
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(lock_name, flags, 0o600, dir_fd=directory_fd)
+        try:
+            info = os.fstat(fd)
+            _require_regular_single_link(info)
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o077)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                current = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise OSError("device journal lock inode changed")
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
+
+
 def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
     """Append JSONL with private permissions; fail closed on unsafe targets.
 
     Existing regular files with permissive modes are tightened in place.
-    Rotation retains the previous generation. This is NOT a multi-process
-    locking protocol and must not be used to claim concurrent-writer safety.
+    Rotation retains the previous generation. Concurrent callers must hold
+    device_log_lock(path) around disk cursor recovery and this entire append.
     """
     if not lines:
         return
@@ -71,8 +118,8 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
             current = os.lstat(path)
             if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                 raise OSError("device journal changed before rotation")
-            # Do not follow symlinks at either path. Concurrent rotation by
-            # another process still requires a separate interprocess lock.
+            # Do not follow symlinks at either path. Cooperating callers
+            # serialize this rename through device_log_lock.
             os.replace(path, rotated)
             fd = os.open(path, flags | os.O_EXCL, 0o600)
             _require_regular_single_link(os.fstat(fd))

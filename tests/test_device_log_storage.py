@@ -3,6 +3,7 @@ import ast
 import copy
 from datetime import datetime
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -12,10 +13,19 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import device_log_paths, append_private_device_log, read_device_log_lines
+from device_log_storage import device_log_paths, device_log_lock, append_private_device_log, read_device_log_lines
 from download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _hold_lock_in_child(path, entered, release):
+    with device_log_lock(path):
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError("lock test timed out")
+
+
 
 
 def extract_function(filename, name, namespace):
@@ -55,6 +65,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024 * 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
                 "append_private_device_log": append_private_device_log,
+                "device_log_lock": device_log_lock,
                 "read_device_log_lines": read_device_log_lines,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
@@ -79,6 +90,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 self.assertEqual(opaque.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(legacy.read_text(encoding="utf-8"), '{"ls":8,"t":"OLD"}\n')
                 self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [9])
+                ns["_devlog_max_ls"]["legacySecret"] = 0  # stale worker cache must be ignored
                 self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
                 ns["_devlog_max_ls"].clear()  # simulated server restart
                 self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
@@ -188,6 +200,93 @@ class DeviceLogFilenameTests(unittest.TestCase):
 
 
 
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_private_lock_persists_and_rejects_symlink_or_hardlink(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            lock_path = path.with_name(path.name + ".lock")
+            with device_log_lock(path):
+                self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
+            self.assertTrue(lock_path.exists())  # never unlink: inode identity matters
+            lock_path.unlink()
+            victim = Path(d) / "victim.txt"
+            victim.write_text("untouched", encoding="utf-8")
+            lock_path.symlink_to(victim)
+            with self.assertRaises(OSError), device_log_lock(path):
+                pass
+            lock_path.unlink()
+            os.link(victim, lock_path)
+            with self.assertRaises(OSError), device_log_lock(path):
+                pass
+            self.assertEqual(victim.read_text(encoding="utf-8"), "untouched")
+
+    @unittest.skipUnless("fork" in multiprocessing.get_all_start_methods()
+                         and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX fork and flock")
+    def test_lock_serializes_separate_processes(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            ctx = multiprocessing.get_context("fork")
+            first_entered, first_release = ctx.Event(), ctx.Event()
+            second_entered, second_release = ctx.Event(), ctx.Event()
+            first = ctx.Process(target=_hold_lock_in_child,
+                                args=(path, first_entered, first_release))
+            second = ctx.Process(target=_hold_lock_in_child,
+                                 args=(path, second_entered, second_release))
+            try:
+                first.start()
+                self.assertTrue(first_entered.wait(5))
+                second.start()
+                self.assertFalse(second_entered.wait(0.25))
+                first_release.set()
+                self.assertTrue(second_entered.wait(5))
+            finally:
+                first_release.set()
+                second_release.set()
+                for process in (first, second):
+                    if process.pid is not None:
+                        process.join(5)
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(5)
+            self.assertEqual(first.exitcode, 0)
+            self.assertEqual(second.exitcode, 0)
+
+    def test_actual_upload_recovers_rotated_only_cursor_after_crash(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            _, opaque = device_log_paths(directory, "legacySecret")
+            rotated = opaque.with_suffix(".log.1")
+            rotated.write_text('{"ls":40,"t":"before-crash"}\n', encoding="utf-8")
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {"legacySecret": 0},
+                "device_log_paths": device_log_paths,
+                "device_log_lock": device_log_lock,
+                "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+
+            with app.test_client() as client:
+                r = client.post("/log/legacySecret", data='{"ls":40}\n{"ls":41}\n')
+            self.assertEqual((r.status_code, r.get_data(as_text=True)), (200, "OK n=1"))
+            self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [41])
+            self.assertEqual(rotated.read_text(), '{"ls":40,"t":"before-crash"}\n')
+
+
     def test_safe_reader_accepts_legacy_and_opaque_files_without_writing(self):
         with TemporaryDirectory() as d:
             directory = Path(d) / "device"
@@ -247,6 +346,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
                 "read_device_log_lines": read_device_log_lines,
                 "append_private_device_log": append_private_device_log,
+                "device_log_lock": device_log_lock,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
