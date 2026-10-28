@@ -22,7 +22,7 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from device_log_storage import device_log_paths
+from device_log_storage import device_log_paths, append_private_device_log
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
     open_current_readonly_database,
@@ -1201,15 +1201,13 @@ def esp_device_log(key: str):
         accepted += 1
 
     if out_lines:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        p = _devlog_path(key)
         try:
-            if p.exists() and p.stat().st_size > DEVICE_LOG_MAX_BYTES:
-                p.replace(p.with_suffix(".log.1"))   # 轮转：当前 → .log.1（覆盖旧一代）
-            with open(p, "a", encoding="utf-8") as f:
-                f.write("\n".join(out_lines) + "\n")
-        except Exception as e:
-            print(f"[device_log] write failed: {e}")
+            append_private_device_log(
+                _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
+            )
+        except (OSError, ValueError) as exc:
+            # Never print a bearer-key path or the submitted journal body.
+            print(f"[device_log] write failed: {type(exc).__name__}")
             return "write failed", 500
         _devlog_max_ls[key] = max_ls
 

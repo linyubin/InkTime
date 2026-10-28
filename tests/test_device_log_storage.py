@@ -12,7 +12,7 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import device_log_paths
+from device_log_storage import device_log_paths, append_private_device_log
 from download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +54,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024 * 1024,
                 "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "append_private_device_log": append_private_device_log,
                 "DOWNLOAD_KEYS": ("legacySecret",),
                 "authorized_download_key": authorized_download_key,
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
@@ -74,6 +75,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 r = client.post("/log/legacySecret", data=payload)
                 self.assertEqual((r.status_code, r.get_data(as_text=True)), (200, "OK n=1"))
                 self.assertTrue(opaque.exists())
+                self.assertEqual(opaque.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(legacy.read_text(encoding="utf-8"), '{"ls":8,"t":"OLD"}\n')
                 self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [9])
                 self.assertEqual(client.post("/log/legacySecret", data=payload).get_data(as_text=True), "OK n=0")
@@ -106,6 +108,81 @@ class DeviceLogFilenameTests(unittest.TestCase):
             ns["os"].environ.pop("INKTIME_DOWNLOAD_KEY_PREVIOUS")
             result = ns["devlog"]()
             self.assertEqual([x["t"] for x in result["rows"]], ["NEW"])
+
+
+    def test_new_log_is_private_even_with_permissive_umask(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d) / "device", "testKey")[1]
+            previous = os.umask(0)
+            try:
+                append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
+            finally:
+                os.umask(previous)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
+
+    def test_existing_log_permissions_tightened_without_losing_data(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            path.write_text("old\n", encoding="utf-8")
+            path.chmod(0o644)
+            append_private_device_log(path, ["new"], max_bytes=100)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.read_text(), "old\nnew\n")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "symlink"),
+                         "requires no-follow file opening and symlinks")
+    def test_symlink_and_hardlink_targets_fail_without_modifying_victim(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            path = device_log_paths(directory, "testKey")[1]
+            victim = directory / "victim.txt"
+            victim.write_text("untouched", encoding="utf-8")
+            path.symlink_to(victim)
+            with self.assertRaises(OSError):
+                append_private_device_log(path, ["attack"], max_bytes=100)
+            self.assertEqual(victim.read_text(), "untouched")
+            path.unlink()
+            os.link(victim, path)
+            with self.assertRaises(OSError):
+                append_private_device_log(path, ["attack"], max_bytes=100)
+            self.assertEqual(victim.read_text(), "untouched")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "symlink"),
+                         "requires no-follow file opening and symlinks")
+    def test_rotation_preserves_private_files_and_rejects_symlink_generation(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            append_private_device_log(path, ["first"], max_bytes=1)
+            append_private_device_log(path, ["second"], max_bytes=1)
+            rotated = path.with_suffix(".log.1")
+            self.assertEqual(rotated.read_text(), "first\n")
+            self.assertEqual(path.read_text(), "second\n")
+            self.assertEqual(rotated.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            rotated.unlink()
+            victim = Path(d) / "victim.txt"
+            victim.write_text("safe", encoding="utf-8")
+            rotated.symlink_to(victim)
+            with self.assertRaises(OSError):
+                append_private_device_log(path, ["third"], max_bytes=1)
+            self.assertEqual(victim.read_text(), "safe")
+            self.assertEqual(path.read_text(), "second\n")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "symlink"),
+                         "requires no-follow file opening and symlinks")
+    def test_symlink_log_directory_is_rejected(self):
+        with TemporaryDirectory() as d:
+            target = Path(d) / "outside"
+            target.mkdir()
+            link = Path(d) / "device"
+            link.symlink_to(target, target_is_directory=True)
+            path = device_log_paths(link, "testKey")[1]
+            with self.assertRaises(OSError):
+                append_private_device_log(path, ["no"], max_bytes=100)
+            self.assertEqual(list(target.iterdir()), [])
+
 
 
 if __name__ == "__main__":

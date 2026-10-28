@@ -6,6 +6,8 @@ mechanism. Rotate historically exposed/low-entropy bearer keys separately.
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from pathlib import Path
 import re
 
@@ -24,3 +26,60 @@ def device_log_paths(directory: Path, key: str) -> tuple[Path, Path]:
     root = Path(directory)
     digest = hashlib.sha256(key.encode("ascii")).hexdigest()
     return root / f"{key}.log", root / f"device-{digest}.log"
+
+
+def _require_regular_single_link(info) -> None:
+    """Refuse symlinks, special files and hard-linked journal targets."""
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise OSError("device journal target is not a single-link regular file")
+
+
+def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
+    """Append JSONL with private permissions; fail closed on unsafe targets.
+
+    Existing regular files with permissive modes are tightened in place.
+    Rotation retains the previous generation. This is NOT a multi-process
+    locking protocol and must not be used to claim concurrent-writer safety.
+    """
+    if not lines:
+        return
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("safe no-follow file opening is unavailable")
+    path = Path(path)
+    directory = path.parent
+    if directory.is_symlink():
+        raise OSError("device journal directory must not be a symlink")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        _require_regular_single_link(info)
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o077)
+        if info.st_size > max_bytes:
+            rotated = path.with_suffix(".log.1")
+            try:
+                _require_regular_single_link(os.lstat(rotated))
+            except FileNotFoundError:
+                pass
+            os.close(fd)
+            fd = -1
+            current = os.lstat(path)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise OSError("device journal changed before rotation")
+            # Do not follow symlinks at either path. Concurrent rotation by
+            # another process still requires a separate interprocess lock.
+            os.replace(path, rotated)
+            fd = os.open(path, flags | os.O_EXCL, 0o600)
+            _require_regular_single_link(os.fstat(fd))
+        stream = os.fdopen(fd, "a", encoding="utf-8")
+        fd = -1
+        with stream:
+            stream.write("\n".join(lines) + "\n")
+    finally:
+        if fd >= 0:
+            os.close(fd)
