@@ -194,11 +194,11 @@ class DeviceLogFilenameTests(unittest.TestCase):
             self.assertIsNone(read_device_log_lines(directory / "missing.log"))
             directory.mkdir()
             legacy, opaque = device_log_paths(directory, "testKey")
-            legacy.write_text('{"ls":1}\\n', encoding="utf-8")
-            opaque.write_text('{"ls":2}\\n', encoding="utf-8")
+            legacy.write_text('{"ls":1}\n', encoding="utf-8")
+            opaque.write_text('{"ls":2}\n', encoding="utf-8")
             self.assertEqual(read_device_log_lines(legacy), ['{"ls":1}'])
             self.assertEqual(read_device_log_lines(opaque), ['{"ls":2}'])
-            self.assertEqual(legacy.read_text(), '{"ls":1}\\n')
+            self.assertEqual(legacy.read_text(), '{"ls":1}\n')
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
                          "requires POSIX no-follow directory-relative opens")
@@ -206,7 +206,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             directory = Path(d)
             victim = directory / "victim.txt"
-            victim.write_text('{"ls":999}\\n', encoding="utf-8")
+            victim.write_text('{"ls":999}\n', encoding="utf-8")
             legacy = device_log_paths(directory, "testKey")[0]
             legacy.symlink_to(victim)
             with self.assertRaises(OSError):
@@ -219,7 +219,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
             legacy.write_text("12345", encoding="utf-8")
             with self.assertRaises(OSError):
                 read_device_log_lines(legacy, max_bytes=4)
-            self.assertEqual(victim.read_text(), '{"ls":999}\\n')
+            self.assertEqual(victim.read_text(), '{"ls":999}\n')
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
                          "requires POSIX no-follow directory-relative opens")
@@ -240,7 +240,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
             directory = Path(d)
             legacy, opaque = device_log_paths(directory, "legacySecret")
             victim = directory / "victim.txt"
-            victim.write_text('{"ls":900}\\n', encoding="utf-8")
+            victim.write_text('{"ls":900}\n', encoding="utf-8")
             legacy.symlink_to(victim)
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
@@ -260,11 +260,11 @@ class DeviceLogFilenameTests(unittest.TestCase):
             def upload(key):
                 return endpoint(key)
             with app.test_client() as client:
-                r = client.post("/log/legacySecret", data='{"ls":1}\\n')
+                r = client.post("/log/legacySecret", data='{"ls":1}\n')
             self.assertEqual(r.status_code, 500)
             self.assertFalse(opaque.exists())
             self.assertEqual(ns["_devlog_max_ls"], {})
-            self.assertEqual(victim.read_text(), '{"ls":900}\\n')
+            self.assertEqual(victim.read_text(), '{"ls":900}\n')
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
                          "requires POSIX no-follow directory-relative opens")
@@ -273,7 +273,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
             directory = Path(d)
             legacy = device_log_paths(directory, "oldKey")[0]
             victim = directory / "victim.txt"
-            victim.write_text('{"t":"SECRET"}\\n', encoding="utf-8")
+            victim.write_text('{"t":"SECRET"}\n', encoding="utf-8")
             legacy.symlink_to(victim)
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVLOG_PAGE_SIZE": 500,
@@ -283,7 +283,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "read_device_log_lines": read_device_log_lines,
                 "resolve_download_keys": resolve_download_keys,
                 "abort": abort, "json": json, "datetime": datetime,
-                "_ANCHOR_RE": re.compile(r" anchor=(\\d+)"),
+                "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
                 "render_template": lambda _name, **kw: kw,
             }
             endpoint = extract_function("webui.py", "devlog", ns)
@@ -292,7 +292,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 with self.assertRaises(Exception) as err:
                     endpoint()
             self.assertEqual(getattr(err.exception, "code", None), 503)
-            self.assertEqual(victim.read_text(), '{"t":"SECRET"}\\n')
+            self.assertEqual(victim.read_text(), '{"t":"SECRET"}\n')
 
 if __name__ == "__main__":
     unittest.main()
