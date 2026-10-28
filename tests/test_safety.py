@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from path_security import safe_join
-from photo_scan_safety import ScanIncompleteError, scandir_with_retries, count_missing_paths
+from photo_scan_safety import ScanIncompleteError, scandir_with_retries, count_missing_paths, path_is_within_root
 
 
 class SafePathTests(unittest.TestCase):
@@ -35,6 +35,24 @@ class SafePathTests(unittest.TestCase):
                 safe_join(root, str(other / "secret.jpg"))
             with self.assertRaises(ValueError):
                 safe_join(root, "escape/secret.jpg")
+
+    def test_photo_root_containment_rejects_prefix_siblings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "Photos"
+            sibling = Path(temp) / "Photos-private"
+            root.mkdir()
+            sibling.mkdir()
+            self.assertTrue(path_is_within_root(root / "valid.jpg", root))
+            self.assertFalse(path_is_within_root(sibling / "secret.jpg", root))
+
+    def test_photo_root_containment_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "Photos"
+            outside = Path(temp) / "private"
+            root.mkdir()
+            outside.mkdir()
+            (root / "link").symlink_to(outside, target_is_directory=True)
+            self.assertFalse(path_is_within_root(root / "link" / "secret.jpg", root))
 
 
 class ScanSafetyTests(unittest.TestCase):
