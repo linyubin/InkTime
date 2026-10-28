@@ -63,3 +63,12 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - 验证：`python -m unittest discover -s tests -p 'test_device_log_storage.py' -v`；Push [40754304629](https://github.com/linyubin/InkTime/actions/runs/40754304629) / PR [40754314641](https://github.com/linyubin/InkTime/actions/runs/40754314641) **SUCCESS**，全量 160 Python + 4 Node。包括实际 Flask 上传处理函数的同步失败、重试、重复确认故障注入。
 - **仍未验证**：真实 NAS/NFS/SMB 的持久化与跨主机锁、掉电恢复、部分 JSONL 写入、上层目录符号链接、外部日志轮转、设备身份、HTTPS 浏览器、Docker/systemd、ESP32 真机和人工签核。即使系统调用成功，也不能在未验证存储硬件前宣称端到端掉电不丢数据。
 - 开发分支回滚：`git revert 312928f0` 并重新运行 CI；这会恢复 HTTP 200 先于数据持久化的风险，不可作为未经审批的生产回滚。R1 Gate 仍 **OPEN**。
+
+## 2026-10-29 — 活动日志不完整尾部恢复（仅开发分支）
+
+- 服务端在已有 `flock` 内、恢复 `ls` 之前检查当前哈希命名的 `.log`。如果文件最后不是换行符，则最后一段视为**未确认的部分 JSONL 写入**；只截断该段，保留此前全部完整行。截断后必须完成文件和目录 `fsync` 才能继续接受设备重试。
+- 为避免静默丢弃大量数据，单段不完整尾部超过 64 KiB 时返回 HTTP 500 并要求人工检查。符号链接、硬链接、文件被替换、同步失败也全部拒绝处理；服务端诊断游标不推进。
+- 该恢复会**自动丢弃未以换行结束的字节**，不保留单独的法证副本。需要保留故障现场时，应先在隔离环境制作快照；不要直接对真实 NAS 日志执行试验。旧版明文日志和 `.log.1` 轮转文件不会被自动截断。
+- 实现 `53dabb5a`，测试修复 `26bd8fad`。初次 CI 因测试换行转义问题失败 4/165，修复后 [Push 40779798245](https://github.com/linyubin/InkTime/actions/runs/40779798245) **SUCCESS**（165 Python + 4 Node）；[PR 40779807991](https://github.com/linyubin/InkTime/actions/runs/40779807991) 初次记录时仍在运行。均为本地 POSIX 文件/Flask 故障注入，不是真实 NAS 掉电或设备验收。
+- 未解决：已带换行但内容损坏的 JSONL、历史/轮转文件部分写入、NAS/NFS/SMB 持久化、跨主机锁、外部轮转、HTTPS 浏览器、Docker/systemd、ESP32 和人工签核。R1 Gate 仍 OPEN。
+- 开发分支回滚：先撤销本轮文档提交，再撤销 `26bd8fad` 和 `53dabb5a`，重跑 CI。此回滚会恢复部分写入导致的日志拼接风险，不可直接作为生产回滚。
