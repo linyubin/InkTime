@@ -8,6 +8,8 @@ from pathlib import Path
 from datetime import datetime
 import os
 from admin_security import install_admin_security
+from device_log_storage import device_log_paths
+from download_key_security import resolve_download_keys
 from db_schema import open_current_readonly_database
 import config as cfg
 from path_security import safe_join
@@ -333,11 +335,11 @@ def api_photos():
 
 
 # ── 设备日志（黑盒）只读页 ───────────────────────────────────
-# 数据由 server.py 的 POST /api/device_log/<key> 落盘到 logs/device/<key>.log，
+# 数据由 server.py 的 POST /api/device_log/<key> 落盘到不含密钥的哈希文件名；
+# 历史 logs/device/<key>.log 仅保留读取兼容。
 # 每行一条 JSON 事件（设备行号 ls/开机序号 b/相对毫秒 ms/类型 t/明细 d/接收时刻 rcv）。
 # 倒序展示最近 N 条，供事故回查，不做任何写操作。
 
-DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
 DEVICE_LOG_DIR = ROOT_DIR / "logs" / "device"
 DEVLOG_PAGE_SIZE = 500
 _ANCHOR_RE = re.compile(r" anchor=(\d+)")
@@ -345,18 +347,31 @@ _ANCHOR_RE = re.compile(r" anchor=(\d+)")
 
 @bp.route('/devlog')
 def devlog():
-    p = DEVICE_LOG_DIR / f"{DOWNLOAD_KEY}.log"
+    # Include both keys during an explicitly configured rotation. Read the
+    # previous key first, then the active key, and legacy files before new ones.
+    # Invalid standalone config must not turn into an arbitrary file read.
+    try:
+        keys = resolve_download_keys(getattr(cfg, "DOWNLOAD_KEY", ""), os.environ)
+    except ValueError:
+        keys = ()
     events = []
-    if p.exists():
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            lines = []
-        for ln in lines:
-            try:
-                events.append(json.loads(ln))
-            except Exception:
+    exists = False
+    for key in reversed(keys):
+        for p in device_log_paths(DEVICE_LOG_DIR, key):
+            if not p.is_file():
                 continue
+            exists = True
+            try:
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for ln in lines:
+                try:
+                    ev = json.loads(ln)
+                    if isinstance(ev, dict):
+                        events.append(ev)
+                except ValueError:
+                    continue
 
     # 绝对时间换算：TIME_SYNC 事件的 anchor=epoch 是真实墙钟。
     # 两遍扫描——第一遍按开机序号收集各自的锚点，第二遍用"本开机"的锚点换算。
@@ -378,7 +393,7 @@ def devlog():
         ev["d"] = _ANCHOR_RE.sub("", d)   # 明细里去掉锚点数字，页面不重复展示
 
     rows = events[-DEVLOG_PAGE_SIZE:][::-1]   # 最近 N 条，新事件在前
-    return render_template('devlog.html', rows=rows, exists=p.exists())
+    return render_template('devlog.html', rows=rows, exists=exists)
 
 
 # ── 样式编辑器（/style-editor，ADR 0002 版式数据化 + ADR 0003 预览保真）──

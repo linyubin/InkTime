@@ -22,6 +22,7 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
+from device_log_storage import device_log_paths
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
     open_current_readonly_database,
@@ -1128,7 +1129,8 @@ def esp_time(key: str):
 # ── 设备日志（黑盒）上传 ─────────────────────────────────────
 # ESP32 在每次入睡前把增量事件（JSONL，一行一条）POST 上来；收到 200 才推进
 # 设备侧上传游标。设计见 docs/adr/0001-esp32-flash-device-journal.md。
-# 落盘 logs/device/<key>.log，每行 = 设备原始 JSON 事件补上接收时刻与来源 IP。
+# 新日志使用 logs/device/device-<sha256(key)>.log，历史明文键名文件仅只读兼容。
+# 每行 = 设备原始 JSON 事件补上接收时刻与来源 IP。
 
 DEVICE_LOG_DIR = LOG_DIR / "device"
 DEVICE_LOG_MAX_BYTES = 5 * 1024 * 1024   # >5MB 轮转为 .log.1（保留一代）
@@ -1136,26 +1138,31 @@ _devlog_max_ls: dict[str, int] = {}      # key → 已落盘的最大事件行�
 
 
 def _devlog_path(key: str) -> Path:
-    return DEVICE_LOG_DIR / f"{key}.log"
+    """Never create a log filename containing the bearer download key."""
+    return device_log_paths(DEVICE_LOG_DIR, key)[1]
 
 
 def _devlog_load_max_ls(key: str) -> int:
-    """从现有文件末段恢复最大 ls（server 重启后仍能去重）。"""
-    p = _devlog_path(key)
-    if not p.exists():
-        return 0
-    try:
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
-    except Exception:
-        return 0
+    """Recover the highest ls from legacy and opaque-name logs after restart.
+
+    Old plaintext-key filenames are read-only: they are never renamed,
+    overwritten or newly created by the upload handler.
+    """
     max_ls = 0
-    for ln in lines:
-        try:
-            ls = int(json.loads(ln).get("ls", 0))
-        except Exception:
+    for p in device_log_paths(DEVICE_LOG_DIR, key):
+        if not p.exists():
             continue
-        if ls > max_ls:
-            max_ls = ls
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
+        except OSError:
+            continue
+        for ln in lines:
+            try:
+                ls = int(json.loads(ln).get("ls", 0))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if ls > max_ls:
+                max_ls = ls
     return max_ls
 
 
