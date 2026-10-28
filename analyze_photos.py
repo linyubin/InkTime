@@ -22,7 +22,7 @@ except ImportError:
 import config as cfg
 from common import normalize_type_to_list, parse_datetime_from_filename, resolve_chat_endpoint
 import shutil
-from photo_scan_safety import scandir_with_retries, ScanIncompleteError, count_missing_paths
+from photo_scan_safety import scandir_with_retries, ScanIncompleteError, count_missing_paths, path_is_within_root
 from db_schema import MigrationError, require_current_schema, open_current_database
 
 _yolo_model = None
@@ -205,7 +205,7 @@ def _try_remount_nas() -> bool:
     if not NAS_MOUNT_URL:
         return False
 
-    print(f"[WARN] 检测到 NAS 可能掉盘，尝试重挂载：{NAS_MOUNT_URL}")
+    print("[WARN] 检测到 NAS 可能掉盘，尝试重挂载（NAS URL 已隐藏）")
 
     # 1) AppleScript（推荐）：mount volume "afp://..." / "smb://..."
     try:
@@ -236,10 +236,7 @@ def _read_bytes_with_nas_retry(path: Path) -> bytes:
     last_err: Exception | None = None
 
     # 只对照片库路径内的文件启用重挂载逻辑，避免误伤本地文件。
-    try:
-        in_photo_dir = str(path).startswith(str(IMAGE_DIR))
-    except Exception:
-        in_photo_dir = False
+    in_photo_dir = path_is_within_root(path, IMAGE_DIR)
 
     for attempt in range(1, max(1, NAS_RETRY_TIMES) + 1):
         try:
