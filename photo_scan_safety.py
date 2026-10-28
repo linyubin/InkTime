@@ -54,3 +54,17 @@ def count_missing_paths(
         ).fetchone()
         missing += int(row[0])
     return missing
+
+
+def path_is_within_root(path: Path, root: Path) -> bool:
+    """Check actual path containment, never a string-prefix match.
+
+    Resolve symlinks so a sibling directory or a symlink escaping the photo
+    library cannot inherit NAS remount/retry privileges. Failure fails closed.
+    """
+    try:
+        return Path(path).resolve(strict=False).is_relative_to(
+            Path(root).resolve(strict=False)
+        )
+    except (OSError, ValueError, RuntimeError):
+        return False
