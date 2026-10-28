@@ -9,6 +9,7 @@ including dangling symlinks, are never overwritten.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -36,7 +37,7 @@ def initialize_database(database: Path) -> Path:
     os.close(fd)
     temporary = Path(temp_name)
     try:
-        with sqlite3.connect(temporary) as conn:
+        with closing(sqlite3.connect(temporary)) as conn:
             # DELETE journal mode avoids leaving a WAL sidecar at publication.
             conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("BEGIN IMMEDIATE")
