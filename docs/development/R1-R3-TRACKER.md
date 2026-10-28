@@ -223,3 +223,13 @@ Status legend: [x] code changed (not necessarily deployed), [ ] pending. Hardwar
 - **Validation:** implementation `7749652599ad345972779f4e04e8b38edafb1eda`; connection-close fix `46c8908e974d67fd9e0b13ecc4dcf8eef249a952` (SQLite handle explicitly closed before fsync/link). [Push CI 40615241001](https://github.com/linyubin/InkTime/actions/runs/40615241001) and [PR CI 40615246843](https://github.com/linyubin/InkTime/actions/runs/40615246843) both SUCCESS: 105/105 Python, 4/4 Node; compile and requirements checks. Synthetic tests only; this does not prove NAS filesystem semantics or full app startup.
 - **Rollback:** on the isolated branch only, revert `46c8908e974d67fd9e0b13ecc4dcf8eef249a952` then `7749652599ad345972779f4e04e8b38edafb1eda`, rerun CI; do not remove any initialized database automatically. No production changes permitted.
 - **Next:** explicit startup configuration validation and real staging installation/dependency checks; retain all NAS, HTTPS browser and ESP32 hardware acceptance blockers.
+
+
+## 2026-10-28 — R1/PR-03 startup configuration validation (CI pending)
+
+- **Code:** `server_config_validation.py` validates required paths, literal IPv4 host, port 1..65535, strict boolean WebUI flag, daily quantity 1..100 and render-cache limit 1..100000. `server.py` now calls this validator before DB schema preflight and directory creation; coercive bool/int defaults for these settings removed.
+- **Commits:** validator `916ac7db`; startup integration `72b01ca9`; tests `a503ba0a`. All confined to `refactor/architecture-v1`.
+- **Verification:** eight new unittest methods added; **GitHub Actions result pending**, not yet accepted. No full Flask boot, real config, NAS, HTTPS browser or ESP32 hardware testing.
+- **Compatibility risk:** non-literal hostnames, empty paths, string-encoded port/boolean and out-of-range values now cause startup failure. This is deliberate fail-closed behavior. The validator does not validate path existence, permissions, symlink topology or the full configuration surface.
+- **Rollback:** revert documentation commit (when identified), then `a503ba0a`, `72b01ca9`, `916ac7db` in reverse order on the isolated branch; rerun CI. Reverting restores permissive coercion and must not be assumed production-safe. No database or production data modified.
+- **Next:** verify latest Actions and fix any failures; extend startup configuration and full-service staging tests. **R1 Gate OPEN**; R2/R3 unfinished. No merge, production deployment or firmware flashing.
