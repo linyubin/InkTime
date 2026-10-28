@@ -290,14 +290,14 @@ def read_device_log_lines(
                 raise OSError("device journal grew beyond safe read limit")
             if not validate_jsonl:
                 return payload.decode("utf-8", errors="replace").splitlines()
-            if payload and not payload.endswith(b"\\n"):
+            if payload and not payload.endswith(b"\n"):
                 raise OSError("device journal has an unterminated record")
             try:
                 decoded = payload.decode("utf-8", errors="strict")
             except UnicodeDecodeError as exc:
                 raise OSError("device journal has invalid UTF-8") from exc
             # Split only on JSONL LF, not on Unicode separators within strings.
-            lines = decoded.split("\\n")[:-1] if payload else []
+            lines = decoded.split("\n")[:-1] if payload else []
             for line in lines:
                 try:
                     record = json.loads(
