@@ -212,7 +212,7 @@ void journalUpload() {
   url.trim();
   url += "/api/device_log/" + s_key;
 
-  JLOG("[DEVLOG] 上传开始 cur=%u -> %s\n", (unsigned)s_cursor, url.c_str());
+  JLOG("[DEVLOG] 上传开始 cur=%u（URL 密钥已隐藏）\n", (unsigned)s_cursor);
 
   // 两段按首行行号升序（小的是旧段），保证服务器收到的顺序 = 发生顺序
   const char* order[2];
