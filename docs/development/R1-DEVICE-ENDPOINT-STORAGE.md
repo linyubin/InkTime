@@ -37,3 +37,13 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - **CI 证据：** [Push 40881789620](https://github.com/linyubin/InkTime/actions/runs/40881789620) 和 [PR 40881798097](https://github.com/linyubin/InkTime/actions/runs/40881798097) 均 SUCCESS，192 Python + 4 Node；覆盖独立进程锁争用、符号/硬链接、inode 替换、手动状态合并和 HTTP 503。仅使用临时 Linux 文件系统。
 - **未验证：** 真实 NAS/NFS/SMB 锁与持久化、设备端 503 重试、HTTPS 浏览器/CSRF、Docker/systemd、ESP32 编译/真机、人工签核。R1 Gate OPEN，R2/R3 未通过。
 - **回滚：** 仅开发分支逆序撤销本次文档提交及 `780e0234` 并重跑 CI；会恢复并发竞态，不是生产回滚方案。不得合并、部署、操作真实 NAS 或刷写 ESP32。
+
+
+## 可选自动注册来源 IP 限制（2026-10-30，开发分支）
+
+- 功能提交 [`c56f0761`](https://github.com/linyubin/InkTime/commit/c56f076105e36ec66097f978de0f3601e7dd98f4) 新增环境变量 `INKTIME_DEVICE_REGISTRATION_ALLOWED_IP`。默认不设置或设置为空时保留原行为；设置为**规范形式的 RFC1918 IPv4 地址**（例如测试网内的 `192.168.1.8`）后，只有该直接 TCP 对端地址可以通过设备自动注册。其他 RFC1918 来源即使持有相同下载密钥，也在写入前收到 HTTP 403；`X-Forwarded-For` 不参与判定。管理员手动指定设备地址的接口不受该限制。
+- 非空但无效的配置（公网、CGNAT、主机名、含端口、空格、IPv6 等）会使服务在数据库启动检查之前拒绝启动；不会悄悄放宽策略。建议先在隔离 staging 中使用固定 DHCP 租约验证来源地址，再决定是否启用。
+- **这不是设备身份认证，也不是完整的设备所有权机制。** 仅以直接对端 IP 作额外限制，不能抵御同 IP/ARP 欺骗、共享密钥泄露或受控代理；设备换 IP、经过反向代理或 NAT 后可能被拒绝。已有 `endpoint.json` 不会因开启该选项自动失效；管理员手动覆盖仍可能设置其他 IP。要真正绑定设备，后续需要固件和服务端共同支持每设备独立凭证及迁移/撤销协议。
+- **CI 验证：** [Push 40911834007](https://github.com/linyubin/InkTime/actions/runs/40911834007) 与 [PR 40911847597](https://github.com/linyubin/InkTime/actions/runs/40911847597) SUCCESS，194 Python + 4 Node、Python 编译和完整依赖检查。新增 2 项测试覆盖环境配置拒绝、伪造 XFF、不同来源阻止覆盖、同源允许及默认兼容；仅隔离 Linux/Flask 环境。
+- **未验证：** 真实 NAS/NFS/SMB、HTTPS 浏览器/CSRF、真实 LAN/NAT/DHCP、Docker/systemd、ESP32 编译与真机、人工签核。R1 Gate 仍 OPEN；R2/R3 不得宣称通过。
+- **回滚：** 未部署前在独立开发分支执行 `git revert c56f076105e36ec66097f978de0f3601e7dd98f4` 并重跑 CI；撤销文档提交需先行处理。此回滚会撤销额外来源限制，不能视为生产安全回滚。若未来 staging 需临时关闭该功能，可移除环境变量并按受控流程重启，但会恢复共享密钥下任意 RFC1918 来源注册的旧行为。**本轮没有部署、修改真实 NAS 或刷写 ESP32。**
