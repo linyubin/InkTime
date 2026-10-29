@@ -329,7 +329,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 return endpoint(key)
 
             with app.test_client() as client:
-                response = client.post("/log/legacySecret", data='{"ls":1}\\n')
+                response = client.post("/log/legacySecret", data='{"ls":1}\n')
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.headers.get("Retry-After"), "1")
             self.assertFalse(opaque.exists())
