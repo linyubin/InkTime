@@ -33,3 +33,18 @@
 本包只增加两个源/测试文件和本文档；开发分支可逆序撤销对应提交并重跑 CI，现有设备行为不受影响。未来若将协议接入生产，不能简单回滚为允许无签名注册，因为会恢复共享密钥覆盖风险；必须制定带有人工授权的迁移/撤销流程。
 
 **外部验证状态：** 真实 NAS/NFS/SMB、HTTPS 浏览器/CSRF、Docker/systemd、ESP32 编译/NVS/真机及人工签核均未验证。**R1 Gate OPEN；R2/R3 不得宣称通过。**
+
+
+## 2026-10-30 — 隔离持久化事务（R1/PR-02，仍未启用）
+
+新增 device_registration_storage.py，以 endpoint.json 为**单一原子记录**，采用现有 .endpoint.json.lock 跨进程锁、固定目录 fd、拒绝符号链接/硬链接、临时文件 0600、文件和目录 fsync、原子 os.replace 及最终 inode 检查。**未修改 server.py、管理员接口或 ESP32；这不是已启用的身份认证。**
+
+- provision_registration_owner(path, owner_id=...) 只供**离线管理员**调用，不允许从 HTTP 路由调用。仅当 endpoint.json 完全不存在时，创建 {_identity_version:1, _device_id:<id>, _last_counter:0, ip:null, port:null, alwayson:false, ts:""}。已有旧格式/损坏/不安全文件一律拒绝，不自动认领、不自动清空计数器。初始化状态没有可用 IP，现有读取端会视为离线。
+- commit_verified_registration(...) 在**同一个 endpoint 锁**内读取严格格式的既有状态、比对预配置 owner、验证 HMAC 与严格递增计数器，再将 owner、计数器、从真实 TCP 对端获取的 IP、由已签名 body 得到的端口/alwayson 一起原子发布。请求 body 仅允许 port（可省略，默认 80）和布尔 alwayson（必填），重复 JSON 字段拒绝；peer_ip 必须由可信服务端从 socket 获取，不能取 XFF 或 body。
+- **禁止隐式重新配对：** 缺失、损坏、旧版或 owner 不匹配的状态均拒绝网络注册。计数器丢失时只能走独立的离线人工恢复/密钥轮换流程；不能直接复用旧凭证将计数器重置为 0。未来上线前必须保证管理员手动设置及旧版自动注册不能覆盖身份字段，也不能在强制认证模式下降级。
+- **ACK 语义：** 函数正常返回后才允许 HTTP 200。写入前 fsync 失败保留旧记录；rename 后目录 fsync 或锁最终校验失败可能使新计数器已可见但未 ACK。设备重试**必须使用更大的计数器并重新签名**，不能重放相同计数器。真实 NAS 的掉电持久性仍待验证。
+- **限制：** 目前没有配置入口、Flask 路由集成、密钥供应/轮换/撤销、管理员手动修改的认证模式门禁、ESP32 NVS/重试实现；现有下载密钥和可选 IP 白名单行为完全不变。此记录是单设备方案，不是多设备注册表。flock 只约束遵守协议的进程，外部写入者、NAS 锁语义和文件系统故障仍是风险。
+
+隔离测试包含离线 provisioning、正常递增、重放/回退、身份/签名/body 篡改、旧文件拒绝、损坏/重复字段、锁争用、符号链接/硬链接、前后 fsync 故障和 ACK 丢失后的新计数器重试。**这些仅是 Linux/CI 测试，不是 NAS、HTTPS 浏览器、Docker/systemd 或真机验收。**
+
+回滚只允许在开发分支撤销本次隔离存储模块、测试和 CI 文档提交并重新运行 CI；不得用简单回退到共享密钥注册作为未来生产环境的安全回滚。R1 Gate 继续 OPEN，R2/R3 不得宣称验收通过。
