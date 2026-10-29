@@ -21,7 +21,8 @@ import config as cfg
 from server_config_validation import validate_server_settings, ConfigurationError
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
-from device_endpoint_storage import load_device_endpoint, store_device_endpoint
+from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+                                     DeviceEndpointLockTimeout)
 from download_key_security import resolve_download_keys, authorized_download_key
 from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
                                 append_private_device_log,
@@ -1268,6 +1269,8 @@ def esp_device_register(key: str):
     }
     try:
         store_device_endpoint(DEVICE_ENDPOINT_FILE, rec)
+    except DeviceEndpointLockTimeout:
+        return "registration busy", 503, {"Retry-After": "1"}
     except Exception as e:
         print(f"[device_register] write failed: {e}")
         return "write failed", 500
@@ -1756,13 +1759,13 @@ def api_device_set_endpoint():
     except ValueError:
         return jsonify({"error": "仅允许有效的局域网 IPv4 地址和端口"}), 400
 
-    old = _load_device_endpoint()
     rec = {"ip": ip, "port": port,
-           "alwayson": bool(old.get("alwayson")),
            "ts": datetime.now().isoformat(timespec="seconds"),
            "manual": True}
     try:
-        store_device_endpoint(DEVICE_ENDPOINT_FILE, rec)
+        rec = store_device_endpoint(DEVICE_ENDPOINT_FILE, rec, preserve_alwayson=True)
+    except DeviceEndpointLockTimeout:
+        return jsonify({"error": "设备注册繁忙，请稍后重试"}), 503, {"Retry-After": "1"}
     except Exception as e:
         return jsonify({"error": f"写入失败：{e}"}), 500
     return jsonify({"ok": True, "endpoint": rec})

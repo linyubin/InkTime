@@ -3,10 +3,19 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from multiprocessing import get_context
 from unittest import TestCase
 from unittest.mock import patch
 
-from device_endpoint_storage import load_device_endpoint, store_device_endpoint
+from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+                                     DeviceEndpointLockTimeout, _endpoint_lock)
+
+
+def _hold_endpoint_lock(path_text, acquired, release):
+    with _endpoint_lock(Path(path_text)):
+        acquired.set()
+        if not release.wait(10):
+            raise RuntimeError("test lock release timed out")
 
 
 class EndpointStorageTests(TestCase):
@@ -104,3 +113,77 @@ class EndpointStorageTests(TestCase):
                 with self.assertRaises(OSError):
                     store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
             self.assertEqual(path.read_bytes(), old)
+
+    def test_cross_process_lock_timeout_does_not_replace_record(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "endpoint.json"
+            store_device_endpoint(path, {"ip": "192.168.1.8", "port": 80})
+            ctx = get_context("spawn")
+            acquired, release = ctx.Event(), ctx.Event()
+            proc = ctx.Process(target=_hold_endpoint_lock, args=(str(path), acquired, release))
+            proc.start()
+            try:
+                self.assertTrue(acquired.wait(8), "child did not acquire lock")
+                with self.assertRaises(DeviceEndpointLockTimeout):
+                    store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80},
+                                          timeout_seconds=0.1)
+                self.assertEqual(load_device_endpoint(path)["ip"], "192.168.1.8")
+            finally:
+                release.set()
+                proc.join(8)
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+            self.assertEqual(proc.exitcode, 0)
+            store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
+            self.assertEqual(load_device_endpoint(path)["ip"], "10.1.2.3")
+
+    def test_manual_merge_preserves_latest_alwayson(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "endpoint.json"
+            store_device_endpoint(path, {"ip": "192.168.1.8", "port": 80,
+                                         "alwayson": True})
+            updated = store_device_endpoint(path, {"ip": "10.1.2.3", "port": 8080,
+                                                   "manual": True}, preserve_alwayson=True)
+            self.assertTrue(updated["alwayson"])
+            self.assertTrue(load_device_endpoint(path)["alwayson"])
+
+    def test_unsafe_endpoint_lock_targets_fail_closed(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            path, lock, victim = root / "endpoint.json", root / ".endpoint.json.lock", root / "victim"
+            victim.write_text("untouched")
+            lock.symlink_to(victim)
+            with self.assertRaises(OSError):
+                store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
+            lock.unlink()
+            os.link(victim, lock)
+            with self.assertRaises(OSError):
+                store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
+            self.assertEqual(victim.read_text(), "untouched")
+            self.assertFalse(path.exists())
+
+    def test_lock_inode_replacement_rejects_ack(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            path = root / "endpoint.json"
+            store_device_endpoint(path, {"ip": "192.168.1.8", "port": 80})
+            real_replace = os.replace
+            def swap_lock(src, dst, **kwargs):
+                result = real_replace(src, dst, **kwargs)
+                lock = root / ".endpoint.json.lock"
+                lock.rename(root / "old.lock")
+                lock.write_bytes(b"replacement")
+                return result
+            with patch("device_endpoint_storage.os.replace", side_effect=swap_lock):
+                with self.assertRaises(OSError):
+                    store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
+            self.assertEqual(load_device_endpoint(path)["ip"], "10.1.2.3")
+
+    def test_invalid_lock_timeouts(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "endpoint.json"
+            for value in (-1, 61, True, float("nan"), "5"):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80},
+                                          timeout_seconds=value)

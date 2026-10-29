@@ -16,7 +16,8 @@ from unittest.mock import Mock
 from flask import Flask, abort, jsonify, request
 
 from device_endpoint_security import validate_device_endpoint
-from device_endpoint_storage import load_device_endpoint, store_device_endpoint
+from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+                                     DeviceEndpointLockTimeout)
 from download_key_security import authorized_download_key
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
@@ -98,6 +99,7 @@ class EndpointValidationTests(unittest.TestCase):
                 "json": json, "validate_device_endpoint": validate_device_endpoint,
                 "load_device_endpoint": load_device_endpoint,
                 "store_device_endpoint": store_device_endpoint,
+                "DeviceEndpointLockTimeout": DeviceEndpointLockTimeout,
             }
             load_server_functions({"_load_device_endpoint", "esp_device_register",
                                    "api_device_set_endpoint"}, ns)
@@ -147,6 +149,7 @@ class EndpointValidationTests(unittest.TestCase):
                 "validate_device_endpoint": validate_device_endpoint,
                 "load_device_endpoint": lambda path: {},
                 "store_device_endpoint": failure,
+                "DeviceEndpointLockTimeout": DeviceEndpointLockTimeout,
             }
             load_server_functions({"_load_device_endpoint", "esp_device_register",
                                    "api_device_set_endpoint"}, ns)
@@ -166,6 +169,40 @@ class EndpointValidationTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 500)
                 self.assertEqual(client.post("/manual",
                     data={"ip": "10.0.0.12", "port": "80"}).status_code, 500)
+            self.assertEqual(failure.call_count, 2)
+            self.assertFalse(path.exists())
+
+    def test_endpoint_lock_timeout_returns_503_without_ack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "endpoint.json"
+            failure = Mock(side_effect=DeviceEndpointLockTimeout("busy"))
+            ns = {
+                "DEVICE_ENDPOINT_FILE": path,
+                "DOWNLOAD_KEYS": ("test-key",),
+                "authorized_download_key": authorized_download_key,
+                "request": request, "abort": abort, "jsonify": jsonify,
+                "datetime": datetime,
+                "validate_device_endpoint": validate_device_endpoint,
+                "load_device_endpoint": lambda path: {},
+                "store_device_endpoint": failure,
+                "DeviceEndpointLockTimeout": DeviceEndpointLockTimeout,
+            }
+            load_server_functions({"_load_device_endpoint", "esp_device_register",
+                                   "api_device_set_endpoint"}, ns)
+            app = Flask(__name__)
+            app.add_url_rule("/register/<key>", "register",
+                             lambda key: ns["esp_device_register"](key), methods=["POST"])
+            app.add_url_rule("/manual", "manual",
+                             lambda: ns["api_device_set_endpoint"](), methods=["POST"])
+            with app.test_client() as client:
+                responses = (
+                    client.post("/register/test-key", json={"port": 80},
+                                environ_overrides={"REMOTE_ADDR": "192.168.1.8"}),
+                    client.post("/manual", data={"ip": "10.0.0.12", "port": "80"}),
+                )
+                for response in responses:
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.headers.get("Retry-After"), "1")
             self.assertEqual(failure.call_count, 2)
             self.assertFalse(path.exists())
 
