@@ -20,7 +20,7 @@ from datetime import datetime
 import config as cfg
 from server_config_validation import validate_server_settings, ConfigurationError
 from path_security import safe_join
-from device_endpoint_security import validate_device_endpoint
+from device_endpoint_security import validate_device_endpoint, resolve_registration_allowed_ip
 from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
                                      DeviceEndpointLockTimeout)
 from download_key_security import resolve_download_keys, authorized_download_key
@@ -47,6 +47,10 @@ try:
 except ValueError as exc:
     raise SystemExit(f"Invalid download-key configuration: {exc}") from None
 DOWNLOAD_KEY = DOWNLOAD_KEYS[0]  # active; previous key requires explicit opt-in
+try:
+    REGISTRATION_ALLOWED_IP = resolve_registration_allowed_ip(os.environ)
+except ValueError as exc:
+    raise SystemExit(f"Invalid device registration peer policy: {exc}") from None
 
 DB_PATH = resolve_path(SERVER_SETTINGS["DB_PATH"], "./photos.db")
 # Startup is read-only until the schema is verified. Do not silently create
@@ -1261,6 +1265,9 @@ def esp_device_register(key: str):
         ip, port = validate_device_endpoint(request.remote_addr, body.get("port", 80))
     except ValueError:
         return "invalid LAN endpoint", 400
+    # Optional operator-pinned LAN peer; never trust Forwarded/XFF headers.
+    if REGISTRATION_ALLOWED_IP is not None and ip != REGISTRATION_ALLOWED_IP:
+        return "registration peer not allowed", 403
     rec = {
         "ip": ip,
         "port": port,

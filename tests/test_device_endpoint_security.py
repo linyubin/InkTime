@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 from flask import Flask, abort, jsonify, request
 
-from device_endpoint_security import validate_device_endpoint
+from device_endpoint_security import validate_device_endpoint, resolve_registration_allowed_ip
 from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
                                      DeviceEndpointLockTimeout)
 from download_key_security import authorized_download_key
@@ -68,6 +68,55 @@ class EndpointValidationTests(unittest.TestCase):
             with self.subTest(port=port), self.assertRaises(ValueError):
                 validate_device_endpoint("192.168.1.3", port)
 
+
+    def test_optional_registration_peer_config_validation(self):
+        key = "INKTIME_DEVICE_REGISTRATION_ALLOWED_IP"
+        self.assertIsNone(resolve_registration_allowed_ip({}))
+        self.assertIsNone(resolve_registration_allowed_ip({key: ""}))
+        self.assertEqual(resolve_registration_allowed_ip({key: "192.168.1.8"}), "192.168.1.8")
+        for value in ("127.0.0.1", "8.8.8.8", "100.64.1.2", "localhost",
+                      "192.168.1.8:80", " 192.168.1.8", "192.168.1.8 ",
+                      "192.168.001.008", "192.168.1.256", "2001:db8::1", 123):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                resolve_registration_allowed_ip({key: value})
+
+    def test_optional_registration_peer_rejects_takeover_before_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            endpoint = Path(tmp) / "device" / "endpoint.json"
+            ns = {
+                "DEVICE_ENDPOINT_FILE": endpoint,
+                "DOWNLOAD_KEYS": ("test-key",),
+                "REGISTRATION_ALLOWED_IP": "192.168.1.8",
+                "authorized_download_key": authorized_download_key,
+                "request": request, "abort": abort, "datetime": datetime,
+                "validate_device_endpoint": validate_device_endpoint,
+                "store_device_endpoint": store_device_endpoint,
+                "DeviceEndpointLockTimeout": DeviceEndpointLockTimeout,
+            }
+            load_server_functions({"esp_device_register"}, ns)
+            app = Flask(__name__)
+            app.add_url_rule("/register/<key>", "register",
+                             lambda key: ns["esp_device_register"](key), methods=["POST"])
+            with app.test_client() as client:
+                denied = client.post("/register/test-key", json={"port": 80},
+                    environ_overrides={"REMOTE_ADDR": "192.168.1.9"},
+                    headers={"X-Forwarded-For": "192.168.1.8"})
+                self.assertEqual(denied.status_code, 403)
+                self.assertFalse(endpoint.exists())
+                accepted = client.post("/register/test-key", json={"port": 80},
+                    environ_overrides={"REMOTE_ADDR": "192.168.1.8"})
+                self.assertEqual(accepted.status_code, 200)
+                original = endpoint.read_bytes()
+                denied_again = client.post("/register/test-key", json={"port": 8080},
+                    environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
+                self.assertEqual(denied_again.status_code, 403)
+                self.assertEqual(endpoint.read_bytes(), original)
+                ns["REGISTRATION_ALLOWED_IP"] = None  # opt-in off: legacy compatibility
+                legacy = client.post("/register/test-key", json={"port": 8080},
+                    environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
+                self.assertEqual(legacy.status_code, 200)
+                self.assertEqual(load_device_endpoint(endpoint)["ip"], "192.168.1.9")
+
     def test_disk_endpoint_is_validated_before_proxy(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "endpoint.json"
@@ -93,7 +142,7 @@ class EndpointValidationTests(unittest.TestCase):
             endpoint = directory / "endpoint.json"
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_ENDPOINT_FILE": endpoint,
-                "DOWNLOAD_KEYS": ("test-key",), "authorized_download_key": authorized_download_key,
+                "DOWNLOAD_KEYS": ("test-key",), "REGISTRATION_ALLOWED_IP": None, "authorized_download_key": authorized_download_key,
                 "request": request,
                 "abort": abort, "jsonify": jsonify, "datetime": datetime,
                 "json": json, "validate_device_endpoint": validate_device_endpoint,
@@ -142,7 +191,7 @@ class EndpointValidationTests(unittest.TestCase):
             failure = Mock(side_effect=OSError("simulated disk failure"))
             ns = {
                 "DEVICE_ENDPOINT_FILE": path,
-                "DOWNLOAD_KEYS": ("test-key",),
+                "DOWNLOAD_KEYS": ("test-key",), "REGISTRATION_ALLOWED_IP": None,
                 "authorized_download_key": authorized_download_key,
                 "request": request, "abort": abort, "jsonify": jsonify,
                 "datetime": datetime,
@@ -178,7 +227,7 @@ class EndpointValidationTests(unittest.TestCase):
             failure = Mock(side_effect=DeviceEndpointLockTimeout("busy"))
             ns = {
                 "DEVICE_ENDPOINT_FILE": path,
-                "DOWNLOAD_KEYS": ("test-key",),
+                "DOWNLOAD_KEYS": ("test-key",), "REGISTRATION_ALLOWED_IP": None,
                 "authorized_download_key": authorized_download_key,
                 "request": request, "abort": abort, "jsonify": jsonify,
                 "datetime": datetime,

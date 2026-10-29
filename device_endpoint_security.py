@@ -39,3 +39,21 @@ def validate_device_endpoint(ip: object, port: object = 80) -> tuple[str, int]:
     if not 1 <= port <= 65535:
         raise ValueError("device port out of range")
     return str(address), port
+
+
+def resolve_registration_allowed_ip(environ) -> str | None:
+    """Optional exact LAN peer pin for device auto-registration.
+
+    This limits shared-key takeover from other peer addresses, but is NOT
+    cryptographic device identity or protection against LAN address spoofing.
+    Empty/unset means legacy behavior; malformed nonempty settings fail startup.
+    """
+    value = environ.get("INKTIME_DEVICE_REGISTRATION_ALLOWED_IP")
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or value != value.strip():
+        raise ValueError("registration allowed IP must be a canonical RFC1918 IPv4 address")
+    ip, _ = validate_device_endpoint(value)
+    if ip != value:
+        raise ValueError("registration allowed IP must be canonical")
+    return ip
