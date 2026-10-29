@@ -22,7 +22,8 @@ from server_config_validation import validate_server_settings, ConfigurationErro
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
-from device_log_storage import (device_log_paths, device_log_lock, append_private_device_log,
+from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
+                                append_private_device_log,
                                 read_device_log_lines, recover_incomplete_private_device_log_tail)
 from db_schema import (
     MigrationError, require_current_schema, open_current_database,
@@ -1219,7 +1220,7 @@ def esp_device_log(key: str):
                 return "write failed", 500
             _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
             return f"OK n={len(out_lines)}", 200
-    except TimeoutError:
+    except DeviceJournalLockTimeout:
         # Transient contention: never ACK unpersisted events; ESP32 may retry.
         print("[device_log] journal lock timed out")
         return "journal busy", 503, {"Retry-After": "1"}
