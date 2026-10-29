@@ -3,7 +3,9 @@ import ast
 import copy
 from datetime import datetime
 import json
+import math
 import multiprocessing
+import time
 import os
 from pathlib import Path
 import re
@@ -257,6 +259,81 @@ class DeviceLogFilenameTests(unittest.TestCase):
                             process.join(5)
             self.assertEqual(first.exitcode, 0)
             self.assertEqual(second.exitcode, 0)
+
+    def test_lock_timeout_configuration_rejects_invalid_values(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            for value in (-1, 61, math.nan, math.inf, -math.inf, True, "5", None):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    with device_log_lock(path, timeout_seconds=value):
+                        self.fail("invalid timeout acquired lock")
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    @unittest.skipUnless("fork" in multiprocessing.get_all_start_methods()
+                         and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX fork and flock")
+    def test_lock_contention_times_out_and_later_recovers(self):
+        with TemporaryDirectory() as d:
+            path = device_log_paths(Path(d), "testKey")[1]
+            ctx = multiprocessing.get_context("fork")
+            entered, release = ctx.Event(), ctx.Event()
+            holder = ctx.Process(target=_hold_lock_in_child, args=(path, entered, release))
+            try:
+                holder.start()
+                self.assertTrue(entered.wait(5))
+                start = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    with device_log_lock(path, timeout_seconds=0.15):
+                        self.fail("contended lock acquired")
+                self.assertLess(time.monotonic() - start, 2.0)
+                self.assertFalse(path.exists())  # no upload without a lock
+                self.assertTrue(path.with_name(path.name + ".lock").exists())
+            finally:
+                release.set()
+                if holder.pid is not None:
+                    holder.join(5)
+                    if holder.is_alive():
+                        holder.terminate()
+                        holder.join(5)
+            self.assertEqual(holder.exitcode, 0)
+            with device_log_lock(path, timeout_seconds=0):
+                pass  # released lock can be acquired immediately
+
+    def test_flask_upload_lock_timeout_returns_retryable_503_without_ack(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d)
+            _, opaque = device_log_paths(directory, "legacySecret")
+
+            def busy_lock(_path):
+                raise TimeoutError("synthetic contention")
+
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "device_log_lock": busy_lock,
+                "append_private_device_log": append_private_device_log,
+                "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request, "abort": abort,
+                "Path": Path,
+            }
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+
+            with app.test_client() as client:
+                response = client.post("/log/legacySecret", data='{"ls":1}\\n')
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers.get("Retry-After"), "1")
+            self.assertFalse(opaque.exists())
+            self.assertEqual(ns["_devlog_max_ls"], {})
 
     def test_actual_upload_recovers_rotated_only_cursor_after_crash(self):
         with TemporaryDirectory() as d:
