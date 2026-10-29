@@ -133,6 +133,42 @@ class EndpointValidationTests(unittest.TestCase):
                     data={"ip": "10.0.0.12", "port": "80"}).status_code, 200)
                 self.assertEqual(json.loads(endpoint.read_text())["ip"], "10.0.0.12")
 
+    def test_registration_and_manual_storage_failure_return_500(self):
+        """Neither route may ACK when the atomic storage helper fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "device" / "endpoint.json"
+            failure = Mock(side_effect=OSError("simulated disk failure"))
+            ns = {
+                "DEVICE_ENDPOINT_FILE": path,
+                "DOWNLOAD_KEYS": ("test-key",),
+                "authorized_download_key": authorized_download_key,
+                "request": request, "abort": abort, "jsonify": jsonify,
+                "datetime": datetime,
+                "validate_device_endpoint": validate_device_endpoint,
+                "load_device_endpoint": lambda path: {},
+                "store_device_endpoint": failure,
+            }
+            load_server_functions({"_load_device_endpoint", "esp_device_register",
+                                   "api_device_set_endpoint"}, ns)
+            app = Flask(__name__)
+
+            @app.post("/register/<key>")
+            def register(key):
+                return ns["esp_device_register"](key)
+
+            @app.post("/manual")
+            def manual():
+                return ns["api_device_set_endpoint"]()
+
+            with app.test_client() as client:
+                response = client.post("/register/test-key", json={"port": 80},
+                    environ_overrides={"REMOTE_ADDR": "192.168.1.8"})
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(client.post("/manual",
+                    data={"ip": "10.0.0.12", "port": "80"}).status_code, 500)
+            self.assertEqual(failure.call_count, 2)
+            self.assertFalse(path.exists())
+
     def test_device_egress_ignores_proxies_and_redirects(self):
         class Session:
             def __init__(self):
