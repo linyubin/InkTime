@@ -334,6 +334,14 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 response = client.post("/log/legacySecret", data='{"ls":1}\n')
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.headers.get("Retry-After"), "1")
+            # An unrelated timeout is an I/O failure, not lock contention.
+            def unrelated_timeout(_path):
+                raise TimeoutError("synthetic filesystem timeout")
+            ns["device_log_lock"] = unrelated_timeout
+            with app.test_client() as client:
+                other = client.post("/log/legacySecret", data='{"ls":1}\\n')
+            self.assertEqual(other.status_code, 500)
+            self.assertIsNone(other.headers.get("Retry-After"))
             self.assertFalse(opaque.exists())
             self.assertEqual(ns["_devlog_max_ls"], {})
 
