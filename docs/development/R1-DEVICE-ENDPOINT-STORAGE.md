@@ -27,3 +27,13 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 
 **最终回归（含 Flask HTTP 500 故障注入）：** [Push CI 40858282420](https://github.com/linyubin/InkTime/actions/runs/40858282420) / [PR CI 40858288888](https://github.com/linyubin/InkTime/actions/runs/40858288888) 均 SUCCESS：186 Python + 4 Node。仍未进行真实 NAS、HTTPS、设备及人工验收。
+
+
+## 并发注册与手动覆盖保护（2026-10-29）
+
+- 提交 `780e0234` 增加私有持久化 `.endpoint.json.lock`，使用 POSIX 非阻塞 `flock`，默认等待不超过 5 秒。两个写入路由在锁争用时返回 HTTP 503 和 `Retry-After: 1`，不会确认注册成功；其他 I/O 异常仍为 HTTP 500。
+- 管理员手动设置 IP/端口时，`alwayson` 改为在同一把锁内读取最新记录；返回的 JSON 与持久化内容一致。设备注册请求格式不变。
+- **重要：运行期间不能删除或替换 `.endpoint.json.lock`，否则会分裂锁 inode。** 不得混用不遵守锁协议的旧服务进程。多台设备共用下载密钥时仍是最后注册者生效，尚无强设备身份绑定。
+- **CI 证据：** [Push 40881789620](https://github.com/linyubin/InkTime/actions/runs/40881789620) 和 [PR 40881798097](https://github.com/linyubin/InkTime/actions/runs/40881798097) 均 SUCCESS，192 Python + 4 Node；覆盖独立进程锁争用、符号/硬链接、inode 替换、手动状态合并和 HTTP 503。仅使用临时 Linux 文件系统。
+- **未验证：** 真实 NAS/NFS/SMB 锁与持久化、设备端 503 重试、HTTPS 浏览器/CSRF、Docker/systemd、ESP32 编译/真机、人工签核。R1 Gate OPEN，R2/R3 未通过。
+- **回滚：** 仅开发分支逆序撤销本次文档提交及 `780e0234` 并重跑 CI；会恢复并发竞态，不是生产回滚方案。不得合并、部署、操作真实 NAS 或刷写 ESP32。
