@@ -19,7 +19,8 @@ from flask import Flask, abort, request
 
 from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
                                 append_private_device_log,
-                                read_device_log_lines, recover_incomplete_private_device_log_tail)
+                                read_device_log_lines, recover_incomplete_private_device_log_tail,
+                                sync_existing_private_device_log)
 from download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -379,6 +380,59 @@ class DeviceLogFilenameTests(unittest.TestCase):
             self.assertEqual([json.loads(x)["ls"] for x in opaque.read_text().splitlines()], [41])
             self.assertEqual(rotated.read_text(), '{"ls":40,"t":"before-crash"}\n')
 
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_ancestor_symlink_rejected_for_all_journal_operations(self):
+        with TemporaryDirectory() as d:
+            real = Path(d) / "real"
+            (real / "device").mkdir(parents=True)
+            alias = Path(d) / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            path = device_log_paths(alias / "device", "testKey")[1]
+            victim = real / "device" / path.name
+            original = b'{"ls":1}\n'
+            victim.write_bytes(original)
+            actions = {
+                "read": lambda: read_device_log_lines(path),
+                "sync": lambda: sync_existing_private_device_log(path),
+                "recover": lambda: recover_incomplete_private_device_log_tail(path),
+                "append": lambda: append_private_device_log(
+                    path, ['{"ls":2}'], max_bytes=100),
+                "lock": lambda: self._attempt_journal_lock(path),
+            }
+            for name, action in actions.items():
+                with self.subTest(operation=name), self.assertRaises(OSError):
+                    action()
+            self.assertEqual(victim.read_bytes(), original)
+            self.assertFalse((real / "device" / (path.name + ".lock")).exists())
+
+    @staticmethod
+    def _attempt_journal_lock(path):
+        with device_log_lock(path):
+            pass
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX no-follow directory-relative opens")
+    def test_nested_real_directories_work_and_dotdot_fails_closed(self):
+        with TemporaryDirectory() as d:
+            directory = Path(d) / "a" / "b" / "device"
+            path = device_log_paths(directory, "testKey")[1]
+            with device_log_lock(path):
+                append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
+                self.assertEqual(read_device_log_lines(path, validate_jsonl=True),
+                                 ['{"ls":1}'])
+                sync_existing_private_device_log(path)
+                self.assertEqual(recover_incomplete_private_device_log_tail(path), 0)
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
+            unsafe = Path(d) / "a" / ".." / "a" / "b" / "device" / path.name
+            for action in (lambda: read_device_log_lines(unsafe),
+                           lambda: append_private_device_log(
+                               unsafe, ['{"ls":2}'], max_bytes=100),
+                           lambda: self._attempt_journal_lock(unsafe)):
+                with self.assertRaises(OSError):
+                    action()
+            self.assertEqual(path.read_text(), '{"ls":1}\n')
 
     def test_safe_reader_accepts_legacy_and_opaque_files_without_writing(self):
         with TemporaryDirectory() as d:

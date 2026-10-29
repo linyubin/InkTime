@@ -47,6 +47,37 @@ def _require_regular_single_link(info) -> None:
         raise OSError("device journal target is not a single-link regular file")
 
 
+def _open_journal_directory(directory: Path, *, create: bool = False) -> int:
+    """Open each ancestor with O_DIRECTORY|O_NOFOLLOW and return the owned fd.
+
+    New components are private; existing directory modes are not modified.
+    Callers must close the descriptor. Parent traversal and symlinks fail closed.
+    """
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe POSIX journal directory traversal is unavailable")
+    directory = Path(directory).expanduser()
+    if ".." in directory.parts:
+        raise OSError("device journal path cannot contain parent traversal")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(directory.anchor or ".", flags)
+    try:
+        for part in directory.parts:
+            if part in (directory.anchor, ".", "/"):
+                continue
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 @contextmanager
 def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
     """Bounded exclusive cross-process lock for a single opaque device journal.
@@ -65,12 +96,7 @@ def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
         raise ValueError("lock requires an opaque device journal path")
     if fcntl is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise OSError("safe POSIX device journal locking is unavailable")
-    directory = path.parent
-    if directory.is_symlink():
-        raise OSError("device journal directory must not be a symlink")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    directory_fd = os.open(directory, dir_flags)
+    directory_fd = _open_journal_directory(path.parent, create=True)
     try:
         lock_name = path.name + ".lock"
         flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
@@ -120,7 +146,7 @@ def sync_existing_private_device_log(path: Path) -> None:
     path = Path(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = os.open(path.parent, flags)
+        directory_fd = _open_journal_directory(path.parent)
     except FileNotFoundError:
         return
     try:
@@ -162,7 +188,7 @@ def recover_incomplete_private_device_log_tail(
         raise OSError("safe POSIX journal recovery is unavailable")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = os.open(path.parent, directory_flags)
+        directory_fd = _open_journal_directory(path.parent)
     except FileNotFoundError:
         return 0
     try:
@@ -207,11 +233,9 @@ def recover_incomplete_private_device_log_tail(
 
 
 def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
-    """Append JSONL with private permissions; fail closed on unsafe targets.
+    """Append/rotate via a no-follow directory fd, not path-based file opens.
 
-    Existing regular files with permissive modes are tightened in place.
-    Rotation retains the previous generation. Concurrent callers must hold
-    device_log_lock(path) around disk cursor recovery and this entire append.
+    The caller must hold device_log_lock for cursor recovery and this append.
     """
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("max_bytes must be a positive integer")
@@ -221,52 +245,48 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
     if not lines:
         sync_existing_private_device_log(path)
         return
-    directory = path.parent
-    if directory.is_symlink():
-        raise OSError("device journal directory must not be a symlink")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(path, flags, 0o600)
+    directory_fd = _open_journal_directory(path.parent, create=True)
     try:
-        info = os.fstat(fd)
-        _require_regular_single_link(info)
-        if stat.S_IMODE(info.st_mode) & 0o077:
-            os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o077)
-        if info.st_size > max_bytes:
-            rotated = path.with_suffix(".log.1")
-            try:
-                _require_regular_single_link(os.lstat(rotated))
-            except FileNotFoundError:
-                pass
-            os.close(fd)
-            fd = -1
-            current = os.lstat(path)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise OSError("device journal changed before rotation")
-            # Do not follow symlinks at either path. Cooperating callers
-            # serialize this rename through device_log_lock.
-            os.replace(path, rotated)
-            fd = os.open(path, flags | os.O_EXCL, 0o600)
-            _require_regular_single_link(os.fstat(fd))
-        stream = os.fdopen(fd, "a", encoding="utf-8")
-        fd = -1
-        with stream:
-            stream.write("\n".join(lines) + "\n")
-            stream.flush()
-            # A successful HTTP 200 must not precede file-data durability.
-            os.fsync(stream.fileno())
-        # Also persist the newly created/rotated directory entries. Failure
-        # propagates to the handler (500); retry will sync duplicates again.
-        dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-        dir_fd = os.open(directory, dir_flags)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(path.name, flags, 0o600, dir_fd=directory_fd)
         try:
-            os.fsync(dir_fd)
+            info = os.fstat(fd)
+            _require_regular_single_link(info)
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o077)
+            if info.st_size > max_bytes:
+                rotated_name = path.name + ".1"
+                try:
+                    _require_regular_single_link(
+                        os.stat(rotated_name, dir_fd=directory_fd, follow_symlinks=False)
+                    )
+                except FileNotFoundError:
+                    pass
+                os.close(fd)
+                fd = -1
+                current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise OSError("device journal changed before rotation")
+                os.replace(
+                    path.name, rotated_name,
+                    src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                )
+                fd = os.open(path.name, flags | os.O_EXCL, 0o600, dir_fd=directory_fd)
+                _require_regular_single_link(os.fstat(fd))
+            stream = os.fdopen(fd, "a", encoding="utf-8")
+            fd = -1
+            with stream:
+                stream.write("\n".join(lines) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.fsync(directory_fd)
         finally:
-            os.close(dir_fd)
+            if fd >= 0:
+                os.close(fd)
     finally:
-        if fd >= 0:
-            os.close(fd)
+        os.close(directory_fd)
+
 
 def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError("non-standard JSON constant in device journal")
@@ -294,7 +314,7 @@ def read_device_log_lines(
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory_flags |= getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = os.open(path.parent, directory_flags)
+        directory_fd = _open_journal_directory(path.parent)
     except FileNotFoundError:
         return None
     try:
