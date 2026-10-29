@@ -2,16 +2,16 @@
 
 ## 目标与当前边界
 
-当前设备自动注册路径是 \`POST /api/device_register/<download-key>\`，服务端只保存一个 \`endpoint.json\`。下载密钥为多个设备共用的**内容访问凭证**，不是设备身份；可选来源 IP 白名单只能缓解异源覆盖。管理员手动覆盖和共享密钥的最后写入者生效问题仍然存在。
+当前设备自动注册路径是 `POST /api/device_register/<download-key>`，服务端只保存一个 `endpoint.json`。下载密钥为多个设备共用的**内容访问凭证**，不是设备身份；可选来源 IP 白名单只能缓解异源覆盖。管理员手动覆盖和共享密钥的最后写入者生效问题仍然存在。
 
-本工作包只新增 \`device_registration_identity.py\` 的**纯函数协议验证器**和隔离测试。**没有接入 server.py，没有新增环境变量，没有改变 endpoint.json、HTTP 接口、固件或默认行为。当前运行中的设备注册仍不具备独立设备身份认证。** 不得据此将 R1 Gate 标为通过。
+本工作包只新增 `device_registration_identity.py` 的**纯函数协议验证器**和隔离测试。**没有接入 server.py，没有新增环境变量，没有改变 endpoint.json、HTTP 接口、固件或默认行为。当前运行中的设备注册仍不具备独立设备身份认证。** 不得据此将 R1 Gate 标为通过。
 
 ## 提议的单设备所有权协议
 
-1. 管理员在隔离 provisioning 阶段为设备分配唯一 \`device_id\`（小写 ASCII 字母/数字开头，后续允许 \`a-z0-9_-\`，总长度 1–32），以及通过安全随机数生成的**每设备独立 32 字节或以上密钥**。密钥只在设备受保护的持久存储和服务端受保护的配置中保存，不写入 Git、日志、URL 或 endpoint.json。不能复用下载密钥或 Wi-Fi 密码。
-2. 服务端**显式配置**唯一预期的 owner ID 和对应密钥；不能由首次请求自动认领所有权。设备发送原有 JSON body 原始字节，同时在后续固件版本中附带 \`X-InkTime-Device-ID\`、\`X-InkTime-Counter\`、\`X-InkTime-Signature\`。签名为小写 64 字符十六进制 HMAC-SHA256。
-3. 签名消息按 UTF-8/ASCII 拼接，最后有一个换行符：\`inktime-device-register-v1\nPOST\n/api/device_register\n<device_id>\n<decimal_counter>\n<sha256(raw_body).hex()>\n\`。它绑定方法、逻辑路由、设备 ID、单调计数器与**原始 HTTP body**。URL 中旧版下载密钥不是签名密钥，也不参与签名消息。任何 JSON 字节改动都使签名失效。
-4. 计数器必须为规范正十进制字符串（无前导零），范围 1…2^63-1。服务端需要在**同一个 endpoint POSIX 锁内**检查 \`counter > durable_last_counter\`、验证 HMAC、校验端点，然后将 owner ID、计数器和端点一起原子持久化；**只有完成文件及目录 fsync、锁和 inode 最终验证后才能 HTTP 200**。必须设计对失败 ACK 后重试的处理：设备应使用新的递增计数器重新签名；不允许仅靠内存计数器防重放。计数器回退、设备 NVS 损坏或丢失时拒绝自动注册，须人工重新配对，不得静默重置。
+1. 管理员在隔离 provisioning 阶段为设备分配唯一 `device_id`（小写 ASCII 字母/数字开头，后续允许 `a-z0-9_-`，总长度 1–32），以及通过安全随机数生成的**每设备独立 32 字节或以上密钥**。密钥只在设备受保护的持久存储和服务端受保护的配置中保存，不写入 Git、日志、URL 或 endpoint.json。不能复用下载密钥或 Wi-Fi 密码。
+2. 服务端**显式配置**唯一预期的 owner ID 和对应密钥；不能由首次请求自动认领所有权。设备发送原有 JSON body 原始字节，同时在后续固件版本中附带 `X-InkTime-Device-ID`、`X-InkTime-Counter`、`X-InkTime-Signature`。签名为小写 64 字符十六进制 HMAC-SHA256。
+3. 签名消息按 UTF-8/ASCII 拼接，最后有一个换行符：`inktime-device-register-v1\nPOST\n/api/device_register\n<device_id>\n<decimal_counter>\n<sha256(raw_body).hex()>\n`。它绑定方法、逻辑路由、设备 ID、单调计数器与**原始 HTTP body**。URL 中旧版下载密钥不是签名密钥，也不参与签名消息。任何 JSON 字节改动都使签名失效。
+4. 计数器必须为规范正十进制字符串（无前导零），范围 1…2^63-1。服务端需要在**同一个 endpoint POSIX 锁内**检查 `counter > durable_last_counter`、验证 HMAC、校验端点，然后将 owner ID、计数器和端点一起原子持久化；**只有完成文件及目录 fsync、锁和 inode 最终验证后才能 HTTP 200**。必须设计对失败 ACK 后重试的处理：设备应使用新的递增计数器重新签名；不允许仅靠内存计数器防重放。计数器回退、设备 NVS 损坏或丢失时拒绝自动注册，须人工重新配对，不得静默重置。
 5. 签名和设备 ID 的校验必须使用常量时间比较；非法 ID、签名、密钥、计数器统一拒绝，不能输出秘密到日志。对外响应避免泄漏哪个校验阶段失败。旧版下载密钥仍需独立验证；HMAC 不替代 HTTPS/局域网隔离或管理端 CSRF。
 
 ## 迁移、兼容与撤销策略（尚未实现）
