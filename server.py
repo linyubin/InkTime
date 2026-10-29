@@ -1219,6 +1219,10 @@ def esp_device_log(key: str):
                 return "write failed", 500
             _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
             return f"OK n={len(out_lines)}", 200
+    except TimeoutError:
+        # Transient contention: never ACK unpersisted events; ESP32 may retry.
+        print("[device_log] journal lock timed out")
+        return "journal busy", 503, {"Retry-After": "1"}
     except (OSError, ValueError) as exc:
         print(f"[device_log] journal lock failed: {type(exc).__name__}")
         return "journal unavailable", 500
