@@ -21,6 +21,7 @@ import config as cfg
 from server_config_validation import validate_server_settings, ConfigurationError
 from path_security import safe_join
 from device_endpoint_security import validate_device_endpoint
+from device_endpoint_storage import load_device_endpoint, store_device_endpoint
 from download_key_security import resolve_download_keys, authorized_download_key
 from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
                                 append_private_device_log,
@@ -1242,15 +1243,8 @@ DEVICE_ENDPOINT_FILE = DEVICE_LOG_DIR / "endpoint.json"
 
 
 def _load_device_endpoint() -> dict:
-    """Reject malformed or legacy unsafe endpoints before any HTTP callback."""
-    try:
-        rec = json.loads(DEVICE_ENDPOINT_FILE.read_text(encoding="utf-8"))
-        if not isinstance(rec, dict):
-            return {}
-        ip, port = validate_device_endpoint(rec.get("ip"), rec.get("port", 80))
-        return {**rec, "ip": ip, "port": port}
-    except (OSError, ValueError, TypeError):
-        return {}
+    """Reject malformed, unsafe or untrusted endpoint files before callbacks."""
+    return load_device_endpoint(DEVICE_ENDPOINT_FILE)
 
 
 @app.post("/api/device_register/<key>")
@@ -1273,9 +1267,7 @@ def esp_device_register(key: str):
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
     try:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        DEVICE_ENDPOINT_FILE.write_text(
-            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        store_device_endpoint(DEVICE_ENDPOINT_FILE, rec)
     except Exception as e:
         print(f"[device_register] write failed: {e}")
         return "write failed", 500
@@ -1770,9 +1762,7 @@ def api_device_set_endpoint():
            "ts": datetime.now().isoformat(timespec="seconds"),
            "manual": True}
     try:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        DEVICE_ENDPOINT_FILE.write_text(
-            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        store_device_endpoint(DEVICE_ENDPOINT_FILE, rec)
     except Exception as e:
         return jsonify({"error": f"写入失败：{e}"}), 500
     return jsonify({"ok": True, "endpoint": rec})

@@ -16,6 +16,7 @@ from unittest.mock import Mock
 from flask import Flask, abort, jsonify, request
 
 from device_endpoint_security import validate_device_endpoint
+from device_endpoint_storage import load_device_endpoint, store_device_endpoint
 from download_key_security import authorized_download_key
 
 SERVER = Path(__file__).resolve().parents[1] / "server.py"
@@ -70,7 +71,8 @@ class EndpointValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "endpoint.json"
             ns = {"DEVICE_ENDPOINT_FILE": path, "json": json,
-                  "validate_device_endpoint": validate_device_endpoint}
+                  "validate_device_endpoint": validate_device_endpoint,
+                  "load_device_endpoint": load_device_endpoint}
             load_server_functions({"_load_device_endpoint", "_device_base_url"}, ns)
             path.write_text(json.dumps({"ip": "192.168.1.8", "port": "8080"}))
             self.assertEqual(ns["_device_base_url"](), "http://192.168.1.8:8080")
@@ -94,6 +96,8 @@ class EndpointValidationTests(unittest.TestCase):
                 "request": request,
                 "abort": abort, "jsonify": jsonify, "datetime": datetime,
                 "json": json, "validate_device_endpoint": validate_device_endpoint,
+                "load_device_endpoint": load_device_endpoint,
+                "store_device_endpoint": store_device_endpoint,
             }
             load_server_functions({"_load_device_endpoint", "esp_device_register",
                                    "api_device_set_endpoint"}, ns)
