@@ -81,3 +81,11 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - 新严格校验是上传游标恢复的前置门禁，WebUI 只读查看仍保留原来的兼容读取行为。现有日志超过 16 MiB、包含不符合新格式的旧记录时，需人工审计并单独批准迁移，不可为恢复上传而跳过校验。
 - 实现 442e6d92、dd53cf36、3e097393，测试 5f16b616；[Push CI 40780508627](https://github.com/linyubin/InkTime/actions/runs/40780508627) 和 [PR CI 40780514965](https://github.com/linyubin/InkTime/actions/runs/40780514965) 均 SUCCESS（169 Python + 4 Node）。测试不等于真实 NAS/HTTPS/ESP32 验收。
 - 回滚只允许在独立开发分支逆序撤销上述实现/测试及文档提交，并重跑 CI；回滚会重新引入静默忽略损坏日志的风险，不是生产回滚方案。R1 Gate 仍 OPEN；R2/R3 未验收。
+
+## 2026-10-29 — 设备日志锁等待超时（仅开发分支）
+
+- `device_log_lock(path, timeout_seconds=5.0)` 使用 POSIX `flock(LOCK_EX | LOCK_NB)` 与 `time.monotonic()` 实现有界等待，50 ms 内轮询一次，默认最多等待约 5 秒；仅允许有限数值 0–60 秒，拒绝负数、NaN、Infinity、bool 和字符串。拿到锁后仍保护整个磁盘游标恢复、去重、追加及轮转过程；锁文件必须长期保留。
+- 锁被其他进程占用且超过等待上限时，服务端返回 HTTP **503** 和 `Retry-After: 1`，不写日志、不推进 `ls` 诊断游标，也不向 ESP32 确认上传成功。非锁争用的文件权限、inode 替换和 I/O 错误仍按原逻辑拒绝（HTTP 500）。`Retry-After` 是给支持该语义的客户端的提示，不代表 ESP32 固件一定会遵守。
+- 代码提交：`d6a0b73f`（有界锁）、`8f6fb60e`（HTTP 503）、`80f8aec9`（3 项测试）。隔离测试覆盖非法等待参数、真实两个 POSIX 进程锁争用后超时与释放后重新获取、Flask 503/Retry-After/无副作用。CI 结果以最新 Actions 和 R1–R3 台账为准。
+- 兼容性/风险：原来可能无限等待的上传现在会失败并要求设备重试；设备固件的重试退避尚未做真机验证。轮询不保证严格的毫秒级超时，进程可能因调度延迟超过目标。只保护合作进程；旧版本写入者、外部日志轮转、NAS/NFS/SMB 跨主机锁、设备共用密钥、历史日志兼容性和祖先目录符号链接仍未解决。
+- 回滚：仅在 `refactor/architecture-v1` 开发分支上逆序撤销本轮文档/测试/HTTP/锁实现提交，并重新运行 CI。回滚恢复无界等待，**不属于生产批准的回滚方案**。没有生产部署、真实 NAS 数据修改或 ESP32 烧录；真实 NAS、HTTPS 浏览器、Docker/systemd、设备及人工签核均 **UNVERIFIED**，R1 Gate 仍 OPEN，R2/R3 未验收。
