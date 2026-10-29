@@ -339,7 +339,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 raise TimeoutError("synthetic filesystem timeout")
             ns["device_log_lock"] = unrelated_timeout
             with app.test_client() as client:
-                other = client.post("/log/legacySecret", data='{"ls":1}\\n')
+                other = client.post("/log/legacySecret", data='{"ls":1}\n')
             self.assertEqual(other.status_code, 500)
             self.assertIsNone(other.headers.get("Retry-After"))
             self.assertFalse(opaque.exists())
