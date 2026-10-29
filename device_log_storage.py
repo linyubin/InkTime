@@ -78,6 +78,43 @@ def _open_journal_directory(directory: Path, *, create: bool = False) -> int:
         raise
 
 
+
+def _assert_journal_directory_identity(directory: Path, held_fd: int) -> None:
+    """Fail closed if the configured path no longer names the locked inode.
+
+    The held descriptor pins the directory for the full upload transaction.
+    Reopening each ancestor without following links detects replacement or
+    disappearance; it never follows a substituted symlink.
+    """
+    try:
+        current_fd = _open_journal_directory(directory)
+    except OSError as exc:
+        raise OSError("device journal directory unavailable while locked") from exc
+    try:
+        held = os.fstat(held_fd)
+        current = os.fstat(current_fd)
+        if (not stat.S_ISDIR(held.st_mode)
+                or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)):
+            raise OSError("device journal directory changed while locked")
+    finally:
+        os.close(current_fd)
+
+
+def _open_journal_directory_for_operation(
+    directory: Path, *, create: bool = False, directory_fd: int | None = None
+) -> int:
+    """Borrow a dup of the lock-pinned inode, or open independently.
+
+    The caller owns and closes the returned descriptor. A supplied lock fd
+    must never be closed by a journal helper; all operations use its inode.
+    """
+    if directory_fd is None:
+        return _open_journal_directory(directory, create=create)
+    if type(directory_fd) is not int:
+        raise ValueError("device journal directory descriptor must be an integer")
+    _assert_journal_directory_identity(directory, directory_fd)
+    return os.dup(directory_fd)
+
 @contextmanager
 def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
     """Bounded exclusive cross-process lock for a single opaque device journal.
@@ -124,7 +161,14 @@ def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
                 current = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                     raise OSError("device journal lock inode changed")
-                yield
+                _assert_journal_directory_identity(path.parent, directory_fd)
+                yield directory_fd
+                # A successful HTTP ACK requires that the configured path
+                # still resolves to the inode used for every journal action.
+                _assert_journal_directory_identity(path.parent, directory_fd)
+                final_lock = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+                if (final_lock.st_dev, final_lock.st_ino) != (info.st_dev, info.st_ino):
+                    raise OSError("device journal lock inode changed during transaction")
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
@@ -133,7 +177,7 @@ def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
         os.close(directory_fd)
 
 
-def sync_existing_private_device_log(path: Path) -> None:
+def sync_existing_private_device_log(path: Path, *, directory_fd: int | None = None) -> None:
     """Durably sync existing opaque journal generations before duplicate ACK.
 
     A failed fsync may leave already-appended bytes visible in the page cache.
@@ -146,7 +190,7 @@ def sync_existing_private_device_log(path: Path) -> None:
     path = Path(path)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = _open_journal_directory(path.parent)
+        directory_fd = _open_journal_directory_for_operation(path.parent, directory_fd=directory_fd)
     except FileNotFoundError:
         return
     try:
@@ -168,7 +212,8 @@ def sync_existing_private_device_log(path: Path) -> None:
 
 
 def recover_incomplete_private_device_log_tail(
-    path: Path, *, max_tail_bytes: int = 64 * 1024
+    path: Path, *, max_tail_bytes: int = 64 * 1024,
+    directory_fd: int | None = None,
 ) -> int:
     """Remove an unacknowledged, unterminated JSONL tail before cursor recovery.
 
@@ -188,7 +233,7 @@ def recover_incomplete_private_device_log_tail(
         raise OSError("safe POSIX journal recovery is unavailable")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = _open_journal_directory(path.parent)
+        directory_fd = _open_journal_directory_for_operation(path.parent, directory_fd=directory_fd)
     except FileNotFoundError:
         return 0
     try:
@@ -232,7 +277,9 @@ def recover_incomplete_private_device_log_tail(
         os.close(directory_fd)
 
 
-def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -> None:
+def append_private_device_log(
+    path: Path, lines: list[str], *, max_bytes: int, directory_fd: int | None = None
+) -> None:
     """Append/rotate via a no-follow directory fd, not path-based file opens.
 
     The caller must hold device_log_lock for cursor recovery and this append.
@@ -243,9 +290,9 @@ def append_private_device_log(path: Path, lines: list[str], *, max_bytes: int) -
         raise OSError("safe POSIX journal writing is unavailable")
     path = Path(path)
     if not lines:
-        sync_existing_private_device_log(path)
+        sync_existing_private_device_log(path, directory_fd=directory_fd)
         return
-    directory_fd = _open_journal_directory(path.parent, create=True)
+    directory_fd = _open_journal_directory_for_operation(path.parent, create=True, directory_fd=directory_fd)
     try:
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
         flags |= getattr(os, "O_CLOEXEC", 0)
@@ -294,7 +341,7 @@ def _reject_nonstandard_json_constant(value: str) -> None:
 
 def read_device_log_lines(
     path: Path, *, max_bytes: int = 16 * 1024 * 1024,
-    validate_jsonl: bool = False,
+    validate_jsonl: bool = False, directory_fd: int | None = None,
 ) -> list[str] | None:
     """Read an existing journal without following a symlink or hardlink.
 
@@ -314,7 +361,7 @@ def read_device_log_lines(
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory_flags |= getattr(os, "O_CLOEXEC", 0)
     try:
-        directory_fd = _open_journal_directory(path.parent)
+        directory_fd = _open_journal_directory_for_operation(path.parent, directory_fd=directory_fd)
     except FileNotFoundError:
         return None
     try:

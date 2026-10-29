@@ -860,5 +860,115 @@ class DeviceLogIntegrityTests(unittest.TestCase):
                               opaque.read_text(encoding="utf-8").splitlines()], [602])
 
 
+class DeviceJournalDirectoryLeaseTests(unittest.TestCase):
+    """R1: all upload steps must use the same directory inode as the lock."""
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory-relative no-follow")
+    def test_replaced_directory_rejects_append_under_held_lock(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            directory = root / "logs"
+            directory.mkdir()
+            moved = root / "moved"
+            path = device_log_paths(directory, "testKey")[1]
+            with self.assertRaisesRegex(OSError, "directory changed"):
+                with device_log_lock(path) as directory_fd:
+                    directory.rename(moved)
+                    directory.mkdir()
+                    append_private_device_log(
+                        path, ['{"ls":1}'], max_bytes=1024, directory_fd=directory_fd
+                    )
+            self.assertFalse(path.exists())
+            self.assertFalse((moved / path.name).exists())
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory-relative no-follow")
+    def test_symlink_replacement_cannot_redirect_locked_journal(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            directory = root / "logs"
+            directory.mkdir()
+            moved = root / "moved"
+            outside = root / "outside"
+            outside.mkdir()
+            path = device_log_paths(directory, "testKey")[1]
+            victim = outside / path.name
+            victim.write_text('{"ls":999}\n', encoding="utf-8")
+            with self.assertRaises(OSError):
+                with device_log_lock(path) as directory_fd:
+                    directory.rename(moved)
+                    directory.symlink_to(outside, target_is_directory=True)
+                    read_device_log_lines(path, directory_fd=directory_fd)
+            self.assertEqual(victim.read_text(encoding="utf-8"), '{"ls":999}\n')
+            self.assertFalse((moved / path.name).exists())
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory-relative no-follow")
+    def test_same_inode_restored_before_operation_remains_usable(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            directory = root / "logs"
+            directory.mkdir()
+            moved = root / "moved"
+            path = device_log_paths(directory, "testKey")[1]
+            with device_log_lock(path) as directory_fd:
+                directory.rename(moved)
+                moved.rename(directory)
+                append_private_device_log(
+                    path, ['{"ls":1}'], max_bytes=1024, directory_fd=directory_fd
+                )
+                self.assertEqual(
+                    read_device_log_lines(path, validate_jsonl=True, directory_fd=directory_fd),
+                    ['{"ls":1}'],
+                )
+            self.assertEqual(path.read_text(encoding="utf-8"), '{"ls":1}\n')
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+                         "requires POSIX directory-relative no-follow")
+    def test_flask_does_not_ack_or_advance_cursor_if_path_changes_after_append(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            directory = root / "logs"
+            directory.mkdir()
+            moved = root / "moved"
+            _, opaque = device_log_paths(directory, "legacySecret")
+            ns = {
+                "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
+                "_devlog_max_ls": {}, "device_log_paths": device_log_paths,
+                "device_log_lock": device_log_lock,
+                "read_device_log_lines": read_device_log_lines,
+                "recover_incomplete_private_device_log_tail": recover_incomplete_private_device_log_tail,
+                "DOWNLOAD_KEYS": ("legacySecret",),
+                "authorized_download_key": authorized_download_key,
+                "json": json, "datetime": datetime, "request": request,
+                "abort": abort, "Path": Path,
+            }
+
+            def replace_after_append(path, lines, *, max_bytes, directory_fd=None):
+                append_private_device_log(
+                    path, lines, max_bytes=max_bytes, directory_fd=directory_fd
+                )
+                directory.rename(moved)
+                directory.mkdir()
+
+            ns["append_private_device_log"] = replace_after_append
+            extract_function("server.py", "_devlog_path", ns)
+            extract_function("server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("server.py", "esp_device_log", ns)
+            app = Flask(__name__)
+
+            @app.post("/log/<key>")
+            def upload(key):
+                return endpoint(key)
+
+            with app.test_client() as client:
+                result = client.post("/log/legacySecret", data='{"ls":1}\n')
+            self.assertEqual(result.status_code, 500)
+            self.assertEqual(ns["_devlog_max_ls"], {})
+            self.assertFalse(opaque.exists())
+            self.assertEqual((moved / opaque.name).read_text(encoding="utf-8").count("\n"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

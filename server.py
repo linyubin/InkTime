@@ -1144,7 +1144,7 @@ def _devlog_path(key: str) -> Path:
     return device_log_paths(DEVICE_LOG_DIR, key)[1]
 
 
-def _devlog_load_max_ls(key: str) -> int:
+def _devlog_load_max_ls(key: str, *, directory_fd: int | None = None) -> int:
     """Recover the highest ls from legacy and opaque-name logs after restart.
 
     Old plaintext-key filenames are read-only: they are never renamed,
@@ -1158,7 +1158,7 @@ def _devlog_load_max_ls(key: str) -> int:
             # Validate every complete record, not just the last 500 lines.
             # A corrupt acknowledged record must block new ACKs, including
             # when the corruption is in a rotated or legacy generation.
-            lines = read_device_log_lines(candidate, validate_jsonl=True)
+            lines = read_device_log_lines(candidate, validate_jsonl=True, directory_fd=directory_fd)
             if lines is None:
                 continue
             for ln in lines:
@@ -1182,12 +1182,12 @@ def esp_device_log(key: str):
     try:
         # Lock covers cursor recovery, deduplication and append/rotation.
         # A process-local cursor cannot be trusted across server workers.
-        with device_log_lock(_devlog_path(key)):
+        with device_log_lock(_devlog_path(key)) as journal_dir_fd:
             try:
-                removed = recover_incomplete_private_device_log_tail(_devlog_path(key))
+                removed = recover_incomplete_private_device_log_tail(_devlog_path(key), directory_fd=journal_dir_fd)
                 if removed:
                     print(f"[device_log] recovered {removed} uncommitted tail bytes")
-                max_ls = _devlog_load_max_ls(key)
+                max_ls = _devlog_load_max_ls(key, directory_fd=journal_dir_fd)
             except OSError:
                 print("[device_log] historical journal read failed")
                 return "journal unavailable", 500
@@ -1213,13 +1213,16 @@ def esp_device_log(key: str):
             # may have left visible, but not yet durable, journal records.
             try:
                 append_private_device_log(
-                    _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES
+                    _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES,
+                    directory_fd=journal_dir_fd,
                 )
             except (OSError, ValueError) as exc:
                 print(f"[device_log] write failed: {type(exc).__name__}")
                 return "write failed", 500
-            _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
-            return f"OK n={len(out_lines)}", 200
+        # The lock context verifies the path and lock inode on exit. Only
+        # advance diagnostics and ACK after that final identity check passes.
+        _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
+        return f"OK n={len(out_lines)}", 200
     except DeviceJournalLockTimeout:
         # Transient contention: never ACK unpersisted events; ESP32 may retry.
         print("[device_log] journal lock timed out")
