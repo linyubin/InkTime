@@ -98,3 +98,12 @@ SHA-256 文件名仍可能泄露低熵 key 的离线校验线索。旧明文文�
 - [Push CI 40818262508](https://github.com/linyubin/InkTime/actions/runs/40818262508) / [PR CI 40818266755](https://github.com/linyubin/InkTime/actions/runs/40818266755) 均成功：174 Python + 4 Node、完整依赖安装及编译。测试使用本地 Linux POSIX 文件系统，**没有**真实 NAS/NFS/SMB、HTTPS 浏览器、Docker/systemd、ESP32 或人工签核证据。
 - **剩余竞争风险：** 各调用内部固定目录 inode，但不同调用之间（如持锁后到追加前）若上层目录被外部进程替换，仍可能访问不同目录；后续需绑定整个临界区的目录身份。外部轮转、共享密钥设备身份、NAS 掉电持久化同样未解决。
 - 开发分支回滚：先撤销本轮文档提交，再撤销 `48637d8e` 并重跑 CI；回滚会恢复祖先符号链接风险，**不能作为生产回滚**。R1 Gate 继续 OPEN，R2/R3 未验收。
+
+
+## 2026-10-29 — 上传临界区固定目录 inode（仅开发分支）
+
+- 服务端获取设备日志排他锁后，把日志目录描述符作为显式参数传给历史/新格式游标读取、尾部恢复、追加/轮转和重复上传 \`fsync\`。每次操作核对无符号链接的实际路径是否仍对应同一目录 \`st_dev/st_ino\`，但始终在锁定的目录 inode 上操作。
+- 正常退出锁作用域时再次验证目录及锁文件 inode；**仅在退出检查成功后**更新诊断游标并返回 HTTP 200。若外部进程在中途替换目录、植入符号链接或移动锁文件，拒绝 ACK（HTTP 500）。已写入旧 inode 的数据不会被自动移动、删除或恢复。
+- 隔离验证：\`python -m unittest discover -s tests -p 'test_device_log_storage.py' -v\`。本轮新增 4 项目录替换/符号链接/同 inode 恢复/Flask ACK 故障注入测试。提交 \`27c6b8eb\`；[Push CI 40835990735](https://github.com/linyubin/InkTime/actions/runs/40835990735) 与 [PR CI 40836002168](https://github.com/linyubin/InkTime/actions/runs/40836002168) 均 **SUCCESS**：全量 178 Python + 4 Node、完整依赖安装和编译。
+- 限制：仍需 POSIX \`openat\`、\`O_NOFOLLOW\`、\`flock\`；合法的符号链接部署目录也会被拒绝。外部进程恶意重命名目录可能令旧 inode 中的记录脱离配置路径；路径在最后一次检查后再次被修改、NAS/NFS/SMB 跨主机锁/持久化、外部轮转、设备身份仍未解决。真实 NAS、HTTPS 浏览器/CSRF、Docker/systemd、ESP32 编译/真机与人工签核 **未验证**；R1 Gate OPEN，R2/R3 未验收。
+- 回滚只限独立开发分支逆序撤销本轮文档提交和 \`27c6b8eb\` 并重跑 CI；该操作恢复目录替换竞争，**不可直接用于生产**。不得删除锁文件、修改真实 NAS 日志或刷写设备。
