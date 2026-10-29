@@ -23,6 +23,10 @@ import re
 _KEY = re.compile(r"[A-Za-z0-9_-]{1,128}\Z", re.ASCII)
 
 
+class DeviceJournalLockTimeout(TimeoutError):
+    """Only a bounded flock acquisition timeout, not unrelated I/O timeouts."""
+
+
 def device_log_paths(directory: Path, key: str) -> tuple[Path, Path]:
     """Return (legacy plaintext-name path, new opaque-name path).
 
@@ -88,7 +92,7 @@ def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
                         raise
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise TimeoutError("device journal lock wait exceeded") from exc
+                        raise DeviceJournalLockTimeout("device journal lock wait exceeded") from exc
                     time.sleep(min(0.05, remaining))
             try:
                 current = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
