@@ -17,7 +17,8 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import (device_log_paths, device_log_lock, append_private_device_log,
+from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
+                                append_private_device_log,
                                 read_device_log_lines, recover_incomplete_private_device_log_tail)
 from download_key_security import authorized_download_key, resolve_download_keys
 
@@ -35,6 +36,7 @@ def _hold_lock_in_child(path, entered, release):
 
 def extract_function(filename, name, namespace):
     path = ROOT / filename
+    namespace.setdefault("DeviceJournalLockTimeout", DeviceJournalLockTimeout)
     for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             fn = copy.deepcopy(node)
@@ -305,7 +307,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
             _, opaque = device_log_paths(directory, "legacySecret")
 
             def busy_lock(_path):
-                raise TimeoutError("synthetic contention")
+                raise DeviceJournalLockTimeout("synthetic contention")
 
             ns = {
                 "DEVICE_LOG_DIR": directory, "DEVICE_LOG_MAX_BYTES": 1024,
