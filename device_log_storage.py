@@ -6,10 +6,13 @@ mechanism. Rotate historically exposed/low-entropy bearer keys separately.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
+import math
 import os
 import stat
+import time
 try:
     import fcntl
 except ImportError:  # POSIX-only; fail closed rather than omit locking.
@@ -41,13 +44,18 @@ def _require_regular_single_link(info) -> None:
 
 
 @contextmanager
-def device_log_lock(path: Path):
-    """Exclusive cross-process lock for a single opaque device journal.
+def device_log_lock(path: Path, *, timeout_seconds: float = 5.0):
+    """Bounded exclusive cross-process lock for a single opaque device journal.
 
     The lock file is persistent: unlinking it can split the lock into two
     inodes. Cooperating writers must hold this lock across disk cursor
-    recovery, deduplication, append and rotation.
+    recovery, deduplication, append and rotation. Never unlink lock files.
+    A contended lock raises TimeoutError; the caller must not ACK uploads.
     """
+    if (type(timeout_seconds) not in (int, float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 <= timeout_seconds <= 60):
+        raise ValueError("device journal lock timeout must be finite and within 0..60 seconds")
     path = Path(path)
     if not re.fullmatch(r"device-[0-9a-f]{64}\.log", path.name):
         raise ValueError("lock requires an opaque device journal path")
@@ -68,7 +76,20 @@ def device_log_lock(path: Path):
             _require_regular_single_link(info)
             if stat.S_IMODE(info.st_mode) & 0o077:
                 os.fchmod(fd, stat.S_IMODE(info.st_mode) & ~0o077)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # Non-blocking attempts bound the time spent waiting for a writer.
+            # The lock remains held for the full caller-owned critical section.
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("device journal lock wait exceeded") from exc
+                    time.sleep(min(0.05, remaining))
             try:
                 current = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
