@@ -9,7 +9,7 @@
 重启后现场全丢。黑盒日志把"发生了什么"的骨架即时写进设备 Flash，并在每次
 入睡前推送到树莓派集中保存，跨重启可回查。
 
-## 事件类型（14 种）
+## 事件类型（16 种）
 
 | 类型 | 时机 | 关键字段 |
 |------|------|----------|
@@ -27,6 +27,8 @@
 | `SERVO_SKIP_UNCAL` | 未标定跳过 | — |
 | `HTTP_HIT` | 设备 Web 端点被调用 | `ep=/fetch\|/servo_test\|/servo_save\|/servo_sync …` |
 | `LOG_UP` | 日志上传本身 | `ok n= cur=` / `fail code=` |
+| `ALWAYS_ON` | 常开模式进入/退出/每日触发 | `enter heap=` / `exit` / `daily_due` / `daily_fail retry_sec=` |
+| `GLITCH` | 静默恢复（掉电重启）全流程 | `enter rst=POWERON\|BROWNOUT\|RETRY`、`wifi_unreachable`、`recover idx=`（花屏补拉）、`catchup_due/catchup ok/catchup fail`（当日补拉）、`retry_30m` |
 
 ## 存储与协议
 
