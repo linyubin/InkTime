@@ -1,8 +1,5 @@
-# InkTime · 墨水屏回忆相框
+# InkTime V2
 
-<p align="left">
-  <img src="docs/images/InkTime.jpeg" width="80%">
-</p>
 
 InkTime 是一个「拉回你相册里的记忆」的墨水屏电子相框项目。
 
