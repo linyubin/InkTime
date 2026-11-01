@@ -82,7 +82,7 @@ if [[ -z "${DOWNLOAD_KEY}" ]]; then
 fi
 
 log "========================================================"
-log "InkTime 每日编排启动 | BLE=${DO_BLE} ESP32=${DO_ESP32} | key=${DOWNLOAD_KEY}"
+log "InkTime 每日编排启动 | BLE=${DO_BLE} ESP32=${DO_ESP32} | key=[REDACTED]"
 
 # ── Step 1：每日选片与渲染（恒跑）─────────────────────
 log "Step 1: 开始每日选片与渲染"

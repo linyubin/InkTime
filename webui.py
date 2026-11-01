@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 from flask import Blueprint, Flask, redirect, render_template, jsonify, send_file, abort, request
-import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime
+import os
+from admin_security import install_admin_security
+from device_log_storage import device_log_paths, read_device_log_lines
+from download_key_security import resolve_download_keys
+from db_schema import open_current_readonly_database
 import config as cfg
+from path_security import safe_join
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
 
@@ -85,22 +90,14 @@ def _make_image_url(path_str: str) -> str:
 def _safe_join(base: Path, rel: str) -> Path:
     """防目录穿越"""
     try:
-        p = (base / rel).resolve()
-        if not str(p).startswith(str(base.resolve())):
-            raise ValueError("path traversal blocked")
-        return p
+        return safe_join(base, rel)
     except Exception:
         raise ValueError("path resolution failed")
 
 
 def _get_conn():
-    if not DB_PATH.exists():
-        return None
-    uri = f"file:{DB_PATH.as_posix()}?mode=ro"
-    try:
-        return sqlite3.connect(uri, uri=True)
-    except sqlite3.OperationalError:
-        return sqlite3.connect(DB_PATH)
+    """Read-only v2 SQLite connection; never create or silently reopen for writes."""
+    return open_current_readonly_database(DB_PATH)
 
 
 @bp.route('/manager')
@@ -338,11 +335,11 @@ def api_photos():
 
 
 # ── 设备日志（黑盒）只读页 ───────────────────────────────────
-# 数据由 server.py 的 POST /api/device_log/<key> 落盘到 logs/device/<key>.log，
+# 数据由 server.py 的 POST /api/device_log/<key> 落盘到不含密钥的哈希文件名；
+# 历史 logs/device/<key>.log 仅保留读取兼容。
 # 每行一条 JSON 事件（设备行号 ls/开机序号 b/相对毫秒 ms/类型 t/明细 d/接收时刻 rcv）。
 # 倒序展示最近 N 条，供事故回查，不做任何写操作。
 
-DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
 DEVICE_LOG_DIR = ROOT_DIR / "logs" / "device"
 DEVLOG_PAGE_SIZE = 500
 _ANCHOR_RE = re.compile(r" anchor=(\d+)")
@@ -350,18 +347,32 @@ _ANCHOR_RE = re.compile(r" anchor=(\d+)")
 
 @bp.route('/devlog')
 def devlog():
-    p = DEVICE_LOG_DIR / f"{DOWNLOAD_KEY}.log"
+    # Include both keys during an explicitly configured rotation. Read the
+    # previous key first, then the active key, and legacy files before new ones.
+    # Invalid standalone config must not turn into an arbitrary file read.
+    try:
+        keys = resolve_download_keys(getattr(cfg, "DOWNLOAD_KEY", ""), os.environ)
+    except ValueError:
+        keys = ()
     events = []
-    if p.exists():
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            lines = []
-        for ln in lines:
+    exists = False
+    for key in reversed(keys):
+        for p in device_log_paths(DEVICE_LOG_DIR, key):
             try:
-                events.append(json.loads(ln))
-            except Exception:
+                lines = read_device_log_lines(p)
+            except OSError:
+                # Never display symlinked or substituted journal contents.
+                abort(503, description="device journal unavailable")
+            if lines is None:
                 continue
+            exists = True
+            for ln in lines:
+                try:
+                    ev = json.loads(ln)
+                    if isinstance(ev, dict):
+                        events.append(ev)
+                except ValueError:
+                    continue
 
     # 绝对时间换算：TIME_SYNC 事件的 anchor=epoch 是真实墙钟。
     # 两遍扫描——第一遍按开机序号收集各自的锚点，第二遍用"本开机"的锚点换算。
@@ -383,7 +394,7 @@ def devlog():
         ev["d"] = _ANCHOR_RE.sub("", d)   # 明细里去掉锚点数字，页面不重复展示
 
     rows = events[-DEVLOG_PAGE_SIZE:][::-1]   # 最近 N 条，新事件在前
-    return render_template('devlog.html', rows=rows, exists=p.exists())
+    return render_template('devlog.html', rows=rows, exists=exists)
 
 
 # ── 样式编辑器（/style-editor，ADR 0002 版式数据化 + ADR 0003 预览保真）──
@@ -670,18 +681,30 @@ def api_selftest_report():
     return jsonify(_SELFTEST_REPORT)
 
 
-if __name__ == '__main__':
-    # 兼容旧的独立启动方式（systemd inktime-webui / docker supervisord）。
-    # 合并后的正式入口是 server.py：所有功能统一挂在 FLASK_PORT(8765)。
+def create_standalone_app() -> Flask:
+    """Create the optional legacy WebUI with the *same* admin security as server.py.
+
+    The standalone instance intentionally does not allow device-route exceptions.
+    """
     app = Flask(__name__)
+    install_admin_security(app, allow_device_routes=False)
     app.register_blueprint(bp)
 
-    @app.route('/')
+    @app.get("/")
     def _index():
-        return redirect('/manager')
+        return redirect("/manager")
 
-    print(f"==================================================")
-    print(f"InkTime Independent WebUI Manager")
-    print(f"启动 URL: http://{WEBUI_HOST}:{WEBUI_PORT}  (建议改用 server.py 统一入口)")
-    print(f"==================================================")
-    app.run(host=WEBUI_HOST, port=WEBUI_PORT, debug=True)
+    return app
+
+
+if __name__ == "__main__":
+    # Legacy entrypoint only. Prefer server.py; never expose Werkzeug debugger.
+    if not os.environ.get("INKTIME_ADMIN_PASSWORD"):
+        raise SystemExit(
+            "INKTIME_ADMIN_PASSWORD is required for standalone WebUI; "
+            "use a private environment file and an HTTPS reverse proxy."
+        )
+    app = create_standalone_app()
+    print("[InkTime] standalone WebUI running on 127.0.0.1 "
+          "(localhost only, HTTPS reverse proxy required)")
+    app.run(host="127.0.0.1", port=WEBUI_PORT, debug=False)

@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from flask import Flask, abort, send_file, Response, request, redirect, g, render_template, jsonify
 import mimetypes
-import sqlite3
+from contextlib import closing
 import json
 import html
 import hashlib
@@ -18,43 +18,67 @@ import os
 import threading
 from datetime import datetime
 import config as cfg
+from server_config_validation import validate_server_settings, ConfigurationError
+from path_security import safe_join
+from device_endpoint_security import validate_device_endpoint, resolve_registration_allowed_ip
+from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+                                     DeviceEndpointLockTimeout)
+from download_key_security import resolve_download_keys, authorized_download_key
+from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
+                                append_private_device_log,
+                                read_device_log_lines, recover_incomplete_private_device_log_tail)
+from db_schema import (
+    MigrationError, require_current_schema, open_current_database,
+    open_current_readonly_database,
+)
+from admin_security import install_admin_security
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
-import render_daily_photo as rdp
 
 ROOT_DIR = Path(__file__).resolve().parent
 
 # --- config ---
-DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
-if not DOWNLOAD_KEY:
-    raise SystemExit("config.py 里没有配置 DOWNLOAD_KEY")
+try:
+    SERVER_SETTINGS = validate_server_settings(cfg)
+except ConfigurationError as exc:
+    raise SystemExit(f"Invalid server configuration: {exc}") from None
+try:
+    DOWNLOAD_KEYS = resolve_download_keys(getattr(cfg, "DOWNLOAD_KEY", ""), os.environ)
+except ValueError as exc:
+    raise SystemExit(f"Invalid download-key configuration: {exc}") from None
+DOWNLOAD_KEY = DOWNLOAD_KEYS[0]  # active; previous key requires explicit opt-in
+try:
+    REGISTRATION_ALLOWED_IP = resolve_registration_allowed_ip(os.environ)
+except ValueError as exc:
+    raise SystemExit(f"Invalid device registration peer policy: {exc}") from None
 
-DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
-IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
-BIN_OUTPUT_DIR = resolve_path(getattr(cfg, "BIN_OUTPUT_DIR", "./output"), "./output")
+DB_PATH = resolve_path(SERVER_SETTINGS["DB_PATH"], "./photos.db")
+# Startup is read-only until the schema is verified. Do not silently create
+# photos.db or apply legacy DDL: migrations require an explicit verified backup.
+try:
+    require_current_schema(DB_PATH)
+except MigrationError as exc:
+    raise SystemExit(f"InkTime database startup blocked: {exc}") from None
+
+IMAGE_DIR = resolve_path(SERVER_SETTINGS["IMAGE_DIR"])
+BIN_OUTPUT_DIR = resolve_path(SERVER_SETTINGS["BIN_OUTPUT_DIR"], "./output")
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _init_db_pragmas() -> None:
-    """启动时建索引并切 WAL：/review 的排序/筛选此前对 3 万行做逐行 json_extract
-    全表扫描（每页两次、实测 ~1.6s/次）；exif_datetime 列与 JSON 同源，建索引后
-    毫秒级。WAL 让读写不再互斥。"""
-    if not DB_PATH.exists():
-        return
+    """Validate writable v2 connection and WAL before serving requests."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_photo_scores_exif_datetime "
-                     "ON photo_scores(exif_datetime)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_photo_scores_md "
-                     "ON photo_scores(substr(exif_datetime, 6, 2) || '-' || substr(exif_datetime, 9, 2))")
-        conn.commit()
-        conn.close()
-    except sqlite3.Error:
-        pass
+        with closing(open_current_database(DB_PATH)):
+            pass  # shared helper validates schema, busy_timeout and WAL
+    except MigrationError as exc:
+        raise SystemExit(f"InkTime database WAL initialization failed: {exc}") from None
 
 
 _init_db_pragmas()
+
+# Rendering imports create output directories; load only after the config,
+# schema and WAL startup gates have completed successfully.
+import render_daily_photo as rdp
 
 # 传输日志 / 拉取检测哨兵目录（由 inktime_daily.sh 读写）
 TMP_DIR = ROOT_DIR / "tmp"
@@ -64,13 +88,13 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 TRANSFER_LOG = LOG_DIR / "transfer.log"           # 详细 HTTP 传输日志（ESP32 拉取等）
 LAST_FETCH_SENTINEL = TMP_DIR / "last_fetch.json"  # 拉取成功哨兵，供 inktime_daily.sh 轮询
 
-FLASK_HOST = str(getattr(cfg, "FLASK_HOST", "0.0.0.0") or "0.0.0.0")
-FLASK_PORT = int(getattr(cfg, "FLASK_PORT", 8765) or 8765)
+FLASK_HOST = SERVER_SETTINGS["FLASK_HOST"]
+FLASK_PORT = SERVER_SETTINGS["FLASK_PORT"]
 
 # 是否开启照片库 WebUI（跑通后建议关闭，只保留 ESP32 下载接口）
-ENABLE_REVIEW_WEBUI = bool(getattr(cfg, "ENABLE_REVIEW_WEBUI", True))
+ENABLE_REVIEW_WEBUI = SERVER_SETTINGS["ENABLE_REVIEW_WEBUI"]
 
-DAILY_PHOTO_QUANTITY = int(getattr(cfg, "DAILY_PHOTO_QUANTITY", 5) or 5)
+DAILY_PHOTO_QUANTITY = SERVER_SETTINGS["DAILY_PHOTO_QUANTITY"]
 if DAILY_PHOTO_QUANTITY < 1:
     DAILY_PHOTO_QUANTITY = 1
 
@@ -85,7 +109,7 @@ _MD_CACHE_TTL_SEC = 300.0  # 5 分钟
 # /sim_render 磁盘缓存：同一 (图片, mtime, 朝向, 抖动) 组合的渲染结果不变，
 # 直接命中缓存文件，省掉 2-6s 的 render+dither。
 SIM_RENDER_CACHE_DIR = ROOT_DIR / ".cache" / "sim_render"
-SIM_RENDER_CACHE_MAX = int(getattr(cfg, "SIM_RENDER_CACHE_MAX_ENTRIES", 300) or 300)
+SIM_RENDER_CACHE_MAX = SERVER_SETTINGS["SIM_RENDER_CACHE_MAX_ENTRIES"]
 
 
 def _sim_render_cache_path(key_src: str) -> Path:
@@ -147,7 +171,7 @@ def _load_all_md_list() -> list[str]:
         if isinstance(cached, list):
             return [str(x) for x in cached]
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
     rows = c.execute("SELECT path, exif_json FROM photo_scores").fetchall()
     conn.close()
@@ -166,6 +190,7 @@ def _load_all_md_list() -> list[str]:
     return md_list
 
 app = Flask(__name__)
+install_admin_security(app, allow_device_routes=True)
 
 # ── 合并版式管理 WebUI（原 8766 端口的 webui.py）──────────────
 # webui.py 现以 Blueprint 提供：/manager（相册管理）、/style-editor（版式编辑器）、
@@ -174,31 +199,7 @@ from webui import bp as webui_bp
 app.register_blueprint(webui_bp)
 
 
-def ensure_transfer_history() -> None:
-    """创建传输日志表（对齐 analyze_photos.py 的 CREATE TABLE IF NOT EXISTS 模式）。"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS transfer_history (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts           TEXT,
-            method       TEXT,
-            path         TEXT,
-            idx          INTEGER,
-            status       INTEGER,
-            bytes        INTEGER,
-            duration_ms  REAL,
-            client_ip    TEXT,
-            user_agent   TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-ensure_transfer_history()
-
+# transfer_history is created by explicit v2 migration, never by server import.
 
 @app.before_request
 def _before_request() -> None:
@@ -217,8 +218,10 @@ def _after_request(resp):
         except Exception:
             size = 0
         ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 不将 URL 中的 DOWNLOAD_KEY 写入日志或 SQLite 历史记录。
+        safe_path = re.sub(r"^/static/inktime/[^/]+", "/static/inktime/[REDACTED]", request.path)
         log_line = (
-            f"{ts_str} | {request.remote_addr} | {request.method} {request.path} | "
+            f"{ts_str} | {request.remote_addr} | {request.method} {safe_path} | "
             f"{resp.status_code} | {size}B | {dur_ms:.0f}ms | {request.headers.get('User-Agent', '')}"
         )
         try:
@@ -227,14 +230,14 @@ def _after_request(resp):
         except Exception as e:
             print(f"[transfer_log] write file failed: {e}")
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = open_current_database(DB_PATH)
             conn.execute(
                 "INSERT INTO transfer_history(ts,method,path,idx,status,bytes,duration_ms,client_ip,user_agent) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     datetime.now().isoformat(),
                     request.method,
-                    request.path,
+                    safe_path,
                     idx_val,
                     resp.status_code,
                     size,
@@ -278,10 +281,7 @@ def _require_webui_enabled() -> None:
 
 def _safe_join(base: Path, rel: str) -> Path:
     """防目录穿越：只允许 base 下的相对路径"""
-    p = (base / rel).resolve()
-    if not str(p).startswith(str(base.resolve())):
-        raise ValueError("path traversal blocked")
-    return p
+    return safe_join(base, rel)
 
 
 def _send_static_file(p: Path) -> Response:
@@ -407,7 +407,7 @@ def load_rows(page: int = 1, page_size: int = REVIEW_PAGE_SIZE, md: str = "", so
 
     offset = (page - 1) * page_size
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
 
     # exif_datetime 列与 exif_json.$.datetime 同源（analyze 管线写入时同步），
@@ -500,7 +500,7 @@ def load_sim_rows_for_dates(dates: list[str]):
     if not safe_dates:
         return []
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
 
     dt_expr = "json_extract(exif_json, '$.datetime')"
@@ -552,7 +552,7 @@ def get_photo_meta_by_path(abs_path: str):
     if db_path_guess and db_path_guess != abs_path:
         candidates.append(db_path_guess)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = open_current_readonly_database(DB_PATH)
     c = conn.cursor()
     row = None
     for key in candidates:
@@ -887,7 +887,7 @@ def sim():
             # 注意 p 是本地路径，DB 里存的可能是 UNC 路径，比较时要用 DB 格式归一化。
             db_p = _to_db_path(str(p))
             if not any(_to_db_path(str(r[0])).lower() == db_p.lower() for r in sim_rows):
-                conn = sqlite3.connect(DB_PATH)
+                conn = open_current_readonly_database(DB_PATH)
                 c = conn.cursor()
                 row = c.execute("""
                     SELECT path, caption, type, memory_score, beauty_score,
@@ -1028,7 +1028,7 @@ def sim_render():
 
 @app.get("/static/inktime/<key>/photo_<int:idx>.bin")
 def esp_photo(key: str, idx: int):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
         abort(404)
@@ -1050,7 +1050,7 @@ def esp_photo(key: str, idx: int):
 
 @app.get("/static/inktime/<key>/latest.bin")
 def esp_latest(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
     # 被实际拉取/推送时，标记为已展示
@@ -1075,7 +1075,7 @@ def esp_latest(key: str):
 @app.get("/static/inktime/<key>/photo_<int:idx>.json")
 def esp_photo_sidecar(key: str, idx: int):
     """返回 photo_<idx>.bin 对应的朝向 sidecar（orientation/w/h）。不标已用。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     if idx < 0 or idx >= DAILY_PHOTO_QUANTITY:
         abort(404)
@@ -1086,7 +1086,7 @@ def esp_photo_sidecar(key: str, idx: int):
 @app.get("/static/inktime/<key>/latest.json")
 def esp_latest_sidecar(key: str):
     """返回 latest.bin 对应的朝向 sidecar。不标已用。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "latest.json"
     return _send_static_file(p)
@@ -1095,7 +1095,7 @@ def esp_latest_sidecar(key: str):
 @app.get("/static/inktime/<key>/calib_p.bin")
 def esp_calib_portrait(key: str):
     """竖屏标定卡（480×800），由 render_calib_cards.py 预生成。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "calib_p.bin"
     return _send_static_file(p)
@@ -1104,7 +1104,7 @@ def esp_calib_portrait(key: str):
 @app.get("/static/inktime/<key>/calib_l.bin")
 def esp_calib_landscape(key: str):
     """横屏标定卡（800×480），由 render_calib_cards.py 预生成。"""
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "calib_l.bin"
     return _send_static_file(p)
@@ -1112,7 +1112,7 @@ def esp_calib_landscape(key: str):
 
 @app.get("/static/inktime/<key>/preview.png")
 def esp_preview(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     p = BIN_OUTPUT_DIR / "preview.png"
     return _send_static_file(p)
@@ -1126,108 +1126,116 @@ def esp_time(key: str):
     顺带从这里拿准确时间，避免 NTP 失败导致 sleepUntilNextSchedule 算错下次唤醒。
     复用与其他 ESP32 接口相同的 <key> 鉴权。
     """
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
     return str(int(time.time()))
 
 
-@app.post("/static/inktime/<key>/shutdown")
-def esp_shutdown(key: str):
-    """供 inktime_daily.sh 在检测到 ESP32 拉取后优雅关闭 server。"""
-    if key != DOWNLOAD_KEY:
-        abort(404)
-
-    def _stop() -> None:
-        time.sleep(0.3)  # 留时间让响应先返回
-        print("[InkTime] shutdown via /shutdown")
-        os._exit(0)
-
-    threading.Thread(target=_stop, daemon=True).start()
-    return "shutting down", 200
+# Legacy /shutdown endpoint removed: DOWNLOAD_KEY cannot grant process termination.
 
 
 # ── 设备日志（黑盒）上传 ─────────────────────────────────────
 # ESP32 在每次入睡前把增量事件（JSONL，一行一条）POST 上来；收到 200 才推进
 # 设备侧上传游标。设计见 docs/adr/0001-esp32-flash-device-journal.md。
-# 落盘 logs/device/<key>.log，每行 = 设备原始 JSON 事件补上接收时刻与来源 IP。
+# 新日志使用 logs/device/device-<sha256(key)>.log，历史明文键名文件仅只读兼容。
+# 每行 = 设备原始 JSON 事件补上接收时刻与来源 IP。
 
 DEVICE_LOG_DIR = LOG_DIR / "device"
 DEVICE_LOG_MAX_BYTES = 5 * 1024 * 1024   # >5MB 轮转为 .log.1（保留一代）
-_devlog_max_ls: dict[str, int] = {}      # key → 已落盘的最大事件行号 ls（去重用）
+_devlog_max_ls: dict[str, int] = {}      # 仅诊断缓存；每次请求必须在跨进程锁内从磁盘重读
 
 
 def _devlog_path(key: str) -> Path:
-    return DEVICE_LOG_DIR / f"{key}.log"
+    """Never create a log filename containing the bearer download key."""
+    return device_log_paths(DEVICE_LOG_DIR, key)[1]
 
 
-def _devlog_load_max_ls(key: str) -> int:
-    """从现有文件末段恢复最大 ls（server 重启后仍能去重）。"""
-    p = _devlog_path(key)
-    if not p.exists():
-        return 0
-    try:
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
-    except Exception:
-        return 0
+def _devlog_load_max_ls(key: str, *, directory_fd: int | None = None) -> int:
+    """Recover the highest ls from legacy and opaque-name logs after restart.
+
+    Old plaintext-key filenames are read-only: they are never renamed,
+    overwritten or newly created by the upload handler.
+    """
     max_ls = 0
-    for ln in lines:
-        try:
-            ls = int(json.loads(ln).get("ls", 0))
-        except Exception:
-            continue
-        if ls > max_ls:
-            max_ls = ls
+    for p in device_log_paths(DEVICE_LOG_DIR, key):
+        # Include the previous generation: a crash between rename and first
+        # append must not reset the accepted upload cursor.
+        for candidate in (p.with_suffix(".log.1"), p):
+            # Validate every complete record, not just the last 500 lines.
+            # A corrupt acknowledged record must block new ACKs, including
+            # when the corruption is in a rotated or legacy generation.
+            lines = read_device_log_lines(candidate, validate_jsonl=True, directory_fd=directory_fd)
+            if lines is None:
+                continue
+            for ln in lines:
+                ls = json.loads(ln)["ls"]
+                if ls > max_ls:
+                    max_ls = ls
     return max_ls
 
 
 @app.post("/api/device_log/<key>")
 def esp_device_log(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
     raw = request.get_data(as_text=True)
     if not raw:
         return "empty", 400
 
-    if key not in _devlog_max_ls:
-        _devlog_max_ls[key] = _devlog_load_max_ls(key)
-    max_ls = _devlog_max_ls[key]
-
     recv_iso = datetime.now().isoformat(timespec="seconds")
     ip = request.remote_addr or ""
-    accepted = 0
-    out_lines: list[str] = []
-    for ln in raw.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            ev = json.loads(ln)
-            ls = int(ev.get("ls", 0))
-            if not ls or ls <= max_ls:
-                continue   # 游标回绕/重传导致的重复，跳过
-            max_ls = ls
-        except Exception:
-            continue   # 损坏行丢弃，不影响其余行
-        ev["rcv"] = recv_iso
-        ev["ip"] = ip
-        out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
-        accepted += 1
+    try:
+        # Lock covers cursor recovery, deduplication and append/rotation.
+        # A process-local cursor cannot be trusted across server workers.
+        with device_log_lock(_devlog_path(key)) as journal_dir_fd:
+            try:
+                removed = recover_incomplete_private_device_log_tail(_devlog_path(key), directory_fd=journal_dir_fd)
+                if removed:
+                    print(f"[device_log] recovered {removed} uncommitted tail bytes")
+                max_ls = _devlog_load_max_ls(key, directory_fd=journal_dir_fd)
+            except OSError:
+                print("[device_log] historical journal read failed")
+                return "journal unavailable", 500
 
-    if out_lines:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        p = _devlog_path(key)
-        try:
-            if p.exists() and p.stat().st_size > DEVICE_LOG_MAX_BYTES:
-                p.replace(p.with_suffix(".log.1"))   # 轮转：当前 → .log.1（覆盖旧一代）
-            with open(p, "a", encoding="utf-8") as f:
-                f.write("\n".join(out_lines) + "\n")
-        except Exception as e:
-            print(f"[device_log] write failed: {e}")
-            return "write failed", 500
-        _devlog_max_ls[key] = max_ls
+            out_lines: list[str] = []
+            for ln in raw.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    ev = json.loads(ln)
+                    ls = int(ev.get("ls", 0))
+                    if not ls or ls <= max_ls:
+                        continue
+                    max_ls = ls
+                except Exception:
+                    continue
+                ev["rcv"] = recv_iso
+                ev["ip"] = ip
+                out_lines.append(json.dumps(ev, ensure_ascii=False, separators=(",", ":")))
 
-    return f"OK n={accepted}", 200
+            # Also fsync on duplicate-only retries: a previous failed fsync
+            # may have left visible, but not yet durable, journal records.
+            try:
+                append_private_device_log(
+                    _devlog_path(key), out_lines, max_bytes=DEVICE_LOG_MAX_BYTES,
+                    directory_fd=journal_dir_fd,
+                )
+            except (OSError, ValueError) as exc:
+                print(f"[device_log] write failed: {type(exc).__name__}")
+                return "write failed", 500
+        # The lock context verifies the path and lock inode on exit. Only
+        # advance diagnostics and ACK after that final identity check passes.
+        _devlog_max_ls[key] = max_ls  # diagnostics only; never authoritative
+        return f"OK n={len(out_lines)}", 200
+    except DeviceJournalLockTimeout:
+        # Transient contention: never ACK unpersisted events; ESP32 may retry.
+        print("[device_log] journal lock timed out")
+        return "journal busy", 503, {"Retry-After": "1"}
+    except (OSError, ValueError) as exc:
+        print(f"[device_log] journal lock failed: {type(exc).__name__}")
+        return "journal unavailable", 500
 
 
 # ── 常开设备注册（LAN 推送目标）─────────────────────────────
@@ -1240,26 +1248,26 @@ DEVICE_ENDPOINT_FILE = DEVICE_LOG_DIR / "endpoint.json"
 
 
 def _load_device_endpoint() -> dict:
-    try:
-        rec = json.loads(DEVICE_ENDPOINT_FILE.read_text(encoding="utf-8"))
-        return rec if isinstance(rec, dict) else {}
-    except Exception:
-        return {}
+    """Reject malformed, unsafe or untrusted endpoint files before callbacks."""
+    return load_device_endpoint(DEVICE_ENDPOINT_FILE)
 
 
 @app.post("/api/device_register/<key>")
 def esp_device_register(key: str):
-    if key != DOWNLOAD_KEY:
+    if not authorized_download_key(key, DOWNLOAD_KEYS):
         abort(404)
 
-    ip = request.remote_addr or ""
-    if not ip:
-        return "no ip", 400
-    body = request.get_json(force=True, silent=True) or {}
+    # Use the direct peer address, never a client-supplied Forwarded/XFF header.
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return "invalid registration", 400
     try:
-        port = int(body.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
+        ip, port = validate_device_endpoint(request.remote_addr, body.get("port", 80))
+    except ValueError:
+        return "invalid LAN endpoint", 400
+    # Optional operator-pinned LAN peer; never trust Forwarded/XFF headers.
+    if REGISTRATION_ALLOWED_IP is not None and ip != REGISTRATION_ALLOWED_IP:
+        return "registration peer not allowed", 403
     rec = {
         "ip": ip,
         "port": port,
@@ -1267,9 +1275,9 @@ def esp_device_register(key: str):
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
     try:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        DEVICE_ENDPOINT_FILE.write_text(
-            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        store_device_endpoint(DEVICE_ENDPOINT_FILE, rec)
+    except DeviceEndpointLockTimeout:
+        return "registration busy", 503, {"Retry-After": "1"}
     except Exception as e:
         print(f"[device_register] write failed: {e}")
         return "write failed", 500
@@ -1288,6 +1296,16 @@ import subprocess
 import sys
 
 import requests
+
+
+def _device_request(method: str, url: str, *, timeout: float,
+                    data: dict | None = None):
+    """Never follow redirects or environment HTTP proxies for device callbacks."""
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.request(method, url, timeout=timeout, data=data,
+                               allow_redirects=False)
+
 
 SELECT_CANDIDATE_LIMIT = 120        # 候选池最多返回给前端的张数（按 final_score 截断）
 _SELECT_CACHE: dict[str, object] = {"built_at": 0.0, "payload": None}
@@ -1551,20 +1569,15 @@ def _lan_push_now() -> None:
     设备 IP/端口来自 /api/device_register 的最近一次注册（常开模式下设备
     上线及每次每日刷新后都会重登）。设备返回的拉取日志尾部回显到任务日志。
     """
-    ep = _load_device_endpoint()
-    ip = str(ep.get("ip") or "").strip()
-    try:
-        port = int(ep.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    if not ip:
-        _push_log("[LAN] 未找到已注册的常开设备（需在设备 /debug 页开启常开模式并上线）")
+    base = _device_base_url()
+    if not base:
+        _push_log("[LAN] 未找到有效的局域网设备地址（需设备重新注册）")
         return
 
-    url = f"http://{ip}:{port}/fetch?idx=0"
+    url = f"{base}/fetch?idx=0"
     _push_log(f"[LAN] GET {url} （设备拉取+渲染约 10-40 秒，超时 {_LAN_PUSH_TIMEOUT_SEC}s）...")
     try:
-        resp = requests.get(url, timeout=_LAN_PUSH_TIMEOUT_SEC)
+        resp = _device_request("GET", url, timeout=_LAN_PUSH_TIMEOUT_SEC)
     except requests.RequestException as e:
         _push_log(f"[LAN] 推送失败：{e.__class__.__name__}: {e}")
         return
@@ -1676,15 +1689,10 @@ _DEVICE_RENDER_TIMEOUT_SEC = 150  # 拉取/渲染/标定测试一轮 10-40s，�
 
 
 def _device_base_url() -> str | None:
-    ep = _load_device_endpoint()
-    ip = str(ep.get("ip") or "").strip()
-    if not ip:
+    ep = _load_device_endpoint()  # already validated; no arbitrary URL parts
+    if not ep:
         return None
-    try:
-        port = int(ep.get("port") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    return f"http://{ip}:{port}"
+    return f"http://{ep['ip']}:{ep['port']}"
 
 
 def _device_http(method: str, path: str, timeout: float,
@@ -1694,10 +1702,7 @@ def _device_http(method: str, path: str, timeout: float,
     if not base:
         return 503, "设备未注册（需唤醒设备或开启常开模式，设备上线后会自动注册）"
     try:
-        if method == "GET":
-            resp = requests.get(base + path, timeout=timeout)
-        else:
-            resp = requests.post(base + path, data=data, timeout=timeout)
+        resp = _device_request(method, base + path, timeout=timeout, data=data)
     except requests.RequestException as e:
         return 503, f"设备请求失败：{e.__class__.__name__}: {e}"
     resp.encoding = "utf-8"   # ESP32 输出恒为 UTF-8；防 Content-Type 未带 charset 时被按 latin-1 解码
@@ -1755,23 +1760,19 @@ def api_device_set_endpoint():
 
     设备自动注册失败时的兜底：注册成功后设备会以真实连接源覆盖此记录。
     """
-    ip = str(request.form.get("ip", "")).strip()
     try:
-        port = int(request.form.get("port", "80") or 80)
-    except (TypeError, ValueError):
-        port = 80
-    if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or not (1 <= port <= 65535):
-        return jsonify({"error": "IP 或端口格式不正确"}), 400
+        ip, port = validate_device_endpoint(
+            request.form.get("ip", ""), request.form.get("port", "80"))
+    except ValueError:
+        return jsonify({"error": "仅允许有效的局域网 IPv4 地址和端口"}), 400
 
-    old = _load_device_endpoint()
     rec = {"ip": ip, "port": port,
-           "alwayson": bool(old.get("alwayson")),
            "ts": datetime.now().isoformat(timespec="seconds"),
            "manual": True}
     try:
-        DEVICE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        DEVICE_ENDPOINT_FILE.write_text(
-            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        rec = store_device_endpoint(DEVICE_ENDPOINT_FILE, rec, preserve_alwayson=True)
+    except DeviceEndpointLockTimeout:
+        return jsonify({"error": "设备注册繁忙，请稍后重试"}), 503, {"Retry-After": "1"}
     except Exception as e:
         return jsonify({"error": f"写入失败：{e}"}), 500
     return jsonify({"ok": True, "endpoint": rec})
@@ -1981,7 +1982,7 @@ if __name__ == "__main__":
     print(f"[InkTime] DB: {DB_PATH}")
     print(f"[InkTime] IMAGE_DIR: {IMAGE_DIR}")
     print(f"[InkTime] OUT: {BIN_OUTPUT_DIR}")
-    print(f"[InkTime] key: {DOWNLOAD_KEY}")
+    print("[InkTime] download key: [REDACTED]")
     print(f"[InkTime] listen: {FLASK_HOST}:{FLASK_PORT}")
     print(f"[InkTime] open: http://127.0.0.1:{FLASK_PORT}/  (本机)")
     # threaded=True:NAS 大图流式传输时不阻塞其它请求(单线程时 /sim 会排在图片流后面,点击详情像"没反应")

@@ -4,14 +4,14 @@
  * InkTime ESP32 WiFi 墨水屏驱动
  *
  * 功能：
- *   1. 支持保存 3 组 WiFi 配置（含一组固件内置备用网络），启动时扫描周围
+ *   1. 支持保存 3 组 NVS WiFi 配置（不再注入固件内置备用网络），启动时扫描周围
  *      网络并自动连接信号最强的已保存组；一组都连不上时进入 AP 配网模式
- *      （SSID: InkTime-xxxx / 密码: 12345678），并刷新屏幕提示 AP 模式
+ *      （SSID: InkTime-xxxx / 密码: 屏幕显示的每设备随机口令），并刷新屏幕提示 AP 模式
  *   2. 配网后通过 WiFi 连接服务器，HTTP 下载当日照片 .bin 文件
  *   3. ESP32epdx 低层驱动 (EPD.h) 驱动 7.3寸四色墨水屏 (GDEY073D46 / EL073TS3) 渲染画面
  *   4. 渲染完成后进入 Deep Sleep，定时唤醒刷新
  *   5. 上电时按住 GPIO0 (BOOT 键) 可恢复出厂设置（清空 NVS + 重新配网；
- *      内置备用 WiFi 会在下次启动时自动补回）
+ *      不再自动恢复任何旧网络凭据）
  *   6. 常开模式（/debug 页开关，NVS 持久化）：开启后不再休眠，Web 常驻，
  *      局域网 server 可向设备 /fetch 主动推送照片；每日定时拉取照常执行
  *
@@ -109,10 +109,9 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 
 // ============================================================
 //  每日照片下载配置
-//  URL 路径前缀，需与 config.py 中的 DOWNLOAD_KEY 保持一致
-//  支持三种文件：.bin（画面）/ .json（朝向 sidecar）/ calib_{p,l}.bin（标定卡）
+//  设备下载路径密钥来自 NVS；禁止在固件镜像中嵌入共享密钥。
+//  支持 .bin/.json 和 calib_{p,l}.bin；不输出带密钥的完整 URL。
 // ============================================================
-#define DAILY_PHOTO_PATH_PREFIX "/static/inktime/andyhome0203/photo_"
 #define DAILY_PHOTO_COUNT       5  // photo_0.bin ~ photo_4.bin
 
 // ============================================================
@@ -120,6 +119,7 @@ static const uint32_t AP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 // ============================================================
 Preferences prefs;
 WebServer   server(80);
+static String g_apPassword;  // 每设备独立 AP 口令；仅显示在本机屏幕
 
 // ── 多组 WiFi 配置 ──
 // 最多 3 组凭据。组0 沿用旧 NVS 键 ssid/pass（升级固件后已有配置自动成为组0），
@@ -128,16 +128,12 @@ WebServer   server(80);
 // 注意：隐藏 SSID（不广播）的网络扫描不到，不会被尝试。
 static const int WIFI_PROFILE_COUNT = 3;
 
-// 固件内置备用网络：若没有任何槽位保存它，自动写入首个空槽位（优先组1，
-// 避开用户主配置；恢复出厂清空 NVS 后下次启动也会重新补入）。
-static const char* BUILTIN_WIFI_SSID = "lybclj123";
-static const char* BUILTIN_WIFI_PASS = "woshi123";
-
 struct Config {
   String  wifi_ssid[WIFI_PROFILE_COUNT];  // WiFi SSID（组0 为主配置）
   String  wifi_pass[WIFI_PROFILE_COUNT];  // WiFi 密码
   int8_t  active_wifi;                    // 本次唤醒实际连上的组下标（RAM 不落盘），-1=未连接
   String  backend_hostport;  // 服务器地址 (host:port)
+  String  download_key;      // 下载/授时/日志上传路径密钥（NVS dl_key，绝不输出到日志）
   int32_t tz_offset_hours;   // 时区偏移（小时）
   uint8_t refresh_hour;      // 每日刷新时间（0-23）
   bool    rotate180;         // 画面旋转 180°
@@ -237,6 +233,29 @@ static void releaseAllGpioHoldsAtBoot() {
   }
 }
 
+// 新配发的设备密钥须具有足够长度，且只能作为一个 URL path segment。
+// 旧版服务器可临时接受短密钥，但新固件不再配发低熵密钥。
+static bool validDownloadKey(const String &key) {
+  if (key.length() < 24 || key.length() > 128) return false;
+  for (size_t i = 0; i < key.length(); ++i) {
+    char c = key[i];
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+          (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+  }
+  return true;
+}
+
+// 独立写入 NVS：仅在 AP 配网窗口接受新密钥；写失败则不重启/不修改内存配置。
+static bool saveDownloadKey(const String &key) {
+  if (!validDownloadKey(key)) return false;
+  if (!prefs.begin("dashcfg", false)) return false;
+  size_t written = prefs.putString("dl_key", key);
+  prefs.end();
+  return written == key.length();
+}
+
+static bool g_configPortalActive = false;
+
 // ============================================================
 //  NVS 配置读写
 // ============================================================
@@ -258,6 +277,7 @@ void loadConfig(Config &cfg) {
   cfg.wifi_pass[2]     = prefs.getString("pass2", "");
   cfg.active_wifi      = -1;
   cfg.backend_hostport = prefs.getString("hostport", DEFAULT_HOSTPORT);
+  cfg.download_key     = prefs.getString("dl_key", "");  // 不使用固件默认密钥
   cfg.tz_offset_hours  = prefs.getInt("tz", DEFAULT_TZ);
   cfg.refresh_hour     = (uint8_t)prefs.getUChar("hour", DEFAULT_HOUR);
   cfg.rotate180        = prefs.getBool("rot180", false);
@@ -283,6 +303,7 @@ void loadConfig(Config &cfg) {
                cfg.wifi_pass[i].length() > 0 ? "(已存)" : "(空)");
   }
   DBG_PRINTF("[CFG] hostport=%s\n",   cfg.backend_hostport.c_str());
+  DBG_PRINTF("[CFG] download_key=%s\n", cfg.download_key.length() ? "(已配置)" : "(缺失)");
   DBG_PRINTF("[CFG] tz=%d, hour=%d\n", cfg.tz_offset_hours, (int)cfg.refresh_hour);
   DBG_PRINTF("[CFG] rotate180=%s\n",  cfg.rotate180 ? "true" : "false");
   DBG_PRINTF("[CFG] servo_cal=%s p=%.1f l=%.1f spd=%.1f inv=%s\n",
@@ -292,27 +313,6 @@ void loadConfig(Config &cfg) {
   DBG_PRINTF("[CFG] last_ori=%s\n",   cfg.last_orientation.c_str());
   DBG_PRINTF("[CFG] valid=%s\n",      cfg.valid ? "true" : "false");
 #endif
-}
-
-// 固件内置备用 WiFi：若没有任何槽位保存它，写入首个空槽位（优先组1，避开
-// 用户主配置）。同步写 NVS + 内存；恢复出厂（clearConfigNVS）后下次启动重新补入。
-static void ensureBuiltinWifiProfile(Config &cfg) {
-  for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
-    if (cfg.wifi_ssid[i] == BUILTIN_WIFI_SSID) return;   // 已保存过，不重复
-  }
-  for (int i = 1; i < WIFI_PROFILE_COUNT; ++i) {
-    if (cfg.wifi_ssid[i].length() == 0) {
-      cfg.wifi_ssid[i] = BUILTIN_WIFI_SSID;
-      cfg.wifi_pass[i] = BUILTIN_WIFI_PASS;
-      prefs.begin("dashcfg", false);
-      prefs.putString((String("ssid") + String(i)).c_str(), cfg.wifi_ssid[i]);
-      prefs.putString((String("pass") + String(i)).c_str(), cfg.wifi_pass[i]);
-      prefs.end();
-      cfg.valid = true;
-      DBG_PRINTF("[CFG] 内置备用 WiFi 已写入组 %d: %s\n", i + 1, BUILTIN_WIFI_SSID);
-      return;
-    }
-  }
 }
 
 void saveConfig(const Config &cfg) {
@@ -656,8 +656,8 @@ String buildConfigPage() {
   html += F("<div class='note'>支持保存 ");
   html += String(WIFI_PROFILE_COUNT);
   html += F(" 组 WiFi：设备启动时扫描周围网络，自动连接信号最强的已保存组。");
-  html += F("密码留空表示保持不变；SSID 留空表示删除该组（固件内置的备用网络");
-  html += F("删除后重启会自动补回）。隐藏 SSID（不广播）的网络无法被扫描匹配。</div>");
+  html += F("密码留空表示保持不变；SSID 留空表示删除该组。");
+  html += F("隐藏 SSID（不广播）的网络无法被扫描匹配。</div>");
 
   // 3 组 WiFi 编辑：每组 = 扫描下拉 + SSID 输入 + 密码输入
   for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
@@ -707,6 +707,17 @@ String buildConfigPage() {
     html += (g_cfg.wifi_pass[i].length() > 0) ? F("不填=保持原密码") : F("WiFi 密码");
     html += F("'></div>");
   }
+
+  // 不回填密钥到 HTML；仅在本机随机 WPA2 AP 配网模式允许修改。
+  html += F("<div class='group'><label>设备下载密钥</label>");
+  if (g_configPortalActive) {
+    html += F("<input name='dl_key' type='password' autocomplete='new-password' maxlength='128' placeholder='");
+    html += validDownloadKey(g_cfg.download_key) ? F("留空=保留现有密钥") : F("必填：24~128 位随机密钥");
+    html += F("'><small>使用服务器 INKTIME_DOWNLOAD_KEY；只在 AP 配网模式允许更改，不显示已有值。</small>");
+  } else {
+    html += F("<small>仅在设备 AP 配网模式下修改下载密钥。</small>");
+  }
+  html += F("</div>");
 
   // 服务器地址
   html += F("<div class='group'><label>服务器地址 (host:port)</label>");
@@ -867,6 +878,23 @@ void handleSave() {
 
   Config newCfg = g_cfg;
 
+  // 下载密钥仅能在设备专属 AP 配网窗口更新，避免局域网 /save 越权改密钥。
+  String submittedKey = server.arg("dl_key");
+  if (submittedKey.length() > 0) {
+    if (!g_configPortalActive) {
+      server.send(403, "text/plain; charset=utf-8", "下载密钥只能通过 AP 配网修改");
+      return;
+    }
+    if (!validDownloadKey(submittedKey)) {
+      server.send(400, "text/plain; charset=utf-8", "下载密钥必须为 24~128 位 ASCII 字母、数字、_ 或 -");
+      return;
+    }
+  }
+  if (submittedKey.length() == 0 && !validDownloadKey(newCfg.download_key)) {
+    server.send(400, "text/plain; charset=utf-8", "首次配网必须填写有效下载密钥");
+    return;
+  }
+
   // 3 组 WiFi：SSID 留空=删除该组；密码留空=保持原密码
   for (int i = 0; i < WIFI_PROFILE_COUNT; ++i) {
     String ssid = server.arg(String("ssid") + String(i));
@@ -898,6 +926,13 @@ void handleSave() {
     if (newCfg.wifi_ssid[i].length() > 0) { newCfg.valid = true; break; }
   }
 
+  if (submittedKey.length() > 0) {
+    if (!saveDownloadKey(submittedKey)) {
+      server.send(500, "text/plain; charset=utf-8", "下载密钥写入 NVS 失败，配置未保存");
+      return;
+    }
+    newCfg.download_key = submittedKey;
+  }
   saveConfig(newCfg);
 
   String resp = htmlHead(F("保存成功 · InkTime"), "network");
@@ -1663,6 +1698,30 @@ void goDeepSleepMinutes(uint32_t minutes) {
   esp_deep_sleep_start();
 }
 
+// AP 口令保存在 dashcfg NVS，BOOT 恢复出厂会清空它。
+// 必须先启用 Wi-Fi 射频，再从 esp_random() 生成不可预测口令。
+// NVS 不可写时拒绝开启 AP，不能回退到共享密码或开放热点。
+static String loadOrCreateApPassword() {
+  if (!prefs.begin("dashcfg", false)) {
+    DBG_PRINTLN("[AP] NVS 不可用，拒绝配网");
+    return "";
+  }
+  String password = prefs.getString("ap_pwd", "");
+  if (password.length() != 16) {
+    char generated[17];
+    snprintf(generated, sizeof(generated), "%08lX%08lX",
+             (unsigned long)esp_random(), (unsigned long)esp_random());
+    password = String(generated);
+    if (prefs.putString("ap_pwd", password) != password.length()) {
+      prefs.end();
+      DBG_PRINTLN("[AP] 无法持久化随机密码，拒绝配网");
+      return "";
+    }
+  }
+  prefs.end();
+  return password;
+}
+
 // ============================================================
 //  AP 配网模式
 // ============================================================
@@ -1671,16 +1730,23 @@ void startConfigPortal() {
 
   // 进入配网统一刷新屏幕提示（热点名/密码/配置地址 192.168.4.1）：
   // 无论从哪条路径进来（无配置 / 多组全连不上 / 配网超时休眠后再醒）都会显示。
+  // 先启动 Wi-Fi RF 保证硬件 RNG 有熵，后取得/生成 AP 密码。
+  wifiHardResetForPortal();
+  g_apPassword = loadOrCreateApPassword();
+  if (g_apPassword.length() != 16) {
+    DBG_PRINTLN("[AP] 密码不可用，拒绝开启配网 AP");
+    goDeepSleepMinutes(30);
+    return;
+  }
+
+  // 仅在本机墨水屏显示 AP 凭据，不输出到串口或设备日志。
   showNetworkInfoScreen(true, false);
 
-  wifiHardResetForPortal();
-
   // AP 名称：InkTime-<MAC后4位>
-  String apSsid     = "InkTime-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
-  const char* apPwd = "12345678";
+  String apSsid = "InkTime-" + String((uint32_t)ESP.getEfuseMac(), HEX).substring(4);
+  bool apOk = WiFi.softAP(apSsid.c_str(), g_apPassword.c_str());
 
-  bool apOk = WiFi.softAP(apSsid.c_str(), apPwd);
-
+  g_configPortalActive = apOk;
   DBG_PRINTF("[CFG] AP 启动 %s\n", apOk ? "成功" : "失败");
   journalEvent(EV_AP, "ssid=%s ok=%d", apSsid.c_str(), (int)apOk);
   DBG_PRINTF("[CFG] SSID: %s, IP: %s\n", apSsid.c_str(), WiFi.softAPIP().toString().c_str());
@@ -1870,35 +1936,31 @@ static void pushLog(String* logBuf, const String& line) {
 }
 
 // ============================================================
-//  构建下载 URL（hostport + prefix + 名字）
+//  构建下载 URL：仅从已验证的 NVS 密钥生成路径；缺失则返回空字符串。
 // ============================================================
+static String pathPrefixBase(const Config &cfg) {
+  if (!validDownloadKey(cfg.download_key)) return "";
+  return "/static/inktime/" + cfg.download_key + "/";
+}
+
 static String buildPhotoUrl(const Config &cfg, const String &suffix) {
-  String hp = cfg.backend_hostport;
-  hp.trim();
-  if (hp.startsWith("http://") || hp.startsWith("https://")) {
-    return hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
-  }
-  return "http://" + hp + String(DAILY_PHOTO_PATH_PREFIX) + suffix;
-}
-
-// 构建服务器授时 URL：/static/inktime/<key>/time
-// 与 DAILY_PHOTO_PATH_PREFIX 同前缀，但末尾是 /time 而非 photo_*
-// DAILY_PHOTO_PATH_PREFIX = "/static/inktime/andyhome0203/photo_"
-// 授时接口              = "/static/inktime/andyhome0203/time"
-// 去掉末尾 "photo_"（6 字符）拼上 "time" 即可。
-// 前缀剥离逻辑抽成 pathPrefixBase()，与 calib 卡 URL 共用（原先重复 3 处）。
-static String pathPrefixBase() {
-  String prefix = String(DAILY_PHOTO_PATH_PREFIX);
-  prefix.remove(prefix.length() - 6);  // 去掉末尾 "photo_"
-  return prefix;
-}
-
-static String buildServerTimeUrl(const Config &cfg) {
+  String prefix = pathPrefixBase(cfg);
+  if (!prefix.length()) return "";
   String hp = cfg.backend_hostport;
   hp.trim();
   String base = hp.startsWith("http://") || hp.startsWith("https://")
                 ? hp : ("http://" + hp);
-  return base + pathPrefixBase() + String("time");
+  return base + prefix + "photo_" + suffix;
+}
+
+static String buildServerTimeUrl(const Config &cfg) {
+  String prefix = pathPrefixBase(cfg);
+  if (!prefix.length()) return "";
+  String hp = cfg.backend_hostport;
+  hp.trim();
+  String base = hp.startsWith("http://") || hp.startsWith("https://")
+                ? hp : ("http://" + hp);
+  return base + prefix + "time";
 }
 
 // 从服务器 /time 接口拉取 Unix epoch，用 settimeofday() 设系统时钟。
@@ -1907,7 +1969,8 @@ static String buildServerTimeUrl(const Config &cfg) {
 // 成功返回 true，outLocal 填入本地时间。
 static bool fetchServerTime(const Config &cfg, struct tm &outLocal) {
   String url = buildServerTimeUrl(cfg);
-  DBG_PRINTF("[TIME] 服务器授时 GET %s\n", url.c_str());
+  if (!url.length()) { DBG_PRINTLN("[TIME] 缺少有效下载密钥，拒绝授时请求"); return false; }
+  DBG_PRINTLN("[TIME] 服务器授时 GET /time（URL 密钥已隐藏）");
 
   HTTPClient http;
   http.begin(url);
@@ -1959,10 +2022,9 @@ static bool fetchServerTime(const Config &cfg, struct tm &outLocal) {
 //  让 DHCP 换 IP 后能自愈。
 // ============================================================
 static void registerDeviceWithServer() {
-  if (g_cfg.backend_hostport.length() == 0) return;
+  if (g_cfg.backend_hostport.length() == 0 || !validDownloadKey(g_cfg.download_key)) return;
 
-  String base = pathPrefixBase();                       // "/static/inktime/<key>"
-  String key  = base.substring(base.lastIndexOf('/') + 1);
+  String key = g_cfg.download_key;
   String hp   = g_cfg.backend_hostport;
   hp.trim();
   String url  = (hp.startsWith("http://") || hp.startsWith("https://") ? hp : ("http://" + hp))
@@ -1978,8 +2040,8 @@ static void registerDeviceWithServer() {
     http.addHeader("Content-Type", "application/json");
     code = http.POST(body);
     http.end();
-    DBG_PRINTF("[AON] 设备注册 %s 尝试%d code=%d\n", url.c_str(), attempt, code);
-    pushLog(&g_fetchLog, String("[AON] register try") + attempt + " code=" + code + " " + url);
+    DBG_PRINTF("[AON] 设备注册尝试%d code=%d（密钥已隐藏）\n", attempt, code);
+    pushLog(&g_fetchLog, String("[AON] register try") + attempt + " code=" + code);
     if (code == HTTP_CODE_OK) break;
     if (attempt < 2) delay(2000);
   }
@@ -1995,8 +2057,9 @@ static void registerDeviceWithServer() {
 // ============================================================
 static bool fetchPhotoOrientation(const Config &cfg, int idx, String &outOrientation, String* logBuf) {
   String url = buildPhotoUrl(cfg, String(idx) + ".json");
-  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
-  pushLog(logBuf, String("[朝向] GET ") + url);
+  if (!url.length()) { pushLog(logBuf, "[朝向] 下载密钥未配置"); return false; }
+  DBG_PRINTLN("[HTTP] GET photo_N.json（密钥已隐藏）");
+  pushLog(logBuf, String("[朝向] GET photo_") + idx + ".json");
 
   HTTPClient http;
   http.begin(url);
@@ -2224,9 +2287,10 @@ static bool fetchBinStreamWithRetry(const String &url, const char *tag, const St
                                     uint32_t httpTimeoutMs, const String &orientation,
                                     uint16_t paintRotate, unsigned char* BlackImage,
                                     String* logBuf) {
+  if (!url.length()) { pushLog(logBuf, String(tag) + "下载密钥未配置"); return false; }
   const int MAX_RETRY = 3;
   for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-    pushLog(logBuf, String(tag) + attemptCtx + "尝试 " + attempt + "/" + MAX_RETRY + " | GET " + url);
+    pushLog(logBuf, String(tag) + attemptCtx + "尝试 " + attempt + "/" + MAX_RETRY + " | GET [密钥隐藏]");
 
     HTTPClient http;
     http.begin(url);
@@ -2266,7 +2330,7 @@ static bool fetchBinStreamWithRetry(const String &url, const char *tag, const St
 static bool fetchPhotoBinToFramebuffer(const Config &cfg, int idx, const String &orientation,
                                        unsigned char* BlackImage, String* logBuf) {
   String url = buildPhotoUrl(cfg, String(idx) + ".bin");
-  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+  DBG_PRINTLN("[HTTP] GET photo_N.bin（密钥已隐藏）");
 
   // WiFi 偶发抖断会导致 384KB 流式读取中途断开（少几百字节），
   // 重试细节见 fetchBinStreamWithRetry（每次重建连接、清空 framebuffer 重写）。
@@ -2460,13 +2524,14 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
 static bool fetchCalibCardToFramebuffer(const Config &cfg, const String &calibName,
                                         const String &orientation,
                                         unsigned char* BlackImage, String* logBuf) {
-  // URL 构造：DAILY_PHOTO_PATH_PREFIX 去掉末尾 "photo_" 得到 calib 基路径
-  String base = pathPrefixBase();   // → "/static/inktime/<key>/"
+  // 标定卡同样使用 NVS 密钥，绝不输出完整 URL。
+  String base = pathPrefixBase(cfg);
+  if (!base.length()) { pushLog(logBuf, "[标定] 下载密钥未配置"); return false; }
   String hp = cfg.backend_hostport;
   hp.trim();
   String url = (hp.startsWith("http") ? hp : ("http://" + hp)) + base + calibName;
 
-  DBG_PRINTF("[HTTP] GET %s\n", url.c_str());
+  DBG_PRINTLN("[HTTP] GET calib_N.bin（密钥已隐藏）");
 
   // 写入时的 Paint 旋转决定画面朝向（PIC_display 原样发送，刷屏阶段再设 rotate 无效）。
   // computePaintRotate 综合 orientation + cfg.rotate180/landscape_invert 给出最终旋转。
@@ -2672,7 +2737,7 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess) {   // 前置声明在文�
     textY += 30;
     Paint_DrawString_EN(textX, textY, ("SSID: " + apSsid).c_str(), &Font24, RED0, WHITE0);
     textY += 30;
-    Paint_DrawString_EN(textX, textY, "Pass: 12345678", &Font24, BLACK0, WHITE0);
+    Paint_DrawString_EN(textX, textY, ("Pass: " + g_apPassword).c_str(), &Font24, BLACK0, WHITE0);
     textY += 40;
     Paint_DrawString_EN(textX, textY, "Then visit:", &Font20, BLACK0, WHITE0);
     textY += 30;
@@ -2783,19 +2848,15 @@ void setup() {
   // 5. 初始化随机数种子
   randomSeed(esp_random());
 
-  // 6. 加载 NVS 配置 + 补入固件内置备用 WiFi（lybclj123）
+  // 6. 仅加载已有 NVS 配置；空槽位保持空，不写入任何固件内置 WiFi 凭据。
+  //    首次启动或恢复出厂后，无已保存网络时由下方 !g_cfg.valid 分支进入 AP 配网。
   loadConfig(g_cfg);
-  ensureBuiltinWifiProfile(g_cfg);
   g_alwaysOnMode = loadAlwaysOnMode();   // 常开模式（NVS 持久化，跨重启生效）
   DBG_PRINTF("[CFG] always_on=%s\n", g_alwaysOnMode ? "true" : "false");
 
-  // 6.1 注入设备日志的上传目标（hostport + 照片 key 作设备标识）
-  {
-    String prefix = String(DAILY_PHOTO_PATH_PREFIX);            // "/static/inktime/<key>/photo_"
-    String base   = prefix.substring(0, prefix.length() - 6);   // "/static/inktime/<key>/"
-    base.remove(base.length() - 1);                             // 去掉末尾 '/' → "/static/inktime/<key>"
-    journalSetServer(g_cfg.backend_hostport, base.substring(base.lastIndexOf('/') + 1));  // → "<key>"
-  }
+  // 6.1 设备日志上传使用同一 NVS 下载密钥；禁止在日志输出 URL。
+  journalSetServer(g_cfg.backend_hostport,
+                   validDownloadKey(g_cfg.download_key) ? g_cfg.download_key : "");
 
   // 6.5 初始化墨水屏 SPI 引脚 (必须在 showNetworkInfoScreen 之前调用)
   pinMode(PIN_EPD_BUSY, INPUT_PULLUP);  // BUSY（上拉：无屏时读 idle，配合 detectEpdPresent 判据）
@@ -2849,8 +2910,8 @@ void setup() {
   }
 
   // 7. 无有效配置 → 进入 AP 配网（屏幕提示由 startConfigPortal 内统一刷新）
-  if (!g_cfg.valid) {
-    DBG_PRINTLN("[BOOT] 无有效配置 → AP 配网模式");
+  if (!g_cfg.valid || !validDownloadKey(g_cfg.download_key)) {
+    DBG_PRINTLN("[BOOT] WiFi 或下载密钥未配置 → AP 配网模式");
     startConfigPortal();
     // startConfigPortal() 不返回
   }

@@ -188,6 +188,15 @@ TEXT_LAYOUT_FORCE = ""
 # 浅色底托（P03/P08/P10/L04/L07）渐变峰值不透明度：1.0=实色，0.85=留 15% 照片透出
 TEXT_VEIL_OPACITY = 0.85
 
+# ── 版式覆盖区×主体冲突选型参数 ────────────────────────
+# 硬否决线（layout_strategy.coverage_conflict 直接读取，必填）：
+# 任一重要主体（person/cat/dog…）被覆盖区（glass 卡 / veil 底托）有效遮挡
+# 的复合遮挡率 ≥ 此比例，或主体中心落入不透明度 ≥0.5 的覆盖区，即否决该版式。
+# 相关微调项 COVERAGE_GLASS_FLOOR / COVERAGE_SOFT_DISTANCE_PX /
+# COVERAGE_SOFT_MAX_PENALTY / COVERAGE_FACE_VETO_OPACITY 代码内有默认值，
+# 需要覆盖时在 config.py 中显式添加即可（见 layout_strategy.py 注释）。
+COVERAGE_VETO_RATIO = 0.25
+
 
 # ═══ ⑦ 投递：ESP32 拉取 / BLE 推送 ════════════════════
 # （inktime_daily.sh 读取能力开关；server.py / push_to_epd_ble.py 读取各自参数）
@@ -198,13 +207,21 @@ ENABLE_BLE_PUSH    = True   # True: render 后 BLE 推送到 nRF5 设备（push_
 ENABLE_ESP32_SERVE = True   # True: render 后临时启动 server.py 供 ESP32 主动拉取
 
 # ───── ESP32 拉取（server.py）── 仅 ENABLE_ESP32_SERVE=True 时生效 ─────
-# 为防止照片隐私泄露，建议为 ESP32 下载路径加一个随机前缀作为密钥
-# 前缀修改后，请同步修改 esp32/ink-display-7C-photo/ink-display-7C-photo.ino 固件中的 DAILY_PHOTO_PATH_PREFIX 字段
+# 兼容旧部署：config.py 的 DOWNLOAD_KEY 仍是默认值。
+# 环境变量 INKTIME_DOWNLOAD_KEY 显式覆盖当前 key；
+# 可选 INKTIME_DOWNLOAD_KEY_PREVIOUS 只在迁移期临时接受旧 key。
+# 生产密钥必须来自受限配置，不要写入 Git 或终端历史。
+# 旧 ESP32 固件仍携带编译期路径，轮换前必须完成设备侧迁移。
+# 新 key 建议使用 secrets.token_urlsafe(32) 生成。
 DOWNLOAD_KEY = "yourdownloadkey"
 
 # Flask 静态服务
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 8765
+# 管理接口默认锁定：通过服务进程环境变量设置 INKTIME_ADMIN_PASSWORD (required)
+# 可选 INKTIME_ADMIN_USERNAME (default: admin)。建议通过 HTTPS 反向代理访问后台。
+# HTTP Basic 在明文 HTTP 上会暴露凭据，不应与 DOWNLOAD_KEY 共用密码。
+
 
 # 是否开启照片库 WebUI（前期检验提示词选片效果时使用，跑通后建议关闭）
 ENABLE_REVIEW_WEBUI = True
