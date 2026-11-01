@@ -122,7 +122,7 @@ if [[ "${DO_ESP32}" == "1" ]]; then
     # 提供 ESP32 拉照片接口 + /time 服务器授时。本脚本不再起/停 server，
     # 仅做健康检查：确认服务存活，异常则尝试重启。
     if ! command -v systemctl >/dev/null 2>&1; then
-        # Docker 容器等无 systemd 环境：server 由 supervisor 管理，跳过健康检查
+        # 无 systemd 环境（容器等）：server 由调度器管理，跳过健康检查
         log "Step 3: 本环境无 systemd，跳过服务健康检查（server 由容器调度管理）。"
     else
     log "Step 3: 检查 inktime-server 服务健康"

@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import unittest
 
-from device_registration_identity import (
+from inktime.server.device_registration_identity import (
     RegistrationIdentityError,
     registration_signing_payload,
     validate_device_id,

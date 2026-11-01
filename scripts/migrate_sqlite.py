@@ -19,7 +19,9 @@ import sqlite3
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from db_schema import (
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接 python3 scripts/xxx.py 运行
+from inktime.core.db_schema import (
     SCHEMA_VERSION, MigrationError, _require_photo_table,
     _verify_photo_columns, apply_migrations, current_version,
     verify_latest_schema,

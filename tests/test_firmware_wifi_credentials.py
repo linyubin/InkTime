@@ -9,7 +9,7 @@ from pathlib import Path
 
 FIRMWARE = (
     Path(__file__).resolve().parents[1]
-    / "esp32" / "ink-display-wifi-epd" / "ink-display-wifi-epd.ino"
+    / "hardware" / "esp32" / "ink-display-wifi-epd" / "ink-display-wifi-epd.ino"
 )
 
 

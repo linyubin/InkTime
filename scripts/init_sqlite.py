@@ -15,7 +15,9 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from db_schema import SCHEMA_VERSION, apply_migrations, verify_latest_schema
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接 python3 scripts/xxx.py 运行
+from inktime.core.db_schema import SCHEMA_VERSION, apply_migrations, verify_latest_schema
 
 
 def initialize_database(database: Path) -> Path:

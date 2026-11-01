@@ -10,7 +10,7 @@ from scripts.init_sqlite import initialize_database
 from scripts.reconcile_photos import (
     db_key, evaluate_missing, reconcile, scan_photo_tree, write_report_exclusive,
 )
-from photo_scan_safety import ScanIncompleteError
+from inktime.analysis.photo_scan_safety import ScanIncompleteError
 
 
 class ReconcileTests(unittest.TestCase):

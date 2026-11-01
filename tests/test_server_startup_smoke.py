@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="inktime-flask-smoke-") as d:
         initialize_database(db_path)
 
     try:
-        import server
+        import inktime.server.server as server
     except SystemExit as exc:
         assert mode in ("missing", "invalid"), repr(exc)
         message = str(exc)

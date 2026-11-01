@@ -8,7 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 import config as cfg
-from render_daily_photo import compute_crop_window
+from inktime.render.render_daily_photo import compute_crop_window
 
 def main():
     db_path = Path(str(getattr(cfg, "DB_PATH", "./photos.db"))).expanduser()
@@ -42,7 +42,7 @@ def main():
     img_area_w = 480
     img_area_h = 800 - 120 # 680
 
-    from analyze_photos import detect_subjects
+    from inktime.analysis.analyze_photos import detect_subjects
 
     for idx, (path_str, subjects_json) in enumerate(rows, start=1):
         p = Path(path_str)
@@ -92,7 +92,7 @@ def main():
         }
         
         try:
-            from render_daily_photo import render_image
+            from inktime.render.render_daily_photo import render_image
             img_smart_rendered = render_image(meta)
         except Exception as e:
             print(f"渲染新版本失败: {e}")

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema, open_current_database, open_current_readonly_database
+from inktime.core.db_schema import SCHEMA_VERSION, MigrationError, PHOTO_COLUMNS, apply_migrations, require_current_schema, open_current_database, open_current_readonly_database
 from scripts.backup_sqlite import _photo_scores_fingerprint, restore_drill
 from scripts.migrate_sqlite import inspect_database, migrate_database
 
@@ -106,7 +106,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"not a sqlite database")
 
     def test_server_connection_policy_has_no_raw_sqlite_open(self):
-        source = (Path(__file__).resolve().parents[1] / "server.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "inktime" / "server" / "server.py").read_text()
         tree = ast.parse(source)
         self.assertNotIn("sqlite3.connect(", source)
         functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
@@ -148,7 +148,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(read.execute("SELECT method FROM transfer_history").fetchone()[0], "GET")
 
     def test_server_preflight_precedes_startup_writes(self):
-        source = (Path(__file__).resolve().parents[1] / "server.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "inktime" / "server" / "server.py").read_text()
         tree = ast.parse(source)
         # No implicit CREATE TABLE / CREATE INDEX or ignored schema errors.
         self.assertNotIn("CREATE TABLE IF NOT EXISTS transfer_history", source)
@@ -361,7 +361,7 @@ class MigrationTests(unittest.TestCase):
                 open_current_readonly_database(self.db, busy_timeout_ms=invalid)
 
     def test_webui_readonly_connection_source_never_falls_back_to_write(self):
-        source = (Path(__file__).resolve().parents[1] / "webui.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "inktime" / "server" / "webui.py").read_text()
         tree = ast.parse(source)
         helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                       and n.name == "_get_conn")
@@ -371,7 +371,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("return None", body)
 
     def test_analyzer_source_no_implicit_ddl_and_preflights_before_filelist(self):
-        source = (Path(__file__).resolve().parents[1] / "analyze_photos.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "inktime" / "analysis" / "analyze_photos.py").read_text()
         tree = ast.parse(source)
         self.assertNotIn("def ensure_table(", source)
         self.assertNotIn("ALTER TABLE photo_scores", source)

@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from path_security import safe_join
-from photo_scan_safety import ScanIncompleteError, scandir_with_retries, count_missing_paths, path_is_within_root
+from inktime.server.path_security import safe_join
+from inktime.analysis.photo_scan_safety import ScanIncompleteError, scandir_with_retries, count_missing_paths, path_is_within_root
 
 
 class SafePathTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class SafePathTests(unittest.TestCase):
 
 class ScanSafetyTests(unittest.TestCase):
     def test_unreadable_root_is_not_empty_scan(self):
-        with patch("photo_scan_safety.os.scandir", side_effect=OSError("NAS offline")) as scandir:
+        with patch("inktime.analysis.photo_scan_safety.os.scandir", side_effect=OSError("NAS offline")) as scandir:
             with self.assertRaises(ScanIncompleteError):
                 scandir_with_retries(Path("/missing"), attempts=3, sleep_seconds=0)
             self.assertEqual(scandir.call_count, 3)

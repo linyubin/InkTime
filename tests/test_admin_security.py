@@ -1,7 +1,7 @@
 """R1 admin authorization and browser Origin tests (no Flask dependency)."""
 import base64
 import unittest
-from admin_security import (admin_authorized, allowed_origin, is_device_protocol_path,
+from inktime.server.admin_security import (admin_authorized, allowed_origin, is_device_protocol_path,
                             make_csrf_token, valid_csrf_token)
 
 

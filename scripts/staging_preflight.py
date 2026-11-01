@@ -12,7 +12,9 @@ from contextlib import closing
 from pathlib import Path
 import sqlite3
 
-from db_schema import MigrationError, open_current_readonly_database
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接 python3 scripts/xxx.py 运行
+from inktime.core.db_schema import MigrationError, open_current_readonly_database
 
 
 class PreflightError(RuntimeError):

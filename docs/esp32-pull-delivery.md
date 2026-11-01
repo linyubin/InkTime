@@ -1,7 +1,7 @@
 # ESP32 拉取式投递适配 · 设计与运维文档
 
 > 建立日期：2026-07-23
-> 关联固件：`esp32/ink-display-wifi-epd/`（ESP32-L，7.3″ 四色 GDEY073D46）
+> 关联固件：`hardware/esp32/ink-display-wifi-epd/`（ESP32-L，7.3″ 四色 GDEY073D46）
 > 关联脚本：`scripts/inktime_daily.sh`、`server.py`、`render_daily_photo.py`
 
 ---
@@ -116,7 +116,7 @@ tail -f logs/transfer.log    # 每次 HTTP 拉取明细（ESP32 真正取走数�
 ## 6. ESP32 端操作步骤
 
 ### 6.1 烧录
-Arduino IDE → 开发板「ESP32-L Module」→ 打开 `esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino` → 编译上传。
+Arduino IDE → 开发板「ESP32-L Module」→ 打开 `hardware/esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino` → 编译上传。
 
 ### 6.2 正常运行（定时刷新）
 配网后每天到 `refresh_hour`（默认 8 点）自动唤醒：连 WiFi → NTP → 下载 `idx=0` → 渲染 → 深睡。**不起 web server，功耗不变。**
@@ -141,7 +141,7 @@ Arduino IDE → 开发板「ESP32-L Module」→ 打开 `esp32/ink-display-wifi-
 | `config.py` / `config-example.py` | 新增 `ENABLE_BLE_PUSH` / `ENABLE_ESP32_SERVE` / `ESP32_SERVE_WAIT_MIN` |
 | `server.py` | 新增 `tmp/` `logs/` 目录与 `TRANSFER_LOG`/`LAST_FETCH_SENTINEL` 常量；`transfer_history` 表（`ensure_transfer_history`）；`before/after_request` 钩子记录 `/static/inktime/` 请求；`esp_photo`/`esp_latest` 写拉取哨兵；新增 `POST /static/inktime/<key>/shutdown` |
 | `scripts/inktime_daily.sh`（新建） | render → 按开关 BLE 推送 / 起临时 server → 轮询哨兵检测拉取或超时 → 关 server；lockdir 防重入；全量日志 |
-| `esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino` | `downloadAndRenderDailyPhoto` 加 `forcedIdx`/`logBuf` 参数 + `pushLog`；正常固定 idx=0；新增 `handleFetch`/`handleLog`/`handleDebug`；手动唤醒 web 窗口改为 debug 感知循环（初始 3min / debug 30min 自动休眠 / 两步关闭提示下载日志） |
+| `hardware/esp32/ink-display-wifi-epd/ink-display-wifi-epd.ino` | `downloadAndRenderDailyPhoto` 加 `forcedIdx`/`logBuf` 参数 + `pushLog`；正常固定 idx=0；新增 `handleFetch`/`handleLog`/`handleDebug`；手动唤醒 web 窗口改为 debug 感知循环（初始 3min / debug 30min 自动休眠 / 两步关闭提示下载日志） |
 | `CLAUDE.md` | 修正脚本名为 `inktime_daily.sh`；补充投递开关、`logs/transfer.log`、`tmp/last_fetch.json` |
 | `render_daily_photo.py` | **未改动**（Q1=A） |
 

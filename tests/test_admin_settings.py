@@ -13,9 +13,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask, jsonify
-from admin_security import CSRF_COOKIE_NAME, install_admin_security
-import admin_settings
-from admin_settings import (SettingsError, apply_admin_credentials,
+from inktime.server.admin_security import CSRF_COOKIE_NAME, install_admin_security
+from inktime.server import admin_settings
+from inktime.server.admin_settings import (SettingsError, apply_admin_credentials,
                             introspect_config_file, update_config_file,
                             validate_admin_credentials, write_admin_env_file)
 

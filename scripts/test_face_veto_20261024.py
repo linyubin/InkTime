@@ -12,9 +12,9 @@
 用法: /home/andy/inktime/venv/bin/python scripts/test_face_veto_20261024.py
 """
 import sys, json, random
-sys.path.insert(0, '/home/andy/inktime')
-import render_daily_photo as rdp
-import layout_strategy as ls
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[1]))
+from inktime.render import render_daily_photo as rdp
+from inktime.render import layout_strategy as ls
 
 W, H = 6528, 4896  # 4:3 横屏代表尺寸
 

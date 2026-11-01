@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
-from server_config_validation import ConfigurationError, validate_server_settings
+from inktime.server.server_config_validation import ConfigurationError, validate_server_settings
 
 
 def valid(**overrides):
@@ -46,7 +46,7 @@ class ServerConfigValidationTests(unittest.TestCase):
         self.assertEqual(validate_server_settings(valid(DB_PATH=Path("photos.db")))["DB_PATH"], Path("photos.db"))
 
     def test_server_gate_before_db_preflight(self):
-        source = Path(__file__).resolve().parents[1].joinpath("server.py").read_text(encoding="utf-8")
+        source = Path(__file__).resolve().parents[1].joinpath("inktime", "server", "server.py").read_text(encoding="utf-8")
         self.assertLess(source.index("SERVER_SETTINGS = validate_server_settings(cfg)"), source.index("require_current_schema(DB_PATH)"))
 
 

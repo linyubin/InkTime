@@ -49,3 +49,6 @@ holidays.json
 
 # 废弃脚本备份（与 *.bak* 同性质）
 *.deprecated_*
+
+# 历史代码备份归档（重构 2026-11-01 收拢）
+backups/

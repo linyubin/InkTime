@@ -238,7 +238,7 @@ graph TD
 1. **服务端**：`config.py` 开关 + 横屏渲染字段 + `render_image_landscape()` + `image_to_palette_bin` 解锁 + sidecar json + `latest.json` 同步 + `server.py` 4 端点 + `render_calib_cards.py`。可独立验证：跑 `render_daily_photo.py` + `scripts/test_landscape_render.py`，检查 `output/inktime/photo_0.json` 和横屏 `preview_0.png`。
 2. **固件舵机**：`servo_rotate.{h,cpp}` + NVS 扩展 + 主流程重构（json→bin→转→刷）+ Paint 真值表。
 3. **固件标定台**：debug 页 UI + `/servo?test=*` + `/servo_save` 路由。
-4. **文档**：`esp32/servo_serial_cmd/README.md` 增加"已整合进 ink-display-wifi-epd"章节，标注原 standalone 项目与新整合的关系。
+4. **文档**：`hardware/esp32/servo_serial_cmd/README.md` 增加"已整合进 ink-display-wifi-epd"章节，标注原 standalone 项目与新整合的关系。
 
 ### 风险登记
 
@@ -254,7 +254,7 @@ graph TD
 
 - 设计前置讨论：本文件即 grilling 收口产物。
 - 先例（同样风格的 docs/plans 设计 + 实现 配对）：`docs/plans/2026-06-06-smart-crop-design.md` + `2026-06-06-smart-crop-implementation.md`。
-- 舵机模块来源与整合指南：`esp32/servo_serial_cmd/CLAUDE.md`（场景 B 最小集成）。
+- 舵机模块来源与整合指南：`hardware/esp32/servo_serial_cmd/CLAUDE.md`（场景 B 最小集成）。
 
 ---
 

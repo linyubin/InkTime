@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from flask import Flask
-from admin_security import CSRF_COOKIE_NAME, install_admin_security
+from inktime.server.admin_security import CSRF_COOKIE_NAME, install_admin_security
 
 
 def basic(username="admin", password="correct-password"):
@@ -92,7 +92,7 @@ class AdminGuardFlaskTests(unittest.TestCase):
         cfg.IMAGE_DIR = "/nonexistent-photos-ci"
         cfg.DOWNLOAD_KEY = "fixture-only"
         with patch.dict(sys.modules, {"config": cfg}):
-            webui = importlib.import_module("webui")
+            webui = importlib.import_module("inktime.server.webui")
         app = webui.create_standalone_app()
         self.assertFalse(app.debug)
         with app.test_client() as client:

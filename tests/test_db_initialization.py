@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 
-from db_schema import SCHEMA_VERSION, open_current_database, open_current_readonly_database, require_current_schema
+from inktime.core.db_schema import SCHEMA_VERSION, open_current_database, open_current_readonly_database, require_current_schema
 from scripts.init_sqlite import initialize_database
 
 

@@ -18,9 +18,9 @@ YOLO 权重按运行目录解析，请在建库机平时跑分析的目录下启
 import sys, json, sqlite3, argparse
 from pathlib import Path
 
-sys.path.insert(0, '/home/andy/inktime')
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[1]))
 import config as cfg
-from analyze_photos import detect_subjects, PATH_MAP  # 复用检测+脸框派生
+from inktime.analysis.analyze_photos import detect_subjects, PATH_MAP  # 复用检测+脸框派生
 
 DB_PATH = Path('/home/andy/inktime/photos.db')
 

@@ -9,9 +9,9 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from device_endpoint_storage import _endpoint_lock, DeviceEndpointLockTimeout, load_device_endpoint, store_device_endpoint
-from device_registration_identity import registration_signing_payload, RegistrationIdentityError
-from device_registration_storage import (
+from inktime.server.device_endpoint_storage import _endpoint_lock, DeviceEndpointLockTimeout, load_device_endpoint, store_device_endpoint
+from inktime.server.device_registration_identity import registration_signing_payload, RegistrationIdentityError
+from inktime.server.device_registration_storage import (
     RegistrationStateError, provision_registration_owner,
     commit_verified_registration,
 )
@@ -138,7 +138,7 @@ class RegistrationTransactionTests(TestCase):
             provision_registration_owner(path, owner_id="frame_01")
             self.commit(path, 1)
             old = path.read_bytes()
-            with patch("device_registration_storage.os.fsync", side_effect=OSError("disk fault")):
+            with patch("inktime.server.device_registration_storage.os.fsync", side_effect=OSError("disk fault")):
                 with self.assertRaises(OSError):
                     self.commit(path, 2)
             self.assertEqual(path.read_bytes(), old)
@@ -156,7 +156,7 @@ class RegistrationTransactionTests(TestCase):
                 if calls == 2:
                     raise OSError("directory fsync fault")
                 return real_fsync(fd)
-            with patch("device_registration_storage.os.fsync", side_effect=fail_dir):
+            with patch("inktime.server.device_registration_storage.os.fsync", side_effect=fail_dir):
                 with self.assertRaises(OSError):
                     self.commit(path, 1)
             self.assertEqual(calls, 2)

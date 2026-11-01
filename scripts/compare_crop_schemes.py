@@ -19,9 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from PIL import Image, ImageDraw, ImageFont
-from common import extract_date_from_exif
+from inktime.core.common import extract_date_from_exif
 
-import render_daily_photo as new_mod
+from inktime.render import render_daily_photo as new_mod
 
 # 旧版渲染器快照：直接从修复提交(50102bf)的父提交提取，保证可复现
 OLD_COMMIT = "50102bf^"

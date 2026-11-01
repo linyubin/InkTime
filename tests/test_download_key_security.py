@@ -5,9 +5,9 @@ import time
 import unittest
 from pathlib import Path
 from flask import Flask, abort
-from download_key_security import authorized_download_key, resolve_download_keys
+from inktime.server.download_key_security import authorized_download_key, resolve_download_keys
 
-SERVER = Path(__file__).resolve().parents[1] / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "inktime" / "server" / "server.py"
 PROTECTED_ROUTES = {
     "esp_photo", "esp_latest", "esp_photo_sidecar", "esp_latest_sidecar",
     "esp_calib_portrait", "esp_calib_landscape", "esp_preview", "esp_time",

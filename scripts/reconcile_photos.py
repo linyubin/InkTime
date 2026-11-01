@@ -14,8 +14,10 @@ from pathlib import Path
 import sqlite3
 import time
 
-from db_schema import open_current_readonly_database
-from photo_scan_safety import ScanIncompleteError, scandir_with_retries, path_is_within_root
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接 python3 scripts/xxx.py 运行
+from inktime.core.db_schema import open_current_readonly_database
+from inktime.analysis.photo_scan_safety import ScanIncompleteError, scandir_with_retries, path_is_within_root
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
 

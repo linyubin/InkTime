@@ -20,9 +20,9 @@ from PIL import Image, ImageChops
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import render_layouts  # noqa: E402
-import style_registry  # noqa: E402
-import style_runtime   # noqa: E402
+from inktime.render import render_layouts  # noqa: E402
+from inktime.render import style_registry  # noqa: E402
+from inktime.render import style_runtime   # noqa: E402
 
 STRESS_DIR = Path(__file__).resolve().parent.parent / "static" / "style_editor" / "stress"
 OUT_DIR = Path(__file__).resolve().parent.parent / "docs" / "style-migration-validation"

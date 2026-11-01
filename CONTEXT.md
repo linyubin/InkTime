@@ -7,7 +7,7 @@
 ### 设备生命周期
 
 **主设备**：
-运行 `esp32/ink-display-wifi-epd` 固件的相框本体（墨水屏 + 舵机 + ESP32）。
+运行 `hardware/esp32/ink-display-wifi-epd` 固件的相框本体（墨水屏 + 舵机 + ESP32）。
 _Avoid_: 显示端、客户端
 
 **定时唤醒**：
@@ -95,7 +95,7 @@ _Avoid_: 控件、零件
 ### 服务与选片
 
 **统一入口（Merged Server）**：
-`server.py` 是唯一的常驻 Web 服务（`FLASK_PORT`，默认 8765），同时提供 ESP32 拉取接口、照片库、相册管理、版式编辑器、设备日志与选片推送。原 8766 端口的 `webui.py` 已并入其中（Blueprint）。
+`server.py` 是唯一的常驻 Web 服务（`FLASK_PORT`，默认 8765；根目录文件只是 shim，实现位于 `inktime/server/`），同时提供 ESP32 拉取接口、照片库、相册管理、版式编辑器、设备日志与选片推送。原 8766 端口的 `webui.py` 已并入其中（Blueprint）。
 _Avoid_: 两个端口、版式服务器
 
 **选片推送（Selection Push）**：
