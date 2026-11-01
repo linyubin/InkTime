@@ -32,6 +32,7 @@ from db_schema import (
     open_current_readonly_database,
 )
 from admin_security import install_admin_security
+import admin_settings
 from common import extract_date_from_exif, parse_dirty_type, resolve_path
 from io import BytesIO
 
@@ -63,6 +64,7 @@ except MigrationError as exc:
 IMAGE_DIR = resolve_path(SERVER_SETTINGS["IMAGE_DIR"])
 BIN_OUTPUT_DIR = resolve_path(SERVER_SETTINGS["BIN_OUTPUT_DIR"], "./output")
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ADMIN_ENV_FILE = ROOT_DIR / "data" / "admin.env"
 
 
 def _init_db_pragmas() -> None:
@@ -1924,6 +1926,53 @@ def api_device_debug():
         except ValueError:
             st = {}
     return jsonify({"ok": True, "device": st or None})
+
+
+# ── 管理端设置页（凭据热生效 + config.py 精选项落盘）────────
+@app.get("/settings")
+def admin_settings_page():
+    current = {}
+    for name in admin_settings.EDITABLE_CONFIG_KEYS:
+        current[name] = getattr(cfg, name, "")
+    for name in admin_settings._BOOL_CONFIG_KEYS:
+        current[name] = "开" if getattr(cfg, name, False) else "关"
+    return render_template(
+        "settings.html",
+        admin_username=os.environ.get("INKTIME_ADMIN_USERNAME", "admin"),
+        config_values=current,
+    )
+
+
+@app.post("/api/settings/credentials")
+def api_settings_credentials():
+    data = request.get_json(silent=True) or {}
+    try:
+        username = str(data.get("username", ""))
+        password = str(data.get("password", ""))
+        if not password:
+            password = os.environ.get("INKTIME_ADMIN_PASSWORD", "")
+            if not password:
+                return jsonify({"ok": False, "error": "当前未设置密码,首次必须填写新密码"}), 400
+        admin_settings.write_admin_env_file(ADMIN_ENV_FILE, username, password)
+        admin_settings.apply_admin_credentials(username, password)
+    except admin_settings.SettingsError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"落盘失败: {exc}"}), 500
+    # CSRF token 与旧密码绑定,已随密码轮换失效;浏览器需要重新登录。
+    return jsonify({"ok": True, "relogin": True})
+
+
+@app.post("/api/settings/config")
+def api_settings_config():
+    data = request.get_json(silent=True) or {}
+    try:
+        backup = admin_settings.update_config_file(ROOT_DIR / "config.py", data)
+    except admin_settings.SettingsError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"写盘失败: {exc}"}), 500
+    return jsonify({"ok": True, "backup": backup.name, "restart_required": True})
 
 
 @app.get("/files/")
