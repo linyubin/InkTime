@@ -188,6 +188,15 @@ TEXT_LAYOUT_FORCE = ""
 # 浅色底托（P03/P08/P10/L04/L07）渐变峰值不透明度：1.0=实色，0.85=留 15% 照片透出
 TEXT_VEIL_OPACITY = 0.85
 
+# ── 版式覆盖区×主体冲突选型参数 ────────────────────────
+# 硬否决线（layout_strategy.coverage_conflict 直接读取，必填）：
+# 任一重要主体（person/cat/dog…）被覆盖区（glass 卡 / veil 底托）有效遮挡
+# 的复合遮挡率 ≥ 此比例，或主体中心落入不透明度 ≥0.5 的覆盖区，即否决该版式。
+# 相关微调项 COVERAGE_GLASS_FLOOR / COVERAGE_SOFT_DISTANCE_PX /
+# COVERAGE_SOFT_MAX_PENALTY / COVERAGE_FACE_VETO_OPACITY 代码内有默认值，
+# 需要覆盖时在 config.py 中显式添加即可（见 layout_strategy.py 注释）。
+COVERAGE_VETO_RATIO = 0.25
+
 
 # ═══ ⑦ 投递：ESP32 拉取 / BLE 推送 ════════════════════
 # （inktime_daily.sh 读取能力开关；server.py / push_to_epd_ble.py 读取各自参数）
