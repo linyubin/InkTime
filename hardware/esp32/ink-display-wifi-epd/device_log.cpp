@@ -72,6 +72,8 @@ static const char* wakeCauseName(esp_sleep_wakeup_cause_t c) {
   }
 }
 
+void journalResetReasonName(char* buf, size_t n) { resetReasonName(buf, n); }
+
 // ── JSON 辅助 ──
 // detail 里的控制字符压成空格（保证 JSONL 一行一条），引号/反斜杠转义
 static String jsonEscape(const char* s) {

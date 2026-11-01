@@ -206,6 +206,27 @@ String        g_fetchLog;                     // /fetch 产出 + /log 下载的�
 static const uint32_t INITIAL_WINDOW_MS = 3UL  * 60UL * 1000UL;  // 手动唤醒后初始 web 在线窗口
 static const uint32_t DEBUG_IDLE_MS    = 30UL * 60UL * 1000UL;  // debug 下无操作自动休眠
 
+// ── 静默恢复（Silent Resume）──
+// 掉电造成的意外重启：屏不刷、舵机不动、照片不重拉，对时/上传设备日志后
+// 经隐形窗口回睡。设计：docs/plans/2026-11-01-esp32-silent-resume-design.md
+// 判定（2026-11-01 实测校准）：EN 复位=全芯片复位（rst:0x1 POWERON_RESET），
+// RTC 内存不保留，与真上电不可区分——因此 POWERON 默认按静默处理；是否回退
+// 老契约（上电显示信息屏+舵机归零+3 分钟窗口）由 NVS pwrman 开关决定，可在
+// 设备 /debug 页或 server 控制台切换。BROWNOUT 恒为静默（只可能由电源塌陷触发）。
+enum WakeClass { WAKE_TIMER, WAKE_MANUAL, WAKE_SILENT };
+static WakeClass g_wakeClass = WAKE_MANUAL;
+static const uint32_t RESUME_WINDOW_MS       = 75UL * 1000UL;  // 静默恢复的隐形 Web 窗口
+static const uint32_t SILENT_NOTIME_RETRY_MIN = 30;            // 静默+无时间时的短周期重试睡眠
+// 本次会话正要刷上屏的照片 idx（花屏标记写它的值；标定/试显等非照片路径为 0）
+static int8_t g_curDisplayIdx = 0;
+
+// ── 上电手动唤醒开关（方案 B 回退）──
+// NVS 持久化（dashcfg/pwrman，恢复出厂一并清除）。默认关闭=全静默；
+// 开启后上电/复位走手动唤醒（信息屏+舵机归零+3 分钟窗口）。
+volatile bool g_poweronManualWake = false;
+static bool loadPoweronManualWake();
+static void savePoweronManualWake(bool on);
+
 // ── 常开模式（Always-On）──
 // /debug?state=aon_on|aon_off 切换并写入 NVS（跨重启、跨深睡生效；恢复出厂一并清除）。
 // 开启后设备不再进入 Deep Sleep：Web 常驻、局域网 server 可随时向 /fetch 推送照片；
@@ -370,6 +391,21 @@ static void saveAlwaysOnMode(bool on) {
   DBG_PRINTF("[CFG] always_on=%s 已保存\n", on ? "true" : "false");
 }
 
+// ── 上电手动唤醒开关持久化（dashcfg/pwrman；默认关闭=全静默）──
+static bool loadPoweronManualWake() {
+  prefs.begin("dashcfg", true);
+  bool v = prefs.getBool("pwrman", false);
+  prefs.end();
+  return v;
+}
+
+static void savePoweronManualWake(bool on) {
+  prefs.begin("dashcfg", false);
+  prefs.putBool("pwrman", on);
+  prefs.end();
+  DBG_PRINTF("[CFG] pwrman=%s 已保存\n", on ? "true" : "false");
+}
+
 // ============================================================
 //  Deep Sleep 时间戳记录（用于离线计算下次唤醒）
 // ============================================================
@@ -409,6 +445,110 @@ static uint32_t minutesToNextRefreshFromLastEpoch(const Config &cfg) {
   if (deltaMin < 1)    deltaMin = 24 * 60;
   if (deltaMin > 1440) deltaMin = 1440;
   return (uint32_t)deltaMin;
+}
+
+// ============================================================
+//  静默恢复（Silent Resume）：唤醒分类 + 掉电判别 + 刷屏中断标记
+//  设计：docs/plans/2026-11-01-esp32-silent-resume-design.md
+// ============================================================
+
+// 唤醒分类（setup() 在 journalBegin() 后立即调用，结果驱动全部分支）。
+// 2026-11-01 实测：EN 复位=全芯片复位（rst:0x1 POWERON_RESET），RTC 内存不
+// 保留，与真上电在固件层面不可区分——原设计的 RTC 魔术字判别不成立，已移除。
+// 最终语义：BROWNOUT 恒静默（只可能由电源塌陷触发）；POWERON 默认静默，
+// pwrman 开关打开则回退手动唤醒（信息屏+舵机归零+3 分钟窗口老契约）。
+static WakeClass classifyBoot() {
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) return WAKE_TIMER;
+  esp_reset_reason_t rst = esp_reset_reason();
+  if (rst == ESP_RST_BROWNOUT) return WAKE_SILENT;
+  if (rst == ESP_RST_POWERON) {
+    prefs.begin("dashcfg", true);
+    bool manual = prefs.getBool("pwrman", false);
+    prefs.end();
+    return manual ? WAKE_MANUAL : WAKE_SILENT;
+  }
+  return WAKE_MANUAL;   // 软复位/panic/看门狗：会话内事件，保守按手动处理
+}
+
+// ── 刷屏中断标记（dashcfg NVS）：刷屏被掉电打断会留花屏，静默恢复据此
+//    补拉重刷。所有把 framebuffer 推上屏的路径都经 epdFlushFrame 统一打标。──
+static void markRefreshStart(int idx) {
+  prefs.begin("dashcfg", false);
+  prefs.putUChar("rf_idx", (uint8_t)idx);
+  prefs.putBool("rf_busy", true);
+  prefs.end();
+}
+
+static void markRefreshDone() {
+  prefs.begin("dashcfg", false);
+  prefs.putBool("rf_busy", false);
+  prefs.end();
+}
+
+static bool loadRefreshMarker(uint8_t &idxOut) {
+  prefs.begin("dashcfg", true);
+  bool busy = prefs.getBool("rf_busy", false);
+  idxOut    = prefs.getUChar("rf_idx", 0);
+  prefs.end();
+  return busy;
+}
+
+// 刷屏唯一出口：置标记 → 推屏 → 清标记。调用方负责 g_epdPresent 检查
+// 与 g_curDisplayIdx 赋值（照片路径=照片 idx，测试/标定/信息页=0）。
+static void epdFlushFrame(unsigned char* BlackImage) {
+  markRefreshStart(g_curDisplayIdx);
+  EPD_init();
+  PIC_display(BlackImage);
+  EPD_DeepSleep();
+  markRefreshDone();
+}
+
+// ── 静默无时间重试标记：掉电常伴随同一场停电（路由器/树莓派也没电），
+//    授时失败不盲睡 24h（会错过刷新点），改 30 分钟短周期重试。──
+static void markSilentNoTimeRetry(bool on) {
+  prefs.begin("dashcfg", false);
+  prefs.putBool("sr_nt", on);
+  prefs.end();
+}
+
+static bool silentNoTimeRetryPending() {
+  prefs.begin("dashcfg", true);
+  bool on = prefs.getBool("sr_nt", false);
+  prefs.end();
+  return on;
+}
+
+// ── 最后成功渲染的 UTC 日序号：静默恢复拿到时间后据此判断当日照片是否
+//    被停电跳过（停电跨越 refresh_hour），漏了就补拉一次当日照片。──
+static void saveLastRenderDay() {
+  time_t nowE = time(nullptr);
+  if (nowE <= 1700000000) return;   // 时钟无效不写
+  prefs.begin("dashcfg", false);
+  prefs.putULong("rd_day", (uint32_t)(nowE / 86400));
+  prefs.end();
+}
+
+static uint32_t loadLastRenderDay() {
+  prefs.begin("dashcfg", true);
+  uint32_t v = prefs.getULong("rd_day", 0);
+  prefs.end();
+  return v;
+}
+
+// 静默恢复的花屏补拉：发现「刷屏中」标记 → 重拉该 idx 补刷一次。
+// 返回 false = 补拉失败（已清标记放弃，等每日刷新兜底，不反复折腾电池）。
+static bool silentRecoverIfNeeded() {
+  uint8_t idx = 0;
+  if (!loadRefreshMarker(idx)) return true;   // 无花屏嫌疑，零动作
+  if (idx >= DAILY_PHOTO_COUNT) idx = 0;
+  DBG_PRINTF("[BOOT] 刷屏中断标记 idx=%u → 补拉重刷\n", (unsigned)idx);
+  journalEvent(EV_GLITCH, "recover idx=%u", (unsigned)idx);
+  if (!downloadAndRenderDailyPhoto(g_cfg, idx)) {
+    DBG_PRINTLN("[BOOT] 补拉失败，放弃（等每日刷新兜底）");
+    markRefreshDone();
+    return false;
+  }
+  return true;
 }
 
 // ============================================================
@@ -1060,6 +1200,7 @@ void handleDeviceStatus() {
   s += ",\"uptime_ms\":" + String((uint32_t)millis());
   s += ",\"debug\":" + String(g_debugMode ? "true" : "false");
   s += ",\"alwayson\":" + String(g_alwaysOnMode ? "true" : "false");
+  s += ",\"pwrman\":" + String(g_poweronManualWake ? "true" : "false");
   s += ",\"epd\":" + String(g_epdPresent ? "true" : "false");
   s += ",\"hostport\":\"" + jsonEscape(g_cfg.backend_hostport) + "\"";
   s += ",\"tz\":" + String((int)g_cfg.tz_offset_hours);
@@ -1192,6 +1333,23 @@ void handleDebug() {
     html += F("<h3>常开模式已关闭</h3>");
     html += F("<p style='color:#666;margin:12px 0'>设备稍后将按 debug/窗口规则进入 Deep Sleep，恢复定时唤醒刷新。</p>");
     html += F("<p style='margin-top:16px'><a href='/debug' class='btn'>← 返回 Debug</a></p>");
+  } else if (st == "pwr_on" || st == "pwr_off") {
+    // 上电手动唤醒回退开关（方案 B）：开启后上电/复位显示信息屏并归零舵机；
+    // 关闭（默认）= 全静默恢复，掉电重启对用户不可见。
+    bool on = (st == "pwr_on");
+    g_poweronManualWake = on;
+    savePoweronManualWake(on);
+    journalEvent(EV_GLITCH, "pwrman=%d via=web", on ? 1 : 0);
+    html += on ? F("<h3>🎚 上电手动唤醒：已开启（方案 B）</h3>")
+               : F("<h3>🎚 上电手动唤醒：已关闭（全静默）</h3>");
+    html += F("<p style='color:#666;margin:12px 0'>");
+    if (on) {
+      html += F("今后上电/复位将显示信息页并做舵机归零（老契约），开 3 分钟管理窗口。");
+    } else {
+      html += F("今后上电/复位零动作：不碰屏、不动舵机，隐形窗口 75 秒后回睡/回常开。");
+    }
+    html += F("设置已写入 NVS，重启后仍生效。</p>");
+    html += F("<p style='margin-top:16px'><a href='/debug' class='btn'>← 返回 Debug</a></p>");
   } else {
     // 主面板：debug 开关 + 常开模式开关
     html += F("<h3>🔧 InkTime Debug</h3>");
@@ -1212,6 +1370,21 @@ void handleDebug() {
       html += F("<p><a href='/debug?state=aon_off' class='btn btn-secondary'>关闭常开模式</a></p>");
     } else {
       html += F("<p><a href='/debug?state=aon_on' class='btn'>开启常开模式</a></p>");
+    }
+
+    html += F("<hr style='margin:20px 0;border:none;border-top:1px solid #e8eaed'>");
+    html += F("<h3>⚡ 上电静默恢复（掉电重启零动作）</h3>");
+    html += F("<p style='color:#666;margin:12px 0'>当前上电行为：<strong>");
+    html += (g_poweronManualWake ? F("手动唤醒（信息屏+舵机归零+3 分钟窗口）")
+                                 : F("静默恢复（零动作，75 秒隐形窗口）"));
+    html += F("</strong></p>");
+    html += F("<p style='font-size:13px;color:#888;margin:12px 0'>默认全静默：掉电/复位重启不碰屏、");
+    html += F("不动舵机，对时后自动回睡/回常开（屏幕画面不受影响）。开启「上电手动唤醒」则回退老契约：");
+    html += F("复位后显示信息页并做舵机机械归零。</p>");
+    if (g_poweronManualWake) {
+      html += F("<p><a href='/debug?state=pwr_off' class='btn btn-secondary'>关闭上电手动唤醒（全静默）</a></p>");
+    } else {
+      html += F("<p><a href='/debug?state=pwr_on' class='btn'>开启上电手动唤醒（方案 B）</a></p>");
     }
     html += F("<p style='margin-top:16px'><a href='/' class='btn btn-secondary'>← 返回首页</a></p>");
   }
@@ -1258,9 +1431,8 @@ void handleScreen() {
     }
 
     DBG_PRINTLN("[TEST] 刷新测试图案...");
-    EPD_init();
-    PIC_display(BlackImage);
-    EPD_DeepSleep();
+    g_curDisplayIdx = 0;   // 测试图案被打断 → 静默恢复按 photo_0 补刷
+    epdFlushFrame(BlackImage);
     heap_caps_free(BlackImage);
     server.send(200, "text/plain; charset=utf-8", "✅ 已发送 4 色测试图案（黑/白/红/黄），请看屏幕。");
     return;
@@ -1540,6 +1712,7 @@ void handleServo() {
     bool fetchOk = fetchCalibCardToFramebuffer(trial, calibName, ori, BlackImage, &log);
     if (fetchOk) {
       log += "[标定] 渲染标定卡 (" + ori + ")\n";
+      g_curDisplayIdx = 0;   // 标定卡被打断 → 静默恢复按 photo_0 补刷
       displayFramebuffer(BlackImage, trial, ori);
       log += "[标定] 完成 ✅\n";
     } else {
@@ -2359,9 +2532,7 @@ static void displayFramebuffer(unsigned char* BlackImage, const Config &cfg, con
   Paint_SelectImage(BlackImage);
 
   DBG_PRINTLN("[EPD] 初始化并开始显示画面");
-  EPD_init();
-  PIC_display(BlackImage);
-  EPD_DeepSleep();
+  epdFlushFrame(BlackImage);
   DBG_PRINTLN("[EPD] 渲染完成，屏幕已休眠");
   journalEvent(EV_RENDER, "ok");
 }
@@ -2447,6 +2618,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
       return false;
     }
     // 标定模式下舵机转动由调用方（标定台）按"表单当前值"处理，这里不重复转
+    g_curDisplayIdx = 0;   // 标定卡被打断 → 静默恢复按 photo_0 补刷
     displayFramebuffer(BlackImage, cfg, ori);
     heap_caps_free(BlackImage);
     pushLog(logBuf, "[标定] 完成 ✅");
@@ -2491,6 +2663,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
   applyServoForOrientation(cfg, orientation, logBuf);
 
   // ── 阶段 C：刷屏 ──
+  g_curDisplayIdx = (int8_t)idx;   // 花屏标记记录本张 idx，供静默恢复补拉
   displayFramebuffer(BlackImage, cfg, orientation);
 
   heap_caps_free(BlackImage);
@@ -2501,6 +2674,7 @@ bool downloadAndRenderDailyPhoto(const Config &cfg, int forcedIdx, String* logBu
   // （/servo_test、/fetch 换朝向）经 servo_rotate_to → servo_attach 自动恢复。
   // 注意：标定卡路径不在此处（标定时需要舵机带电对照表单角度）。
   servo_detach();
+  saveLastRenderDay();   // 记录渲染日：静默恢复据此判断当日照片是否被停电跳过
   pushLog(logBuf, "[拉取] 完成 ✅");
   return true;
 }
@@ -2614,6 +2788,22 @@ static void startLanWebServer() {
   server.on("/servo_sync", HTTP_GET,  handleServoSync);
   server.begin();
   g_webServerStarted = true;
+}
+
+// Web 在线窗口主循环（手动唤醒 3 分钟 / 静默恢复 75s 共用）。
+// 窗口内开启常开模式或确认退出 debug 即返回，由 setup() 后续分支接管。
+static void runWebWindow(uint32_t windowMs) {
+  uint32_t bootMs = millis();
+  uint32_t lastAct = bootMs;
+  for (;;) {
+    server.handleClient();
+    if (g_requestHappened) { g_requestHappened = false; lastAct = millis(); }
+    if (g_alwaysOnMode) break;                                            // 常开已开启 → 常开主循环接管
+    if (g_debugOffRequested) break;                                       // 用户确认退出 debug
+    if (!g_debugMode && (millis() - bootMs > windowMs)) break;            // 初始窗口到期且未开 debug
+    if (g_debugMode && (millis() - lastAct > DEBUG_IDLE_MS)) break;       // debug 下 30 分钟无操作
+    delay(10);
+  }
 }
 
 // 常开主循环：不休眠，Web 常驻，每日 refresh_hour 定时拉取照常执行。
@@ -2763,12 +2953,8 @@ void showNetworkInfoScreen(bool isAP, bool isSuccess) {   // 前置声明在文�
   }
 
   DBG_PRINTLN("[EPD] 刷新网络信息页面...");
-  DBG_PRINTLN("[EPD] -> EPD_init()");
-  EPD_init();
-  DBG_PRINTLN("[EPD] -> PIC_display()");
-  PIC_display(BlackImage);
-  DBG_PRINTLN("[EPD] -> EPD_DeepSleep()");
-  EPD_DeepSleep();
+  g_curDisplayIdx = 0;   // 信息页被打断 → 静默恢复按 photo_0 补刷（回到照片画面）
+  epdFlushFrame(BlackImage);
   heap_caps_free(BlackImage);
 }
 
@@ -2834,6 +3020,23 @@ void setup() {
   //     即使后面崩溃/掉电，这条也已落盘。设计见 docs/adr/0001-esp32-flash-device-journal.md
   journalBegin();
 
+  // 3.6 唤醒分类：定时 / 手动 / 静默恢复（见 classifyBoot）。
+  //     上次静默没拿到时间或当日补拉失败留下的 30 分钟重试标记，会把本次
+  //     TIMER 唤醒重新归入静默语义（屏/舵机照旧零动作）。
+  g_wakeClass = classifyBoot();
+  if (g_wakeClass == WAKE_TIMER && silentNoTimeRetryPending()) {
+    g_wakeClass = WAKE_SILENT;
+    journalEvent(EV_GLITCH, "enter rst=RETRY");
+  }
+  if (g_wakeClass == WAKE_SILENT) {
+    char rstName[16];
+    journalResetReasonName(rstName, sizeof(rstName));
+    DBG_PRINTF("[BOOT] 静默恢复：掉电重启（rst=%s），跳过屏/舵机/照片\n", rstName);
+    journalEvent(EV_GLITCH, "enter rst=%s", rstName);
+  } else if (g_wakeClass == WAKE_MANUAL) {
+    markSilentNoTimeRetry(false);   // 用户介入 → 静默重试使命作废，恢复正常语义
+  }
+
   // 4. 检查是否请求恢复出厂设置
   if (isFactoryResetRequestedAtBoot()) {
     DBG_PRINTLN("[BOOT] 触发 → 恢复出厂设置");
@@ -2852,7 +3055,9 @@ void setup() {
   //    首次启动或恢复出厂后，无已保存网络时由下方 !g_cfg.valid 分支进入 AP 配网。
   loadConfig(g_cfg);
   g_alwaysOnMode = loadAlwaysOnMode();   // 常开模式（NVS 持久化，跨重启生效）
-  DBG_PRINTF("[CFG] always_on=%s\n", g_alwaysOnMode ? "true" : "false");
+  g_poweronManualWake = loadPoweronManualWake();   // 上电手动唤醒回退开关（方案 B）
+  DBG_PRINTF("[CFG] always_on=%s pwrman=%s\n",
+             g_alwaysOnMode ? "true" : "false", g_poweronManualWake ? "true" : "false");
 
   // 6.1 设备日志上传使用同一 NVS 下载密钥；禁止在日志输出 URL。
   journalSetServer(g_cfg.backend_hostport,
@@ -2874,10 +3079,6 @@ void setup() {
   g_epdPresent = detectEpdPresent();
 
   // 6.6 初始化舵机（IO32，与 EPD SPI 引脚无冲突，避开 DAC 脚 25/26）
-  //     未标定时 servo_rotate_to 不会被调用，但 attach 本身开销极小，先就位。
-  //     注意：不再立即 servo_detach()——舵机需保持 attach 才平顺（参考 servo_serial_cmd）。
-  //     深睡时由 goDeepSleepMinutes 统一 detach 省电。
-  // 6.6 初始化舵机（IO32，与 EPD SPI 引脚无冲突，避开 DAC 脚 25/26）
   //     首帧写"上次已知角度"：深睡/reset 期间舵机断电机械保持，物理位置≈上次
   //     指令角度，首帧同角度 → 正常开机零动作。绝不能写 0——挂框状态全速甩到
   //     机械零点会损伤结构。未标定/无朝向记录时退回 0（此时舵机不参与流程）。
@@ -2889,13 +3090,13 @@ void setup() {
   }
   servo_init(bootAngle);
   servo_set_default_speed(g_cfg.servo_speed);   // 把 NVS 里的速度注入舵机模块（全局共享）
-  // 手动唤醒（reset 键）= 用户主动"重新对齐"：位置可能已被打乱（这正是 reset
+  // 手动唤醒（EN 复位键）= 用户主动"重新对齐"：位置可能已被打乱（这正是 reset
   // 的常见原因）。走一遍机械归零重建参考——先平滑压到机械 0°（硬限位，唯一
   // 绝对参考），停靠片刻，再回到"当前显示照片"对应的角度。归零后若照片拉取
-  // 失败，舵机停在显示姿态角，屏上画面与物理朝向仍一致。定时唤醒不执行此流程
-  // （无人干预时保持零动作、零磨损）。
+  // 失败，舵机停在显示姿态角，屏上画面与物理朝向仍一致。定时唤醒与静默恢复
+  // 都不执行此流程（无人干预时保持零动作、零磨损）。
   if (g_cfg.servo_calibrated && g_cfg.last_orientation.length() > 0 &&
-      esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+      g_wakeClass == WAKE_MANUAL) {
     float homeTarget = (g_cfg.last_orientation == "landscape") ? g_cfg.servo_landscape_deg
                                                                : g_cfg.servo_portrait_deg;
     DBG_PRINTF("[SERVO] 手动唤醒，机械归零后恢复 → %s (%.1f°)\n",
@@ -2935,13 +3136,23 @@ void setup() {
     }
   }
   if (!wifiOk) {
+    if (g_wakeClass == WAKE_SILENT) {
+      // 静默恢复 + WiFi 不可达（典型：同一场停电把路由器也带走了）：
+      // 不进 AP 配网（开热点 + 刷提示页是用户肉眼可见动作），置重试标记
+      // 30 分钟后再试，路由器恢复即自动归位。goDeepSleepMinutes 不返回。
+      DBG_PRINTLN("[BOOT] 静默恢复：WiFi 不可达，30 分钟后重试");
+      journalEvent(EV_GLITCH, "wifi_unreachable");
+      markSilentNoTimeRetry(true);
+      goDeepSleepMinutes(SILENT_NOTIME_RETRY_MIN);
+    }
     DBG_PRINTLN("[BOOT] WiFi 连接失败 → AP 配网模式");
     startConfigPortal();
   }
 
-  // 8.5 检查唤醒原因，如果是手动短按复位键（非定时唤醒），则展示当前配网和IP信息页面
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
+  // 8.5 手动唤醒（EN 复位键/会话内复位）：展示当前配网和 IP 信息页面。
+  //     定时唤醒与静默恢复都不碰屏——静默恢复时屏上本就是最新照片，
+  //     这一屏一刷就是用户肉眼可见的一次"重启"。
+  if (g_wakeClass == WAKE_MANUAL) {
     DBG_PRINTLN("[BOOT] 手动唤醒，显示当前配网成功及 IP 信息...");
     showNetworkInfoScreen(false, true);
     delay(3000); // 稍作停留，接着下载照片将覆盖此画面
@@ -2951,41 +3162,65 @@ void setup() {
   struct tm timeinfo;
   bool hasTime = syncTime(g_cfg, timeinfo);
 
+  // 9.2 静默恢复：判断当日照片是否被停电跳过（停电跨越 refresh_hour 的场景）。
+  //     最后渲染日 ≠ 今天 且 已过刷新点 → 补拉当日照片（内容是新的，这次闪刷应得）。
+  bool catchupNeeded = false;
+  bool catchupFailed = false;
+  if (g_wakeClass == WAKE_SILENT && hasTime) {
+    uint32_t lastDay = loadLastRenderDay();
+    uint32_t today   = (uint32_t)(time(nullptr) / 86400);   // UTC 日序号，两端同式即可
+    int curMinOfDay  = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    catchupNeeded = (lastDay != today) && (curMinOfDay >= (int)g_cfg.refresh_hour * 60);
+    if (catchupNeeded) {
+      DBG_PRINTF("[BOOT] 静默恢复：当日刷新被跳过（last_day=%u today=%u）→ 补拉\n",
+                 (unsigned)lastDay, (unsigned)today);
+      journalEvent(EV_GLITCH, "catchup_due last_day=%u today=%u", (unsigned)lastDay, (unsigned)today);
+    }
+  }
+
   // 9.5 上传设备日志增量（拉照片之前先传）。
   //     入睡前那次上传（goDeepSleepMinutes）只覆盖常驻 server 场景；若 server
   //     是"检测到拉取即关闭"的临时模式，睡前上传必然扑空。两处都传，靠服务端
   //     按 ls 去重，重复无害。本周期的新事件（照片/舵机/刷屏）下次唤醒补传。
   journalUpload();
 
-  // 10. 下载并渲染今日照片
-  bool ok = downloadAndRenderDailyPhoto(g_cfg);
-  if (!ok) {
-    DBG_PRINTLN("[BOOT] 照片下载或渲染失败");
+  // 10. 下载并渲染今日照片。
+  //     定时/手动：照常拉取。静默恢复：默认零动作（屏上已是最新画面），
+  //     仅当日补拉或花屏补刷例外。
+  bool ok = true;
+  if (g_wakeClass == WAKE_SILENT) {
+    if (catchupNeeded) {
+      ok = downloadAndRenderDailyPhoto(g_cfg);   // 当日补拉同时覆盖花屏嫌疑
+      catchupFailed = !ok;
+      journalEvent(EV_GLITCH, ok ? "catchup ok" : "catchup fail");
+    } else if (!silentRecoverIfNeeded()) {
+      ok = false;   // 花屏补拉失败（标记已清，等每日刷新兜底）
+    }
+  } else {
+    ok = downloadAndRenderDailyPhoto(g_cfg);
+    if (!ok) {
+      DBG_PRINTLN("[BOOT] 照片下载或渲染失败");
+    }
   }
 
-  // 10.5 手动唤醒：启动局域网 Web 服务器
-  //      - 未开 debug：保持 INITIAL_WINDOW_MS（3 分钟）供改配置，到期即睡
-  //      - 开了 debug：保持唤醒，直到用户 /debug?state=confirm_off 或 DEBUG_IDLE_MS(30min) 无操作
-  //      - 窗口内开启常开模式 → 立即切到常开主循环（不休眠）
-  if (wakeup_reason != ESP_SLEEP_WAKEUP_TIMER) {
+  // 10.5 非 TIMER 启动的 Web 在线窗口：
+  //      - 手动唤醒（EN 复位键）3 分钟：供改配置；开 debug 则 30 分钟无操作才睡
+  //      - 静默恢复 75 秒隐形窗口：屏/舵机/照片零动作，仅 Web 在线 + 向 server
+  //        登记，保持控制台"插电即可达"；窗口内开启常开 → 常开主循环接管
+  if (g_wakeClass == WAKE_MANUAL) {
     DBG_PRINTLN("[HTTP] 启动局域网 Web 服务器（手动唤醒）...");
     startLanWebServer();
     // 唤醒窗口内也向 server 登记（IP/在线标志），inktime server 控制台代理
     // 在窗口期即可用；常开路径在 10.6 会再登记一次（幂等，重复无害）。
     registerDeviceWithServer();
-
-    uint32_t bootMs = millis();
-    uint32_t lastAct = bootMs;
-    for (;;) {
-      server.handleClient();
-      if (g_requestHappened) { g_requestHappened = false; lastAct = millis(); }
-      if (g_alwaysOnMode) break;                                            // 常开已开启 → 常开主循环接管
-      if (g_debugOffRequested) break;                                       // 用户确认退出 debug
-      if (!g_debugMode && (millis() - bootMs > INITIAL_WINDOW_MS)) break;   // 初始窗口到期且未开 debug
-      if (g_debugMode && (millis() - lastAct > DEBUG_IDLE_MS)) break;       // debug 下 30 分钟无操作
-      delay(10);
-    }
+    runWebWindow(INITIAL_WINDOW_MS);
     DBG_PRINTLN("[HTTP] 手动唤醒 Web 窗口结束");
+  } else if (g_wakeClass == WAKE_SILENT) {
+    DBG_PRINTLN("[HTTP] 静默恢复隐形 Web 窗口（75s）...");
+    startLanWebServer();
+    registerDeviceWithServer();
+    runWebWindow(RESUME_WINDOW_MS);
+    DBG_PRINTLN("[HTTP] 静默恢复窗口结束");
   }
 
   // 10.6 常开模式主循环：不休眠，Web 常驻，局域网 server 可随时向 /fetch 推送；
@@ -3003,16 +3238,26 @@ void setup() {
   }
 
   // 11. 计算下次唤醒时间，进入 Deep Sleep
-  if (!hasTime) {
-    // 二次重试：只再调局域网服务器授时（不再全量重跑 syncTime 的 NTP 流程）
-    struct tm tmp;
-    if (fetchServerTime(g_cfg, tmp)) {
-      sleepUntilNextSchedule(g_cfg, true, tmp);
-    } else {
-      sleepUntilNextSchedule(g_cfg, false, timeinfo);
-    }
+  if (g_wakeClass == WAKE_SILENT && (!hasTime || catchupFailed)) {
+    // 掉电+停电场景：授时或当日补拉未完成。不盲睡 24h（会错过刷新点），
+    // 30 分钟短周期重试；下次 TIMER 唤醒带标记 → 仍按静默语义走（屏零动作）。
+    markSilentNoTimeRetry(true);
+    DBG_PRINTLN("[SLEEP] 静默恢复未完成（无时间/当日补拉失败），30 分钟后重试");
+    journalEvent(EV_GLITCH, "retry_30m");
+    goDeepSleepMinutes(SILENT_NOTIME_RETRY_MIN);
   } else {
-    sleepUntilNextSchedule(g_cfg, true, timeinfo);
+    markSilentNoTimeRetry(false);   // 使命完成（或非静默路径）→ 清重试标记
+    if (!hasTime) {
+      // 二次重试：只再调局域网服务器授时（不再全量重跑 syncTime 的 NTP 流程）
+      struct tm tmp;
+      if (fetchServerTime(g_cfg, tmp)) {
+        sleepUntilNextSchedule(g_cfg, true, tmp);
+      } else {
+        sleepUntilNextSchedule(g_cfg, false, timeinfo);
+      }
+    } else {
+      sleepUntilNextSchedule(g_cfg, true, timeinfo);
+    }
   }
 }
 
