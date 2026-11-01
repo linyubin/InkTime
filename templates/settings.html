@@ -204,7 +204,8 @@
   </div>
   {% endfor %}
 
-  <button id="save-btn" onclick="saveConfig(this)">💾 保存配置修改</button>
+  <button id="save-btn" onclick="saveConfig(this)">💾 仅保存配置</button>
+  <button id="restart-btn" onclick="saveConfig(this, true)" style="background:linear-gradient(135deg,#2a9d5c,#1d7a43);">🔄 保存并重启服务生效</button>
   <div class="result" id="cfg-result"></div>
   <p class="hint">
     编辑规则:仅单行标量(布尔/整数/浮点/字符串)可在线修改;复杂结构(dict/list 等)只读展示,请直接编辑 config.py。
@@ -254,7 +255,7 @@ document.querySelectorAll('input[data-key], select[data-key]').forEach(inp => {
     else { row.classList.remove('changed'); }
   });
 });
-async function saveConfig(btn){
+async function saveConfig(btn, thenRestart){
   btn.disabled = true;
   const el = document.getElementById('cfg-result');
   const updates = {};
@@ -271,12 +272,52 @@ async function saveConfig(btn){
     updates[inp.dataset.key] = v;
     changed += 1;
   });
-  if (changed === 0){ show(el, '没有检测到改动。', true); btn.disabled = false; return; }
+  if (changed === 0){
+    if (thenRestart){ await restartServiceFlow(el, btn); }
+    else { show(el, '没有检测到改动。', true); btn.disabled = false; }
+    return;
+  }
   await postJSON('/api/settings/config', updates, el, (data) => {
-    show(el, `✅ 已落盘 ${changed} 项(备份: ${data.backup})。重启服务后生效: sudo systemctl restart inktime-server`, true);
+    show(el, `✅ 已落盘 ${changed} 项(备份: ${data.backup})。` +
+        (thenRestart ? '正在重启服务…' : '重启服务后生效: sudo systemctl restart inktime-server'), true);
     document.querySelectorAll('.row.changed').forEach(r => r.classList.remove('changed'));
+    if (thenRestart){ setTimeout(() => restartServiceFlow(el, btn), 600); }
+    else { btn.disabled = false; }
   });
-  btn.disabled = false;
+}
+async function restartServiceFlow(el, btn){
+  show(el, '重启指令已下发,等待服务恢复(最长 30 秒)…', true);
+  try{
+    const r = await fetch('/api/settings/restart', {method: 'POST'});
+    const data = await r.json().catch(() => ({}));
+    if (!(r.ok && data.ok)){
+      show(el, data.error || ('HTTP ' + r.status), false);
+      btn.disabled = false;
+      return;
+    }
+  }catch(e){
+    show(el, '请求失败: ' + e, false);
+    btn.disabled = false;
+    return;
+  }
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    try{
+      const r = await fetch('/api/settings/ping', {cache: 'no-store'});
+      if (r.ok){
+        clearInterval(timer);
+        show(el, '✅ 服务已重启并恢复,页面即将刷新以加载新配置。', true);
+        setTimeout(() => location.reload(), 800);
+        return;
+      }
+    }catch(e){ /* 服务重启中,继续等待 */ }
+    if (tries > 30){
+      clearInterval(timer);
+      show(el, '⏱ 等待超时:服务未在 30 秒内恢复,请检查 journalctl -u inktime-server -n 50', false);
+      btn.disabled = false;
+    }
+  }, 1000);
 }
 </script>
 </body>

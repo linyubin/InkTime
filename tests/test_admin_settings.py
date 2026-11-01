@@ -193,13 +193,29 @@ class ConfigFileRewriteTests(unittest.TestCase):
             update_config_file(self.config, {})
 
 
-def build_settings_app(env_file: Path, config_path: Path):
+def build_settings_app(env_file: Path, config_path: Path, *, popen=None,
+                       allow_restart: str = "1"):
     app = Flask(__name__)
     install_admin_security(app)
 
     @app.get("/settings")
     def settings_page():
         return "settings-page"
+
+    @app.get("/api/settings/ping")
+    def ping():
+        return jsonify({"ok": True})
+
+    @app.post("/api/settings/restart")
+    def restart():
+        import subprocess as _sp
+        if os.environ.get("INKTIME_ALLOW_SERVICE_RESTART") != allow_restart:
+            return jsonify({"ok": False, "error": "restart disabled"}), 400
+        fn = popen or (lambda cmd, **kw: _sp.Popen(cmd, **kw))
+        fn(["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "restart",
+               "inktime-server.service"],
+              stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True)
+        return jsonify({"ok": True, "restarting": True})
 
     @app.post("/api/settings/credentials")
     def credentials():
@@ -305,6 +321,43 @@ class SettingsRouteGuardTests(unittest.TestCase):
             content = self.env_file.read_text(encoding="utf-8")
             self.assertIn("INKTIME_ADMIN_USERNAME=only-user", content)
             self.assertIn("INKTIME_ADMIN_PASSWORD=correct-password", content)
+
+    def test_ping_requires_auth(self):
+        with self.app.test_client() as client:
+            self.assertEqual(client.get("/api/settings/ping").status_code, 401)
+            self.assertEqual(
+                client.get("/api/settings/ping", headers=basic()).status_code, 200)
+
+    def test_restart_disabled_without_flag(self):
+        app = build_settings_app(self.env_file, self.config_path, allow_restart="0")
+        with app.test_client() as client:
+            cookie = self._csrf_cookie(client)
+            response = client.post(
+                "/api/settings/restart", json={},
+                headers={**basic(), "X-InkTime-CSRF": cookie.split("=", 1)[1],
+                         "Cookie": cookie})
+            self.assertEqual(response.status_code, 400)
+
+    def test_restart_invokes_systemctl_when_enabled(self):
+        calls = []
+
+        def fake_popen(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return None
+
+        app = build_settings_app(self.env_file, self.config_path, popen=fake_popen)
+        with patch.dict(os.environ, {"INKTIME_ALLOW_SERVICE_RESTART": "1"}):
+            with app.test_client() as client:
+                cookie = self._csrf_cookie(client)
+                response = client.post(
+                    "/api/settings/restart", json={},
+                    headers={**basic(), "X-InkTime-CSRF": cookie.split("=", 1)[1],
+                             "Cookie": cookie})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(calls), 1)
+                cmd, kwargs = calls[0]
+                self.assertEqual(cmd, ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "restart", "inktime-server.service"])
+                self.assertTrue(kwargs.get("start_new_session"))
 
 
 if __name__ == "__main__":

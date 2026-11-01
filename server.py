@@ -11,6 +11,7 @@ import json
 import html
 import hashlib
 import re
+import subprocess
 import urllib.parse
 import unicodedata
 import time
@@ -1968,6 +1969,30 @@ def api_settings_config():
     except OSError as exc:
         return jsonify({"ok": False, "error": f"写盘失败: {exc}"}), 500
     return jsonify({"ok": True, "backup": backup.name, "restart_required": True})
+
+
+@app.get("/api/settings/ping")
+def api_settings_ping():
+    """重启后的存活探测:管理端守卫通过即返回 200。"""
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings/restart")
+def api_settings_restart():
+    """以脱离会话的子进程延迟重启 systemd 服务,让本响应先送达客户端。
+
+    需显式开启 INKTIME_ALLOW_SERVICE_RESTART=1(systemd 部署),避免
+    开发/临时实例误触发生产重启。依赖运行账户的 sudo -n systemctl 权限。
+    """
+    if os.environ.get("INKTIME_ALLOW_SERVICE_RESTART") != "1":
+        return jsonify({"ok": False,
+                        "error": "本实例未启用服务重启(需 systemd 部署并设置 "
+                                 "INKTIME_ALLOW_SERVICE_RESTART=1)"}), 400
+    subprocess.Popen(
+        ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "restart", "inktime-server.service"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    return jsonify({"ok": True, "restarting": True})
 
 
 @app.get("/files/")
