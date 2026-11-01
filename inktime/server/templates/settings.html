@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkTime 管理设置</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.45);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --warn: #ffd08a;
+      --danger: #ff9c9c;
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0; padding:0 0 60px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{ max-width: 1000px; margin: 26px auto 30px; padding: 0 18px; }
+    h1{ font-size: 21px; margin: 0 0 6px; letter-spacing: 0.2px; }
+    h1 .home-link{ font-size: 12.5px; font-weight: 400; margin-left: 12px; }
+    h1 .home-link a{ color: var(--accent); text-decoration: none; }
+    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6; }
+
+    /* ── 分节快捷导航 ── */
+    .secnav{
+      display:flex; flex-wrap:wrap; gap:6px; margin: 14px 0 4px;
+      position: sticky; top: 0; z-index: 30; padding: 8px 0;
+      background: linear-gradient(180deg, rgba(7,8,11,0.96), rgba(7,8,11,0.86));
+      backdrop-filter: blur(8px);
+    }
+    .secnav a{
+      font-size: 11px; color: var(--muted); text-decoration: none;
+      border:1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+      background: var(--panel);
+    }
+    .secnav a:hover{ color: var(--accent); border-color: var(--accent); }
+
+    /* ── 分组卡片 ── */
+    .card{
+      background: var(--card); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 16px 18px; margin: 16px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+    }
+    .card h2{ font-size: 15px; margin: 0 0 4px; scroll-margin-top: 56px; }
+    .card .sec-sub{ font-size: 11px; color: var(--muted2); margin: 0 0 10px; }
+    .row{
+      display:grid; grid-template-columns: minmax(230px, 300px) 1fr;
+      gap: 6px 14px; align-items: start;
+      padding: 9px 0; border-top: 1px dashed rgba(255,255,255,0.08);
+    }
+    .row:first-of-type{ border-top: none; }
+    .row.changed input[type=text], .row.changed input[type=password],
+    .row.changed input[type=number]{ border-color: var(--warn); }
+    .key-cell{ padding-top: 7px; }
+    .key-name{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; font-weight: 600; }
+    .key-kind{ font-size: 10px; color: var(--muted2); margin-left: 6px; }
+    input[type=text], input[type=password], input[type=number]{
+      width:100%; padding: 8px 11px; font-size: 13px; color: var(--text);
+      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 9px; outline: none;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+    input:focus{ border-color: var(--accent); }
+    input:disabled{ opacity: 0.55; }
+    select{ width:100%; padding: 8px 11px; font-size: 13px; color: var(--text);
+      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 9px; }
+    .ro-value{
+      margin:0; padding: 8px 11px; font-size: 12px; color: var(--muted);
+      background: rgba(0,0,0,0.45); border: 1px solid var(--line); border-radius: 9px;
+      font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+      max-height: 96px; overflow:auto;
+    }
+    button{
+      padding: 9px 18px; font-size: 13px; cursor: pointer; color: #fff;
+      background: linear-gradient(135deg, #4361ee, #3a0ca3); border: none; border-radius: 10px;
+    }
+    button:hover{ opacity: 0.9; }
+    button:disabled{ opacity: 0.5; cursor: wait; }
+    .hint{ font-size: 11px; color: var(--muted2); line-height: 1.6; margin-top: 10px; }
+    .result{
+      margin-top: 12px; padding: 9px 12px; font-size: 12px; border-radius: 10px;
+      background: rgba(0,0,0,0.45); border:1px solid var(--line); color: var(--muted);
+      white-space: pre-wrap; word-break: break-all; min-height: 18px;
+    }
+    .result.ok{ color: var(--accent2); border-color: rgba(156,255,214,0.4); }
+    .result.err{ color: var(--danger); border-color: rgba(255,156,156,0.4); }
+
+    /* ── ❓ 悬停帮助 ── */
+    .help{
+      position: relative; display:inline-block; margin-left: 6px;
+      width: 15px; height: 15px; line-height: 14px; text-align: center;
+      font-size: 10.5px; font-weight: 700; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 50%; cursor: help;
+      user-select: none; vertical-align: 1px; opacity: 0.85;
+    }
+    .help:hover{ opacity: 1; background: rgba(138,180,255,0.15); }
+    .help .tip{
+      display: none; position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+      width: 420px; max-width: 78vw; padding: 9px 12px; z-index: 50;
+      font-size: 11.5px; font-weight: 400; line-height: 1.65; text-align: left;
+      color: var(--text); background: #161a24; border: 1px solid var(--line);
+      border-radius: 10px; box-shadow: var(--shadow2); white-space: pre-wrap; word-break: break-all;
+    }
+    .help .tip::after{
+      content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px;
+      border: 6px solid transparent; border-top-color: #161a24;
+    }
+    .help:hover .tip{ display: block; }
+  </style>
+  <script src="/static/admin_csrf.js?v=1"></script>
+</head>
+<body>
+<div class="container">
+  <h1>⚙️ 管理设置
+    <span class="home-link"><a href="/">← 返回首页</a></span>
+  </h1>
+  <p class="subtitle">
+    管理员凭据保存后<b>立即生效</b>(所有会话需重新登录);config.py 配置项完整展示,标量项可直接编辑——
+    保存时自动备份、AST 校验后落盘,<b>重启服务生效</b>。❓ 悬停查看每项说明(取自 config.py 注释)。
+  </p>
+
+  <div class="card">
+    <h2>🔐 管理员凭据</h2>
+    <div class="row">
+      <div class="key-cell"><span class="key-name">INKTIME_ADMIN_USERNAME</span>
+        <span class="help">?<span class="tip">管理后台登录用户名。Basic 认证与设置页保存共用;保存后立即生效。</span></span>
+      </div>
+      <div><input type="text" id="adm-user" value="{{ admin_username }}" autocomplete="username"></div>
+    </div>
+    <div class="row">
+      <div class="key-cell"><span class="key-name">INKTIME_ADMIN_PASSWORD</span>
+        <span class="help">?<span class="tip">管理后台登录密码(≥8 位)。保存后立即生效;CSRF 令牌与密码绑定,所有已登录会话将要求重新登录。留空 = 不修改。落盘 data/admin.env(0600)。</span></span>
+      </div>
+      <div class="field" style="display:grid; gap:8px;">
+        <input type="password" id="adm-pass" placeholder="新密码(留空 = 不修改)" autocomplete="new-password">
+        <input type="password" id="adm-pass2" placeholder="确认新密码" autocomplete="new-password">
+      </div>
+    </div>
+    <button onclick="saveCredentials(this)">保存凭据</button>
+    <div class="result" id="cred-result"></div>
+  </div>
+
+  <div class="secnav">
+    {% for group in groups %}
+    <a href="#sec-{{ loop.index }}">{{ group.title }}</a>
+    {% endfor %}
+  </div>
+
+  {% for group in groups %}
+  <div class="card">
+    <h2 id="sec-{{ loop.index }}">{{ group.title }}</h2>
+    <p class="sec-sub">改动的行会高亮;点“保存配置修改”统一落盘(自动备份 + AST 校验)。</p>
+    {% for item in group["fields"] %}
+    <div class="row" id="row-{{ item.name }}">
+      <div class="key-cell">
+        <span class="key-name">{{ item.name }}</span><span class="key-kind">{{ item.kind }}</span>
+        <span class="help">?<span class="tip">{{ item.help or 'config.py 中无注释说明。' }}{% if item.inline_help %}
+
+行内注释:{{ item.inline_help }}{% endif %}{% if not item.editable %}
+
+⚠️ 复杂/多行/空值项,不支持在线修改,请直接编辑 config.py。{% endif %}{% if item.secret %}
+
+🔑 凭据类:页面掩码显示,留空保持不变。{% endif %}</span></span>
+      </div>
+      {% if item.editable and item.kind == 'bool' %}
+      <div>
+        <select data-key="{{ item.name }}" data-kind="bool" data-original="{{ 'true' if item.value else 'false' }}">
+          <option value="true" {{ 'selected' if item.value else '' }}>开 (True)</option>
+          <option value="false" {{ 'selected' if not item.value else '' }}>关 (False)</option>
+        </select>
+      </div>
+      {% elif item.editable and item.kind in ('int', 'float') %}
+      <div>
+        <input type="number" step="any" data-key="{{ item.name }}" data-kind="{{ item.kind }}"
+               data-original="{{ item.value }}" value="{{ item.value }}">
+      </div>
+      {% elif item.editable and item.kind == 'str' %}
+      <div>
+        {% if item.secret %}
+        <input type="password" data-key="{{ item.name }}" data-kind="str" data-original=""
+               placeholder="已设置 — 留空保持不变" autocomplete="new-password">
+        {% else %}
+        <input type="text" data-key="{{ item.name }}" data-kind="str"
+               data-original="{{ item.value }}" value="{{ item.value }}">
+        {% endif %}
+      </div>
+      {% else %}
+      <div><pre class="ro-value">{{ item.literal or '(空值 None)' }}</pre></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <button id="save-btn" onclick="saveConfig(this)">💾 仅保存配置</button>
+  <button id="restart-btn" onclick="saveConfig(this, true)" style="background:linear-gradient(135deg,#2a9d5c,#1d7a43);">🔄 保存并重启服务生效</button>
+  <div class="result" id="cfg-result"></div>
+  <p class="hint">
+    编辑规则:仅单行标量(布尔/整数/浮点/字符串)可在线修改;复杂结构(dict/list 等)只读展示,请直接编辑 config.py。
+    保存 = 按值区间精确改写 + 时间戳备份(config.py.bak-*) + AST 校验 + 原子替换,行尾注释保留;重启服务后生效。
+  </p>
+</div>
+
+<script>
+function show(el, text, ok){
+  el.className = 'result ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+}
+async function postJSON(url, body, el, onOk){
+  try{
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.ok){ onOk(data); }
+    else { show(el, data.error || ('HTTP ' + r.status), false); }
+  }catch(e){
+    show(el, '请求失败: ' + e, false);
+  }
+}
+async function saveCredentials(btn){
+  btn.disabled = true;
+  const el = document.getElementById('cred-result');
+  const pass1 = document.getElementById('adm-pass').value;
+  const pass2 = document.getElementById('adm-pass2').value;
+  if (pass1 !== pass2){ show(el, '两次输入的新密码不一致', false); btn.disabled = false; return; }
+  const body = { username: document.getElementById('adm-user').value };
+  if (pass1) body.password = pass1;
+  await postJSON('/api/settings/credentials', body, el, () => {
+    show(el, '✅ 凭据已保存并即时生效。旧登录已失效,浏览器将要求重新登录。', true);
+    document.getElementById('adm-pass').value = '';
+    document.getElementById('adm-pass2').value = '';
+    setTimeout(() => { location.href = '/settings'; }, 1200);
+  });
+  btn.disabled = false;
+}
+document.querySelectorAll('input[data-key], select[data-key]').forEach(inp => {
+  inp.addEventListener('input', () => {
+    const row = inp.closest('.row');
+    if (inp.value !== inp.dataset.original){ row.classList.add('changed'); }
+    else { row.classList.remove('changed'); }
+  });
+});
+async function saveConfig(btn, thenRestart){
+  btn.disabled = true;
+  const el = document.getElementById('cfg-result');
+  const updates = {};
+  let changed = 0;
+  document.querySelectorAll('[data-key]').forEach(inp => {
+    const kind = inp.dataset.kind;
+    if (kind === 'str' && inp.dataset.original === '' && inp.value === '') return; // 凭据未修改
+    if (inp.value === inp.dataset.original) return;
+    let v = inp.value;
+    if (kind === 'bool'){ v = (inp.value === 'true'); }
+    else if (kind === 'int'){ v = parseInt(v, 10); }
+    else if (kind === 'float'){ v = parseFloat(v); }
+    if (Number.isNaN(v)) return;
+    updates[inp.dataset.key] = v;
+    changed += 1;
+  });
+  if (changed === 0){
+    if (thenRestart){ await restartServiceFlow(el, btn); }
+    else { show(el, '没有检测到改动。', true); btn.disabled = false; }
+    return;
+  }
+  await postJSON('/api/settings/config', updates, el, (data) => {
+    show(el, `✅ 已落盘 ${changed} 项(备份: ${data.backup})。` +
+        (thenRestart ? '正在重启服务…' : '重启服务后生效: sudo systemctl restart inktime-server'), true);
+    document.querySelectorAll('.row.changed').forEach(r => r.classList.remove('changed'));
+    if (thenRestart){ setTimeout(() => restartServiceFlow(el, btn), 600); }
+    else { btn.disabled = false; }
+  });
+}
+async function restartServiceFlow(el, btn){
+  show(el, '重启指令已下发,等待服务恢复(最长 30 秒)…', true);
+  try{
+    const r = await fetch('/api/settings/restart', {method: 'POST'});
+    const data = await r.json().catch(() => ({}));
+    if (!(r.ok && data.ok)){
+      show(el, data.error || ('HTTP ' + r.status), false);
+      btn.disabled = false;
+      return;
+    }
+  }catch(e){
+    show(el, '请求失败: ' + e, false);
+    btn.disabled = false;
+    return;
+  }
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    try{
+      const r = await fetch('/api/settings/ping', {cache: 'no-store'});
+      if (r.ok){
+        clearInterval(timer);
+        show(el, '✅ 服务已重启并恢复,页面即将刷新以加载新配置。', true);
+        setTimeout(() => location.reload(), 800);
+        return;
+      }
+    }catch(e){ /* 服务重启中,继续等待 */ }
+    if (tries > 30){
+      clearInterval(timer);
+      show(el, '⏱ 等待超时:服务未在 30 秒内恢复,请检查 journalctl -u inktime-server -n 50', false);
+      btn.disabled = false;
+    }
+  }, 1000);
+}
+</script>
+</body>
+</html>

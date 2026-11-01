@@ -1,0 +1,110 @@
+{
+  "crop_reserve": {
+    "left": 220
+  },
+  "elements": [
+    {
+      "alpha": 100,
+      "blur": 10,
+      "highlight": true,
+      "kind": "glass",
+      "name": "通高毛玻璃栏",
+      "radius": 16,
+      "rect": [
+        50,
+        40,
+        226,
+        440
+      ],
+      "shadow": false
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "日期",
+      "size": 28,
+      "slot": "date_full",
+      "stroke": 0.5,
+      "x": 68,
+      "y": 58
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        66,
+        66,
+        66
+      ],
+      "kind": "text",
+      "name": "星期",
+      "size": 25,
+      "slot": "weekday",
+      "stroke": 0,
+      "x": 68,
+      "y": 96
+    },
+    {
+      "fill": [
+        200,
+        0,
+        0
+      ],
+      "kind": "bar",
+      "name": "红色饰杠",
+      "rect": [
+        68,
+        135,
+        107,
+        138
+      ]
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "size": 28,
+      "slot": "side",
+      "stroke": 0.3,
+      "wrap": {
+        "line_step": 30,
+        "max_lines": 8,
+        "max_w": 142
+      },
+      "x": 68,
+      "y": 150
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        66,
+        66,
+        66
+      ],
+      "kind": "text",
+      "name": "城市",
+      "size": 25,
+      "slot": "city",
+      "stroke": 0,
+      "x": 68,
+      "y": 400
+    }
+  ],
+  "id": "L02",
+  "name": "左侧信息栏",
+  "orientation": "landscape",
+  "schema_version": 1
+}

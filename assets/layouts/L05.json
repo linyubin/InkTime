@@ -1,0 +1,89 @@
+{
+  "crop_reserve": {},
+  "elements": [
+    {
+      "alpha": 160,
+      "blur": 10,
+      "highlight": false,
+      "kind": "glass",
+      "name": "实白横条",
+      "radius": 10,
+      "rect": [
+        50,
+        398,
+        750,
+        470
+      ],
+      "shadow": true
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "日期",
+      "size": 27,
+      "slot": "date_full",
+      "stroke": 0.5,
+      "x": 74,
+      "y": 415
+    },
+    {
+      "fill": [
+        255,
+        0,
+        0
+      ],
+      "kind": "bar",
+      "name": "灰色分隔线",
+      "rect": [
+        191,
+        418,
+        193,
+        450
+      ]
+    },
+    {
+      "align": "l",
+      "bold": true,
+      "fill": [
+        15,
+        15,
+        15
+      ],
+      "fit": 458,
+      "kind": "text",
+      "name": "旁白",
+      "size": 27,
+      "slot": "side",
+      "stroke": 0,
+      "x": 215,
+      "y": 415
+    },
+    {
+      "align": "r",
+      "bold": false,
+      "cx": 731,
+      "fill": [
+        33,
+        33,
+        33
+      ],
+      "kind": "text",
+      "name": "城市",
+      "size": 25,
+      "slot": "city",
+      "stroke": 0,
+      "x": -5,
+      "y": 420
+    }
+  ],
+  "id": "L05",
+  "name": "报纸横条",
+  "orientation": "landscape",
+  "schema_version": 1
+}

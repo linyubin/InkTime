@@ -1,0 +1,64 @@
+{
+  "crop_reserve": {
+    "bottom": 140
+  },
+  "elements": [
+    {
+      "a0": 0,
+      "a1": null,
+      "kind": "veil",
+      "name": "米白渐变底托",
+      "ramp_px": 170,
+      "rect": [
+        0,
+        600,
+        480,
+        830
+      ],
+      "rgb": [
+        246,
+        241,
+        231
+      ]
+    },
+    {
+      "align": "c",
+      "bold": true,
+      "cx": 244,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "fit": 432,
+      "kind": "text",
+      "name": "旁白",
+      "size": 24,
+      "slot": "side",
+      "stroke": 0.2,
+      "x": 0,
+      "y": 680
+    },
+    {
+      "align": "c",
+      "bold": false,
+      "cx": 240,
+      "fill": [
+        41,
+        41,
+        41
+      ],
+      "kind": "text",
+      "name": "日期行",
+      "size": 19,
+      "slot": "meta_city",
+      "stroke": 0,
+      "x": 0,
+      "y": 719
+    }
+  ],
+  "id": "P10",
+  "name": "全幅字幕",
+  "orientation": "portrait",
+  "schema_version": 1
+}

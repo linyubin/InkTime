@@ -25,9 +25,30 @@ output/
 # Database
 filelist.txt
 *.db
+*.bak*
 
 # Logs
+logs/
+
+# Runtime 临时文件（拉取哨兵 last_fetch.json、防重入锁等）
+tmp/
 
 # Others
 test/
 old/
+*.pt
+/.temp
+scripts/sync_db_to_pi.py
+/ref
+*.pdf
+/.zcode/
+holidays.json
+
+# 运行时缓存（缩略图 / 模拟渲染缓存）
+/.cache/
+
+# 废弃脚本备份（与 *.bak* 同性质）
+*.deprecated_*
+
+# 历史代码备份归档（重构 2026-11-01 收拢）
+backups/

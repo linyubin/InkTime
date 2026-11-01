@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>InkTime 独立数据中心</title>
+    <!-- DataTables CSS & jQuery -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f111a;
+            --panel-bg: #1e2130;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --border-c: #334155;
+        }
+        body {
+            margin: 0; padding: 0;
+            font-family: -apple-system, system-ui, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        #left-pane { flex: 7; padding: 20px; overflow-y: auto; border-right: 1px solid var(--border-c); background: var(--panel-bg); }
+        #right-pane { flex: 3; padding: 20px; display: flex; flex-direction: column; overflow-y: auto; background: var(--bg-dark); }
+        
+        /* Table styles */
+        table.dataTable { color: var(--text-main); font-size: 13px; table-layout: fixed; width: 100%; border-collapse: collapse !important;}
+        .dataTables_wrapper .dataTables_length, .dataTables_wrapper .dataTables_filter, .dataTables_wrapper .dataTables_info, .dataTables_wrapper .dataTables_processing, .dataTables_wrapper .dataTables_paginate { color: var(--text-muted); }
+        table.dataTable tbody tr { background-color: transparent; transition: background 0.1s; cursor: pointer; }
+        table.dataTable tbody tr:hover { background-color: rgba(59, 130, 246, 0.15) !important; }
+        table.dataTable tbody td { border-top: 1px solid var(--border-c); padding: 10px 8px; overflow: hidden; white-space: normal; vertical-align: middle; }
+        table.dataTable thead th { border-bottom: 2px solid var(--border-c); color: #fff; vertical-align: top; position: relative; padding: 10px 8px !important; }
+
+        /* Custom Resizer Handle */
+        .col-resizer { width: 6px; height: 100%; position: absolute; right: 0; top: 0; cursor: col-resize; z-index: 10; touch-action: none; background: transparent; transition: background 0.2s;}
+        .col-resizer:hover, .col-resizer.dragging { background: var(--accent); opacity: 0.5; }
+
+        /* Filter controls */
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+        .filter-group.row-layout { flex-direction: row; align-items: center; }
+        
+        .dt-select, .dt-input { box-sizing: border-box; background: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; color: var(--text-main) !important; padding: 4px; border-radius: 4px; font-size: 11px; width: 100%; height: 26px; }
+        .dt-input::placeholder { color: var(--text-muted); }
+        
+        .exclude-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; display: flex; align-items: center; gap: 2px; margin-top:2px; cursor: pointer; }
+
+        /* Select2 Dark Theme Customization & Fixes */
+        .select2-container { margin-bottom: 2px; width: 100% !important; }
+        .select2-container--default .select2-selection--multiple { background-color: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; min-height: 28px !important; display: flex !important; align-items: center !important; }
+        .select2-container--default .select2-selection--multiple .select2-selection__rendered { padding: 0 4px !important; display: flex !important; flex-wrap: wrap !important; align-items: center !important; }
+        .select2-dropdown { background-color: var(--panel-bg) !important; border: 1px solid var(--border-c) !important; font-size: 12px; z-index: 9999; }
+        .select2-container--default .select2-selection--multiple .select2-selection__choice { background-color: rgba(59, 130, 246, 0.2) !important; border: 1px solid rgba(59, 130, 246, 0.5) !important; color: #fff !important; margin: 2px 4px 2px 0 !important; padding: 0 4px !important; font-size: 11px; display: flex !important; align-items: center !important; }
+        /* Fix the 'x' alignment in Select2 choice */
+        .select2-container--default .select2-selection--multiple .select2-selection__choice__remove { color: #fff !important; margin-right: 4px !important; position: static !important; float: none !important; border: none !important; }
+        .select2-container--default .select2-selection--multiple .select2-selection__choice__remove:hover { color: #f87171 !important; background: transparent !important; }
+        .select2-search__field { color: #fff !important; margin: 2px 0 !important; background: transparent !important;}
+        .select2-results__option { color: var(--text-main); padding: 4px 8px !important; font-size: 12px; }
+        .select2-container--default .select2-results__option--highlighted[aria-selected] { background-color: var(--accent) !important; }
+        .select2-container--default .select2-selection--single { background: rgba(0,0,0,0.2) !important; border: 1px solid var(--border-c) !important; height: 28px !important; display: flex !important; align-items: center !important; }
+        .select2-container--default .select2-selection--single .select2-selection__rendered { color: var(--text-main) !important; font-size: 11px; line-height: 26px !important; }
+        .select2-container--default .select2-selection--single .select2-selection__arrow { height: 26px !important; }
+        
+        /* Preview styles */
+        #preview-img-container { width: 100%; height: 40vh; background: #000; display: flex; align-items: center; justify-content: center; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border-c); overflow: hidden; }
+        .bbox-overlay { position: absolute; border: 2px solid #ef4444; box-sizing: border-box; pointer-events: none; z-index: 10; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+        .bbox-label { position: absolute; top: -18px; left: -2px; background: #ef4444; color: white; font-size: 10px; padding: 1px 4px; border-radius: 3px 3px 0 0; white-space: nowrap; font-weight: bold; }
+        #preview-meta { font-size: 13px; line-height: 1.6; }
+        #preview-meta h3 { margin-top: 0; color: #fff; border-bottom: 1px solid var(--border-c); padding-bottom: 8px; }
+        .meta-group { margin-bottom: 12px; }
+        .meta-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .meta-value { color: var(--text-main); word-break: break-all; }
+        .empty-state { color: var(--text-muted); font-style: italic; text-align: center; }
+
+        /* tags (horizontal layout) */
+        .tag-container { display: flex; flex-wrap: wrap; gap: 4px; }
+        .tag-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; border: 1px solid; font-weight: 500; white-space: nowrap; }
+        
+        .score-good { color: #34d399; font-weight: bold; }
+        .score-avg { color: #fbbf24; }
+        .score-bad { color: #f87171; }
+        
+        .dataTables_length select { background: var(--panel-bg); color: white; border: 1px solid var(--border-c); padding:2px 6px;}
+        .dataTables_filter input { background: transparent; border: 1px solid var(--border-c); color: #fff; margin-left: 5px; padding:2px 6px;}
+        .dataTables_wrapper .dataTables_paginate .paginate_button { color: var(--text-muted) !important; padding: 4px 8px;}
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current, .dataTables_wrapper .dataTables_paginate .paginate_button.current:hover { color: #fff !important; background: var(--accent) !important; border-color: var(--accent) !important; }
+    </style>
+  <script src="/static/admin_csrf.js?v=1"></script>
+</head>
+<body>
+    <div id="left-pane">
+        <h2 style="margin-top:0;">InkTime 照片管理面板 <a href="/" style="font-size:12px;font-weight:400;color:#8ab4ff;text-decoration:none;">← 返回首页</a></h2>
+        <table id="photos-table" class="display">
+            <thead>
+                <tr>
+                    <th style="width:110px;">日期</th>
+                    <th style="width:250px;">层级路径</th>
+                    <th style="width:130px;">分类</th>
+                    <th style="width:110px;">城市</th>
+                    <th style="width:65px;">回忆</td>
+                    <th style="width:65px;">美观</td>
+                    <th style="width:75px;">状态</th>
+                </tr>
+            </thead>
+            <!-- search boxes -->
+            <thead id="header-filters">
+                <tr>
+                    <th>
+                        <div class="filter-group">
+                            <select class="dt-select date-op"><option value="=">当日</option><option value="<">之前</option><option value=">">之后</option></select>
+                            <input type="date" class="dt-input date-val">
+                        </div>
+                    </th>
+                    <th>
+                        <div class="filter-group">
+                            <select id="path-selector" class="path-sel-select2 dt-select" style="width:100% !important;">
+                                <option value="">载入中...</option>
+                            </select>
+                            <label class="exclude-label"><input type="checkbox" class="path-exclude"> 排除该层层级</label>
+                        </div>
+                    </th>
+                    <th>
+                        <select class="dt-select multi-select type-sel" multiple>
+                            <!-- 动态加载 -->
+                        </select>
+                    </th>
+                    <th>
+                        <select class="dt-select multi-select city-sel" multiple>
+                            <!-- 动态加载 -->
+                        </select>
+                    </th>
+                    <th>
+                        <div class="filter-group row-layout">
+                            <select class="dt-select mem-op" style="width:35px; padding:4px 0;"><option value=">">&gt;</option><option value="=">=</option><option value="<">&lt;</option></select>
+                            <input type="number" class="dt-input mem-val" placeholder="值">
+                        </div>
+                    </th>
+                    <th>
+                        <div class="filter-group row-layout">
+                            <select class="dt-select bf-op" style="width:35px; padding:4px 0;"><option value=">">&gt;</option><option value="=">=</option><option value="<">&lt;</option></select>
+                            <input type="number" class="dt-input bf-val" placeholder="值">
+                        </div>
+                    </th>
+                    <th>
+                        <select class="dt-select used-sel">
+                            <option value="">所有</option>
+                            <option value="已上屏">已上屏</option>
+                            <option value="未上屏">未上屏</option>
+                        </select>
+                    </th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    
+    <div id="right-pane">
+        <div id="preview-img-container">
+            <span class="empty-state">← 点击表格记录在此处预览大图</span>
+        </div>
+        <div id="preview-meta">
+            <!-- Dynamically populated -->
+        </div>
+    </div>
+
+    <script>
+        const TYPE_COLORS = {
+            "人物": "#ec4899", "孩子": "#f43f5e", "家庭": "#f97316", 
+            "旅行": "#3b82f6", "风景": "#10b981", "风光": "#10b981", 
+            "建筑": "#8b5cf6", "物品": "#6366f1", "动物": "#eab308", 
+            "萌宠": "#eab308", "美食": "#ef4444", "合影": "#d946ef", "其他": "#64748b"
+        };
+        
+        function hashColor(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            let c = (Math.abs(hash) & 0x00FFFFFF).toString(16).toUpperCase();
+            return '#' + '00000'.substring(0, 6 - c.length) + c;
+        }
+
+        // 防抖函数：避免过滤条件变化时频繁请求
+        let _drawTimer = null;
+        function debounceDraw(table, delay) {
+            clearTimeout(_drawTimer);
+            _drawTimer = setTimeout(() => { table.draw(); }, delay || 400);
+        }
+
+        $(document).ready(function() {
+            // 初始化 Select2
+            $('.city-sel, .type-sel').select2({
+                placeholder: "选择类别...",
+                allowClear: true,
+                closeOnSelect: false
+            });
+            $('#path-selector').select2({
+                placeholder: "所在文件夹(全部)",
+                allowClear: true,
+                width: 'resolve'
+            });
+
+            // 异步加载下拉框（不阻塞主表格）
+            $.getJSON('/api/photos/meta', function(meta) {
+                let psel = $('#path-selector');
+                psel.empty().append(new Option("", ""));
+                (meta.dirs || []).forEach(function(d) {
+                    let parts = d.split('/');
+                    let label = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : d;
+                    psel.append(new Option(label, d));
+                });
+                psel.trigger('change');
+
+                let csel = $('.city-sel');
+                csel.empty();
+                (meta.cities || []).forEach(function(d) { csel.append(new Option(d, d)); });
+                csel.trigger('change');
+
+                let tsel = $('.type-sel');
+                tsel.empty();
+                (meta.types || []).forEach(function(t) { tsel.append(new Option(t, t)); });
+                tsel.trigger('change');
+            });
+
+            // 联动重绘
+            $('.type-sel, .city-sel, .path-sel-select2').on('change', function() {
+                if(window._table) window._table.draw();
+            });
+
+            // 收集所有过滤条件，生成请求参数
+            function buildFilterParams(d) {
+                d.f_date_op = $('.date-op').val() || '';
+                d.f_date_val = $('.date-val').val() || '';
+                d.f_path = $('#path-selector').val() || '';
+                d.f_path_exclude = $('.path-exclude').is(':checked') ? '1' : '0';
+                d['f_types[]'] = $('.type-sel').val() || [];
+                d['f_cities[]'] = $('.city-sel').val() || [];
+                d.f_mem_op = $('.mem-op').val() || '>';
+                d.f_mem_val = $('.mem-val').val() || '';
+                d.f_bf_op = $('.bf-op').val() || '>';
+                d.f_bf_val = $('.bf-val').val() || '';
+                d.f_used = $('.used-sel').val() || '';
+            }
+
+            var table = $('#photos-table').DataTable({
+                serverSide: true,
+                processing: true,
+                ajax: {
+                    url: '/api/photos',
+                    type: 'GET',
+                    data: function(d) { buildFilterParams(d); }
+                },
+                autoWidth: false,
+                deferRender: true,
+                pageLength: 50,
+                lengthMenu: [25, 50, 100, 200],
+                order: [[ 4, 'desc' ]],
+                columns: [
+                    { data: 'date', orderable: true },
+                    { data: 'path', orderable: true, render: function(data) {
+                        let parts = data.split(/[\\\/]/);
+                        let name = parts.pop();
+                        return '<div style="font-size:10px;color:#94a3b8;word-break:break-all;" title="' + data + '">' + name + '</div>';
+                    }},
+                    { data: 'type', orderable: false, render: function(data) {
+                        if (!data) return '';
+                        let arr = [];
+                        try { arr = JSON.parse(data.replace(/'/g, '"')); } catch(e) { arr = [data]; }
+                        if (!Array.isArray(arr)) arr = [arr];
+                        
+                        let html = '<div class="tag-container">';
+                        arr.forEach(t => {
+                            if(!t) return;
+                            let c = TYPE_COLORS[t] || hashColor(t);
+                            html += `<span class="tag-pill" style="background:${c}25; border-color:${c}60; color:${c};">${t}</span>`;
+                        });
+                        html += '</div>';
+                        return html;
+                    }},
+                    { data: 'city', orderable: true },
+                    { data: 'memory', orderable: true, render: function(data) {
+                        if(data < 0) return '-';
+                        let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
+                        return `<span class="${cls}">${data}</span>`;
+                    }},
+                    { data: 'beauty', orderable: true, render: function(data) {
+                        if(data < 0) return '-';
+                        let cls = data >= 80 ? 'score-good' : (data > 50 ? 'score-avg' : 'score-bad');
+                        return `<span class="${cls}">${data}</span>`;
+                    }},
+                    { data: 'used', orderable: true }
+                ],
+                language: {
+                    "emptyTable": "表格中无可用数据",
+                    "info": "显示第 _START_ 至 _END_ 条，共 _TOTAL_ 条记录",
+                    "infoEmpty": "显示第 0 至 0 条，共 0 条记录",
+                    "infoFiltered": "（从 _MAX_ 条记录过滤）",
+                    "infoPostFix": "",
+                    "thousands": ",",
+                    "lengthMenu": "每页显示 _MENU_ 条记录",
+                    "loadingRecords": "载入中...",
+                    "processing": "处理中...",
+                    "search": "搜索:",
+                    "zeroRecords": "没有找到匹配的记录",
+                    "paginate": {
+                        "first": "首页",
+                        "last": "末页",
+                        "next": "下一页",
+                        "previous": "上一页"
+                    },
+                    "aria": {
+                        "sortAscending": ": 以升序排列此列",
+                        "sortDescending": ": 以降序排列此列"
+                    }
+                }
+            });
+
+            window._table = table;
+
+            // Handle Column Resizing
+            let isResizing = false, currentTh, startColWidth, startX;
+            $('#photos-table thead tr:first-child th').each(function() {
+                let handle = $('<div class="col-resizer"></div>');
+                $(this).append(handle);
+                handle.on('mousedown', function(e) {
+                    isResizing = true;
+                    currentTh = $(this).parent();
+                    startColWidth = currentTh.width();
+                    startX = e.pageX;
+                    $(this).addClass('dragging');
+                    e.stopPropagation();
+                    e.preventDefault();
+                });
+            });
+
+            $(document).on('mousemove', function(e) {
+                if (isResizing && currentTh) {
+                    let newWidth = startColWidth + (e.pageX - startX);
+                    if(newWidth > 30) {
+                        currentTh.css('width', newWidth + 'px');
+                    }
+                }
+            }).on('mouseup', function() {
+                if(isResizing) {
+                    isResizing = false;
+                    $('.col-resizer').removeClass('dragging');
+                }
+            });
+
+            // Bind filters with debounce
+            $('#header-filters input, .date-op, .mem-op, .bf-op, .used-sel, .path-exclude').on('keyup change', function() { 
+                debounceDraw(table, 400);
+            });
+
+            // Handle row click preview
+            $('#photos-table tbody').on('click', 'tr', function () {
+                let rowData = table.row(this).data();
+                if (!rowData) return;
+                $(this).siblings().css('background-color', 'transparent');
+                $(this).css('background-color', 'rgba(59, 130, 246, 0.2)');
+                
+                // Parse subjects for bbox
+                let subjects = [];
+                try { subjects = JSON.parse(rowData.subjects_json || "[]"); } catch(e) {}
+
+                // 显示图片
+                let imgSrc = rowData.image_url || "";
+                if (imgSrc) {
+                    $('#preview-img-container').html(
+                        `<div id="img-wrapper" style="position: relative; width: 100%; height: 100%;">
+                            <img id="preview-img" src="${imgSrc}" style="width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity 0.3s"
+                                onerror="$(this).parent().replaceWith('<span class=\\'empty-state\\'>⚠️ 图像加载失败。</span>')">
+                            <div id="bbox-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></div>
+                        </div>`
+                    );
+                    
+                    $('#preview-img').on('load', function() {
+                        this.style.opacity = 1;
+                        let img = this;
+                        let nw = img.naturalWidth;
+                        let nh = img.naturalHeight;
+                        if (!nw || !nh) return;
+                        
+                        let cw = img.clientWidth;
+                        let ch = img.clientHeight;
+                        
+                        let scale = Math.min(cw / nw, ch / nh);
+                        let renderW = nw * scale;
+                        let renderH = nh * scale;
+                        
+                        let offsetX = (cw - renderW) / 2;
+                        let offsetY = (ch - renderH) / 2;
+                        
+                        let bboxesHtml = "";
+                        subjects.forEach((sub, i) => {
+                            if(sub.bbox && sub.bbox.length === 4) {
+                                let cx = sub.bbox[0];
+                                let cy = sub.bbox[1];
+                                let w = sub.bbox[2];
+                                let h = sub.bbox[3];
+                                
+                                let boxLeft = offsetX + (cx - w/2) * renderW;
+                                let boxTop = offsetY + (cy - h/2) * renderH;
+                                let boxW = w * renderW;
+                                let boxH = h * renderH;
+                                
+                                bboxesHtml += `<div class="bbox-overlay" style="left: ${boxLeft}px; top: ${boxTop}px; width: ${boxW}px; height: ${boxH}px;">
+                                    <span class="bbox-label">${sub.label} ${(sub.conf*100).toFixed(0)}%</span>
+                                </div>`;
+                            }
+                        });
+                        $('#bbox-container').html(bboxesHtml);
+                    });
+                } else {
+                    $('#preview-img-container').html('<span class="empty-state">⚠️ 无可用图片路径</span>');
+                }
+
+                // 显示 meta
+                let exif = {};
+                try { exif = JSON.parse(rowData.exif_json) || {}; } catch (e) {}
+                let cam = ((exif.make || '') + ' ' + (exif.model || '')).trim() || '未知设备';
+                let reasonText = (rowData.reason || '').replace(/\\n/g, '<br>');
+                let sideText = (rowData.side_caption || '').replace(/\\n/g, '<br>');
+                let captionText = (rowData.caption || '').replace(/\\n/g, '<br>');
+                
+                let subjectsText = subjects.length > 0 
+                    ? subjects.map(s => `${s.label} (${(s.conf*100).toFixed(1)}%)`).join(', ') 
+                    : '未检测到主体或未分析';
+
+                let metaHtml = `
+                    <h3>${rowData.city || '未知地点'} - ${rowData.date || '未知日期'}</h3>
+                    <div class="meta-group"><div class="meta-label">原始路径</div><div class="meta-value" style="font-family: monospace; font-size:11px; word-break:break-all;">${rowData.path}</div></div>
+                    <div class="meta-group"><div class="meta-label">画面描述 (Caption)</div><div class="meta-value" style="font-size:12px; color:#e2e8f0; margin-bottom: 8px;">${captionText || '无可见描述'}</div></div>
+                    <div class="meta-group"><div class="meta-label">智能识别主体 (YOLO)</div><div class="meta-value" style="font-size:12px; color:#fca5a5; margin-bottom: 8px;">${subjectsText}</div></div>
+                    <div class="meta-group"><div class="meta-label">AI 长文旁白记录</div><div class="meta-value" style="font-style: italic; color:#bae6fd; margin-bottom: 8px; font-size: 13px;">${sideText || '暂无，需生成'}</div></div>
+                    <div class="meta-group"><div class="meta-label">判定原因与得分</div><div class="meta-value" style="margin-bottom:6px;">回忆度 <strong>${rowData.memory >= 0 ? rowData.memory : '-'}</strong> | 美观度 <strong>${rowData.beauty >= 0 ? rowData.beauty : '-'}</strong></div><div class="meta-value" style="font-size:12px; border-left: 2px solid var(--accent); padding-left: 8px; margin-bottom: 8px;">${reasonText || '-'}</div></div>
+                    <div class="meta-group">
+                        <div class="meta-label">详细参数 (EXIF)</div>
+                        <div class="meta-value" style="font-size:12px;">
+                            <table style="width:100%; color:var(--text-muted); margin-top:4px;">
+                                <tr><td style="width:50%">设备: ${cam}</td><td>焦距: ${exif.focal_length ? exif.focal_length : '-'}</td></tr>
+                                <tr><td>光圈: ${exif.f_number ? exif.f_number : '-'}</td><td>曝光: ${exif.exposure_time ? exif.exposure_time : '-'}</td></tr>
+                                <tr><td>ISO: ${exif.iso || '-'}</td><td>GPS: ${exif.gps_lat || '-'} , ${exif.gps_lon || '-'}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                `;
+                $('#preview-meta').html(metaHtml);
+            });
+        });
+    </script>
+</body>
+</html>

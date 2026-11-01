@@ -1,0 +1,68 @@
+{
+  "crop_reserve": {
+    "bottom": 120
+  },
+  "elements": [
+    {
+      "a0": 0,
+      "a1": null,
+      "kind": "veil",
+      "name": "米白渐变底托",
+      "ramp_px": 170,
+      "rect": [
+        0,
+        280,
+        800,
+        480
+      ],
+      "rgb": [
+        246,
+        241,
+        231
+      ]
+    },
+    {
+      "align": "c",
+      "bold": true,
+      "cx": 400,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "size": 30,
+      "slot": "side",
+      "stroke": 0.3,
+      "wrap": {
+        "line_step": 34,
+        "max_lines": 2,
+        "max_w": 660
+      },
+      "x": 0,
+      "y": 372
+    },
+    {
+      "align": "c",
+      "bold": false,
+      "cx": 400,
+      "fill": [
+        96,
+        90,
+        82
+      ],
+      "kind": "text",
+      "name": "日期行",
+      "size": 25,
+      "slot": "meta_city",
+      "stroke": 0,
+      "x": 0,
+      "y": 420
+    }
+  ],
+  "id": "L04",
+  "name": "电影字幕",
+  "orientation": "landscape",
+  "schema_version": 1
+}

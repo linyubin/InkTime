@@ -1,0 +1,95 @@
+{
+  "crop_reserve": {
+    "top": 180
+  },
+  "elements": [
+    {
+      "alpha": 184,
+      "blur": 12,
+      "highlight": true,
+      "kind": "glass",
+      "name": "顶签",
+      "radius": 14,
+      "rect": [
+        50,
+        40,
+        380,
+        194
+      ],
+      "shadow": false
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "日期",
+      "size": 28,
+      "slot": "date_full",
+      "stroke": 0.5,
+      "x": 70,
+      "y": 54
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        85,
+        85,
+        85
+      ],
+      "kind": "text",
+      "name": "星期",
+      "size": 22,
+      "slot": "weekday",
+      "stroke": 0,
+      "x": 70,
+      "y": 92
+    },
+    {
+      "fill": [
+        200,
+        0,
+        0
+      ],
+      "kind": "bar",
+      "name": "红色饰杠",
+      "rect": [
+        70,
+        123,
+        100,
+        126
+      ]
+    },
+    {
+      "align": "l",
+      "bold": false,
+      "fill": [
+        0,
+        0,
+        0
+      ],
+      "kind": "text",
+      "name": "旁白",
+      "min_size": 21,
+      "size": 27,
+      "slot": "side",
+      "stroke": 0.3,
+      "wrap": {
+        "line_step": 30,
+        "max_lines": 2,
+        "max_w": 290
+      },
+      "x": 70,
+      "y": 130
+    }
+  ],
+  "id": "L06",
+  "name": "顶签悬挂",
+  "orientation": "landscape",
+  "schema_version": 1
+}

@@ -1,0 +1,38 @@
+name: Safety and Python smoke tests
+
+on:
+  push:
+    branches: [main, local-fix, refactor/architecture-v1]
+  pull_request:
+    branches: [main, local-fix]
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile changed Python entrypoints and helpers
+        run: |
+          python -m compileall -q inktime/ server.py analyze_photos.py render_daily_photo.py render_calib_cards.py push_to_epd_ble.py scripts/backup_sqlite.py scripts/migrate_sqlite.py scripts/init_sqlite.py scripts/staging_preflight.py scripts/reconcile_photos.py
+      - name: Install declared runtime requirements
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Run standard-library safety tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate browser CSRF adapter
+        run: |
+          node --check inktime/server/static/admin_csrf.js
+          node --test tests/test_admin_csrf_js.cjs
+      - name: Validate core requirements syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for line in Path("requirements.txt").read_text().splitlines():
+              if not line.strip() or line.lstrip().startswith("#"):
+                  continue
+              assert "lunardate" not in line or line.strip() == "lunardate==0.3.0", line
+          PY
