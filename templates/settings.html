@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkTime 管理设置</title>
+  <style>
+    :root{
+      --bg: #0b0c10;
+      --panel: rgba(255,255,255,0.06);
+      --card: rgba(255,255,255,0.10);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.62);
+      --muted2: rgba(255,255,255,0.45);
+      --line: rgba(255,255,255,0.14);
+      --accent: #8ab4ff;
+      --accent2:#9cffd6;
+      --warn: #ffd08a;
+      --danger: #ff9c9c;
+      --shadow2: 0 10px 28px rgba(0,0,0,0.35);
+      --radius: 14px;
+    }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0; padding:0 0 60px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 20% 0%, rgba(138,180,255,0.18), transparent 45%),
+                  radial-gradient(900px 700px at 90% 20%, rgba(156,255,214,0.14), transparent 55%),
+                  linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
+      color: var(--text);
+    }
+    .container{ max-width: 860px; margin: 26px auto 30px; padding: 0 18px; }
+    h1{ font-size: 21px; margin: 0 0 6px; letter-spacing: 0.2px; }
+    h1 .home-link{ font-size: 12.5px; font-weight: 400; margin-left: 12px; }
+    h1 .home-link a{ color: var(--accent); text-decoration: none; }
+    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+    .card{
+      background: var(--card); border:1px solid var(--line); border-radius: var(--radius);
+      padding: 18px 20px; margin: 16px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+    }
+    .card h2{ font-size: 15.5px; margin: 0 0 12px; }
+    label{ display:block; font-size: 12.5px; color: var(--muted); margin: 12px 0 5px; }
+    input[type=text], input[type=password]{
+      width:100%; padding: 9px 12px; font-size: 13.5px; color: var(--text);
+      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 10px; outline: none;
+    }
+    input:focus{ border-color: var(--accent); }
+    button{
+      margin-top: 14px; padding: 9px 18px; font-size: 13px; cursor: pointer;
+      color: var(--text); background: linear-gradient(135deg, #4361ee, #3a0ca3);
+      border: none; border-radius: 10px;
+    }
+    button:hover{ opacity: 0.9; }
+    .hint{ font-size: 11px; color: var(--muted2); line-height: 1.6; margin-top: 10px; }
+    .field-row{ display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
+    .field-row .cfg-field{ flex:1 1 180px; min-width:160px; }
+    .result{
+      margin-top: 12px; padding: 9px 12px; font-size: 12px; border-radius: 10px;
+      background: rgba(0,0,0,0.45); border:1px solid var(--line); color: var(--muted);
+      white-space: pre-wrap; word-break: break-all; min-height: 18px;
+    }
+    .result.ok{ color: var(--accent2); border-color: rgba(156,255,214,0.4); }
+    .result.err{ color: var(--danger); border-color: rgba(255,156,156,0.4); }
+  </style>
+  <script src="/static/admin_csrf.js?v=1"></script>
+</head>
+<body>
+<div class="container">
+  <h1>⚙️ 管理设置
+    <span class="home-link"><a href="/">← 返回首页</a></span>
+  </h1>
+  <p class="subtitle">凭据保存后立即生效(所有登录会话需重新登录);config.py 配置项保存后已落盘,重启服务生效。修改前自动备份。</p>
+
+  <div class="card">
+    <h2>🔐 管理员凭据</h2>
+    <label for="adm-user">用户名</label>
+    <input type="text" id="adm-user" value="{{ admin_username }}" autocomplete="username">
+    <label for="adm-pass">新密码(≥8 位;留空 = 不修改密码)</label>
+    <input type="password" id="adm-pass" autocomplete="new-password">
+    <label for="adm-pass2">确认新密码</label>
+    <input type="password" id="adm-pass2" autocomplete="new-password">
+    <button onclick="saveCredentials(this)">保存凭据</button>
+    <div class="hint">凭据落盘到 <code>data/admin.env</code>(0600),由 systemd EnvironmentFile 加载,重启服务后依然有效。当前凭据不会回显。</div>
+    <div class="result" id="cred-result"></div>
+  </div>
+
+  <div class="card">
+    <h2>🧩 常用配置(config.py)</h2>
+    <div class="field-row">
+      {% for name, value in config_values.items() %}
+      <div class="cfg-field">
+        <label for="cfg-{{ name }}">{{ name }}</label>
+        <input type="text" id="cfg-{{ name }}" data-key="{{ name }}" value="{{ value }}">
+      </div>
+      {% endfor %}
+    </div>
+    <button onclick="saveConfig(this)">保存配置</button>
+    <div class="hint">允许范围:DAILY_PHOTO_QUANTITY 1–20 · MEMORY_THRESHOLD 0–100 · SCORE_MEMORY_WEIGHT 0–1 · ESP32_SERVE_WAIT_MIN 1–240 · ENABLE_REVIEW_WEBUI 开/关。保存会按行改写 config.py 并自动备份为 <code>config.py.bak-时间戳</code>;该行原有的行内注释会被移除。重启服务后生效。</div>
+    <div class="result" id="cfg-result"></div>
+  </div>
+</div>
+
+<script>
+function show(el, text, ok){
+  el.className = 'result ' + (ok ? 'ok' : 'err');
+  el.textContent = text;
+}
+async function postJSON(url, body, el, onOk){
+  try{
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data.ok){ onOk(data); }
+    else { show(el, data.error || ('HTTP ' + r.status), false); }
+  }catch(e){
+    show(el, '请求失败: ' + e, false);
+  }
+}
+async function saveCredentials(btn){
+  btn.disabled = true;
+  const el = document.getElementById('cred-result');
+  const pass1 = document.getElementById('adm-pass').value;
+  const pass2 = document.getElementById('adm-pass2').value;
+  if (pass1 !== pass2){ show(el, '两次输入的新密码不一致', false); btn.disabled = false; return; }
+  const body = { username: document.getElementById('adm-user').value };
+  if (pass1) body.password = pass1;
+  await postJSON('/api/settings/credentials', body, el, (data) => {
+    show(el, '✅ 凭据已保存并即时生效。旧登录已失效,浏览器将要求重新登录。', true);
+    document.getElementById('adm-pass').value = '';
+    document.getElementById('adm-pass2').value = '';
+    setTimeout(() => { location.href = '/settings'; }, 1200);
+  });
+  btn.disabled = false;
+}
+async function saveConfig(btn){
+  btn.disabled = true;
+  const el = document.getElementById('cfg-result');
+  const updates = {};
+  document.querySelectorAll('input[data-key]').forEach(inp => {
+    const raw = inp.value.trim();
+    if (raw === '') return;
+    if (/^(开|关|True|False|true|false)$/.test(raw)) updates[inp.dataset.key] = /^(开|True|true)$/.test(raw);
+    else if (/^-?\d+$/.test(raw)) updates[inp.dataset.key] = parseInt(raw, 10);
+    else updates[inp.dataset.key] = parseFloat(raw);
+  });
+  await postJSON('/api/settings/config', updates, el, (data) => {
+    show(el, '✅ 已落盘(备份: ' + data.backup + ')。重启服务后生效: sudo systemctl restart inktime-server', true);
+  });
+  btn.disabled = false;
+}
+</script>
+</body>
+</html>
