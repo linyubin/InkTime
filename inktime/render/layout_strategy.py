@@ -34,7 +34,7 @@ import json
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-from style_registry import (crop_reserves as _crop_reserves_from_json,
+from inktime.render.style_registry import (crop_reserves as _crop_reserves_from_json,
                             get_style, landscape_ids, layout_names,
                             portrait_ids)
 

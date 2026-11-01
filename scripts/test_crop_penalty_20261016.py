@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """构图完整性惩罚(compute_crop_penalty)单元测试 — 2026-10-16"""
 import sys, json
-sys.path.insert(0, '/home/andy/inktime')
-import render_daily_photo as rdp
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[1]))
+from inktime.render import render_daily_photo as rdp
 
 cases = []
 def case(name, got, want):

@@ -17,11 +17,11 @@ import unittest
 
 from flask import Flask, abort, request
 
-from device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
+from inktime.server.device_log_storage import (device_log_paths, device_log_lock, DeviceJournalLockTimeout,
                                 append_private_device_log,
                                 read_device_log_lines, recover_incomplete_private_device_log_tail,
                                 sync_existing_private_device_log)
-from download_key_security import authorized_download_key, resolve_download_keys
+from inktime.server.download_key_security import authorized_download_key, resolve_download_keys
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -81,9 +81,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
 
             @app.post("/log/<key>")
@@ -127,7 +127,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
                 "render_template": lambda _name, **kw: kw,
             }
-            result = extract_function("webui.py", "devlog", ns)()
+            result = extract_function("inktime/server/webui.py", "devlog", ns)()
             self.assertTrue(result["exists"])
             self.assertEqual([x["t"] for x in result["rows"]], ["NEW", "OLD"])
             ns["os"].environ.pop("INKTIME_DOWNLOAD_KEY_PREVIOUS")
@@ -322,9 +322,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
 
             @app.post("/log/<key>")
@@ -365,9 +365,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
 
             @app.post("/log/<key>")
@@ -500,9 +500,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
             @app.post("/log/<key>")
             def upload(key):
@@ -535,7 +535,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "_ANCHOR_RE": re.compile(r" anchor=(\d+)"),
                 "render_template": lambda _name, **kw: kw,
             }
-            endpoint = extract_function("webui.py", "devlog", ns)
+            endpoint = extract_function("inktime/server/webui.py", "devlog", ns)
             app = Flask(__name__)
             with app.test_request_context("/devlog"):
                 with self.assertRaises(Exception) as err:
@@ -557,11 +557,11 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 calls.append("file" if stat.S_ISREG(mode) else "directory")
                 return real_fsync(fd)
 
-            with patch("device_log_storage.os.fsync", side_effect=trace):
+            with patch("inktime.server.device_log_storage.os.fsync", side_effect=trace):
                 append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
             self.assertEqual(calls[-2:], ["file", "directory"])
             calls.clear()
-            with patch("device_log_storage.os.fsync", side_effect=trace):
+            with patch("inktime.server.device_log_storage.os.fsync", side_effect=trace):
                 append_private_device_log(path, [], max_bytes=100)
             self.assertEqual(calls[-2:], ["file", "directory"])
             self.assertEqual(path.read_text(), '{"ls":1}\n')
@@ -586,7 +586,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                     raise OSError("simulated directory sync failure")
                 return real_fsync(fd)
 
-            with patch("device_log_storage.os.fsync", side_effect=fail_directory):
+            with patch("inktime.server.device_log_storage.os.fsync", side_effect=fail_directory):
                 with self.assertRaises(OSError):
                     append_private_device_log(path, ['{"ls":1}'], max_bytes=100)
             # The append may be visible even though the API must return 500.
@@ -612,9 +612,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
 
             @app.post("/log/<key>")
@@ -623,7 +623,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
 
             payload = '{"ls":7,"t":"RETRY"}\n'
             with app.test_client() as client:
-                with patch("device_log_storage.os.fsync",
+                with patch("inktime.server.device_log_storage.os.fsync",
                            side_effect=OSError("simulated fsync failure")):
                     failed = client.post("/log/legacySecret", data=payload)
                 self.assertEqual(failed.status_code, 500)
@@ -633,7 +633,7 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 self.assertEqual((recovered.status_code, recovered.get_data(as_text=True)),
                                  (200, "OK n=0"))
                 self.assertEqual(ns["_devlog_max_ls"]["legacySecret"], 7)
-                with patch("device_log_storage.os.fsync",
+                with patch("inktime.server.device_log_storage.os.fsync",
                            side_effect=OSError("simulated duplicate sync failure")):
                     duplicate_failed = client.post("/log/legacySecret", data=payload)
                 self.assertEqual(duplicate_failed.status_code, 500)
@@ -704,9 +704,9 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
             @app.post("/log/<key>")
             def upload(key):
@@ -736,15 +736,15 @@ class DeviceLogFilenameTests(unittest.TestCase):
                 "json": json, "datetime": datetime, "request": request, "abort": abort,
                 "Path": Path,
             }
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
             @app.post("/log/<key>")
             def upload(key):
                 return endpoint(key)
             with app.test_client() as client:
-                with patch("device_log_storage.os.fsync",
+                with patch("inktime.server.device_log_storage.os.fsync",
                            side_effect=OSError("simulated recovery fsync failure")):
                     self.assertEqual(client.post("/log/legacySecret", data='{"ls":2}\n').status_code, 500)
                 self.assertEqual(ns["_devlog_max_ls"], {})
@@ -769,9 +769,9 @@ class DeviceLogIntegrityTests(unittest.TestCase):
             "json": json, "datetime": datetime, "request": request,
             "abort": abort, "Path": Path,
         }
-        extract_function("server.py", "_devlog_path", ns)
-        extract_function("server.py", "_devlog_load_max_ls", ns)
-        endpoint = extract_function("server.py", "esp_device_log", ns)
+        extract_function("inktime/server/server.py", "_devlog_path", ns)
+        extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+        endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
         app = Flask(__name__)
 
         @app.post("/log/<key>")
@@ -953,9 +953,9 @@ class DeviceJournalDirectoryLeaseTests(unittest.TestCase):
                 directory.mkdir()
 
             ns["append_private_device_log"] = replace_after_append
-            extract_function("server.py", "_devlog_path", ns)
-            extract_function("server.py", "_devlog_load_max_ls", ns)
-            endpoint = extract_function("server.py", "esp_device_log", ns)
+            extract_function("inktime/server/server.py", "_devlog_path", ns)
+            extract_function("inktime/server/server.py", "_devlog_load_max_ls", ns)
+            endpoint = extract_function("inktime/server/server.py", "esp_device_log", ns)
             app = Flask(__name__)
 
             @app.post("/log/<key>")

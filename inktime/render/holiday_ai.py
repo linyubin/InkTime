@@ -28,7 +28,7 @@ import requests
 from PIL import Image, ImageOps
 
 import config as cfg
-from common import resolve_chat_endpoint
+from inktime.core.common import resolve_chat_endpoint
 
 # 模板 → 给模型的场景说明（帮助它理解"找什么氛围的照片"）
 _TEMPLATE_DESC = {
@@ -71,7 +71,7 @@ def _image_to_b64(path: str, max_edge: int) -> Optional[str]:
     """读图 → EXIF 纠偏 → RGB → 长边缩放 → JPEG base64。损坏图返回 None 跳过。"""
     try:
         # DB 路径可能是 Windows UNC 等跨平台路径，与主渲染管线共用同一解析
-        from render_daily_photo import resolve_photo_path
+        from inktime.render.render_daily_photo import resolve_photo_path
         try:
             path = str(resolve_photo_path(path))
         except RuntimeError as e:

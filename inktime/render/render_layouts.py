@@ -29,7 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import config as cfg
-from layout_strategy import LAYOUT_NAMES, seal_glyphs_for_city
+
+from inktime import ROOT_DIR
+from inktime.render.layout_strategy import LAYOUT_NAMES, seal_glyphs_for_city
 
 # ---------- 常量 ----------
 INSET = int(getattr(cfg, "FRAME_MASK_INSET_PX", 40) or 0)
@@ -49,10 +51,10 @@ GRAY_TEXT = (85, 85, 85)
 
 _FONT_PATH = Path(str(getattr(cfg, "FONT_PATH", "") or "")).expanduser()
 if str(_FONT_PATH) and not _FONT_PATH.is_absolute():
-    _FONT_PATH = (Path(__file__).resolve().parent / _FONT_PATH).resolve()
+    _FONT_PATH = (ROOT_DIR / _FONT_PATH).resolve()
 
 _FONT_CACHE: Dict[Tuple[Optional[str], int], ImageFont.FreeTypeFont] = {}
-_SEAL_GLYPH_DIR = Path(__file__).resolve().parent / "seal_glyphs"
+_SEAL_GLYPH_DIR = ROOT_DIR / "assets" / "seal_glyphs"
 
 # 版式 JSON 的 font 字段可选字体（None=跟随 config.FONT_PATH，存量版式均为 None）
 _FONT_FILES = {"smiley": "SmileySans-Oblique.ttf", "lxgw": "LXGWHeartSerifMN.ttf"}
@@ -63,7 +65,7 @@ def _get_font(size: int, font_id: Optional[str] = None) -> ImageFont.FreeTypeFon
     if key not in _FONT_CACHE:
         font = None
         if font_id in _FONT_FILES:
-            p = Path(__file__).resolve().parent / "font" / _FONT_FILES[font_id]
+            p = ROOT_DIR / "assets" / "font" / _FONT_FILES[font_id]
             if p.exists():
                 try:
                     font = ImageFont.truetype(str(p), size)
@@ -113,7 +115,7 @@ def weekday_cn(date_str: str) -> str:
 
 def _date_parts(item: Dict[str, Any]) -> Tuple[str, str, str]:
     """(完整日期 2024.9.22, 年 2024, 月日 9.22)"""
-    from render_daily_photo import format_date_display
+    from inktime.render.render_daily_photo import format_date_display
     full = format_date_display(item.get("date", ""))
     year, _, rest = full.partition(".")
     return full, year, rest or full
@@ -121,7 +123,7 @@ def _date_parts(item: Dict[str, Any]) -> Tuple[str, str, str]:
 
 def _meta_segments(item: Dict[str, Any], with_weekday: bool = True) -> str:
     """'2023.6.1 · 星期四 · 厦门市'，空字段自动省略。"""
-    from render_daily_photo import format_date_display
+    from inktime.render.render_daily_photo import format_date_display
     segs = [format_date_display(item.get("date", ""))]
     if with_weekday:
         wd = weekday_cn(item.get("date", ""))
@@ -145,7 +147,7 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, font, max_w: float) -> str:
 
 
 def _wrap_lines(canvas, text: str, font, max_w: float, max_lines: int) -> List[str]:
-    from render_daily_photo import wrap_text_chinese
+    from inktime.render.render_daily_photo import wrap_text_chinese
     return wrap_text_chinese(ImageDraw.Draw(canvas), text, font, max_w, max_lines)
 
 
@@ -301,8 +303,8 @@ def render_layout(canvas: Image.Image, layout: str, item: Dict[str, Any]) -> Non
     绘制原语解释渲染；旧"一版式一函数"实现于 2026-09-24 迁移退役，
     迁移验收：scripts/validate_style_migration.py 864/864 逐像素一致。
     """
-    import style_registry
-    import style_runtime
+    from inktime.render import style_registry
+    from inktime.render import style_runtime
     style = style_registry.get_style(layout)
     if style is None:
         raise ValueError(f"未知版式: {layout}")

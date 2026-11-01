@@ -15,12 +15,12 @@ from unittest.mock import Mock
 
 from flask import Flask, abort, jsonify, request
 
-from device_endpoint_security import validate_device_endpoint, resolve_registration_allowed_ip
-from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+from inktime.server.device_endpoint_security import validate_device_endpoint, resolve_registration_allowed_ip
+from inktime.server.device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
                                      DeviceEndpointLockTimeout)
-from download_key_security import authorized_download_key
+from inktime.server.download_key_security import authorized_download_key
 
-SERVER = Path(__file__).resolve().parents[1] / "server.py"
+SERVER = Path(__file__).resolve().parents[1] / "inktime" / "server" / "server.py"
 
 
 def load_server_functions(names, namespace):

@@ -19,8 +19,8 @@ from pathlib import Path
 import secrets
 import stat
 
-from device_log_storage import _open_journal_directory, _assert_journal_directory_identity
-from device_endpoint_security import validate_device_endpoint
+from inktime.server.device_log_storage import _open_journal_directory, _assert_journal_directory_identity
+from inktime.server.device_endpoint_security import validate_device_endpoint
 
 _MAX_BYTES = 4096
 

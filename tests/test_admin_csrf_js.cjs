@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 
-const script = fs.readFileSync(path.join(__dirname, "../static/admin_csrf.js"), "utf8");
+const script = fs.readFileSync(path.join(__dirname, "../inktime/server/static/admin_csrf.js"), "utf8");
 function boot(cookie = "__Host-inktime-csrf=nonce.signature") {
   const calls = [];
   const listeners = {};

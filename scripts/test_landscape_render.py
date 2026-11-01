@@ -28,7 +28,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 import config as cfg
-import render_daily_photo as rdp
+from inktime.render import render_daily_photo as rdp
 from PIL import Image, ImageOps
 
 # ── 路径解析（与 render_daily_photo.py 对齐）──

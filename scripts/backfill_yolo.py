@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 import config as cfg
-from analyze_photos import detect_subjects
+from inktime.analysis.analyze_photos import detect_subjects
 
 def main():
     db_path = Path(str(getattr(cfg, "DB_PATH", "./photos.db") or "./photos.db")).expanduser()

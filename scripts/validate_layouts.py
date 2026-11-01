@@ -27,8 +27,8 @@ from PIL import Image
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import render_daily_photo as rdp  # noqa: E402
-from layout_strategy import LAYOUT_NAMES  # noqa: E402
+from inktime.render import render_daily_photo as rdp  # noqa: E402
+from inktime.render.layout_strategy import LAYOUT_NAMES  # noqa: E402
 
 
 def main() -> None:

@@ -29,7 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
 
-from render_layouts import (ACCENT_YELLOW, INSET, SEAL_RED, WHITE, WHITE_DIM,
+from inktime import ROOT_DIR
+
+from inktime.render.render_layouts import (ACCENT_YELLOW, INSET, SEAL_RED, WHITE, WHITE_DIM,
                             _fit_text, _get_font)
 
 CANVAS_W_P, CANVAS_H_P = 480, 800    # 竖屏
@@ -131,7 +133,7 @@ def _heart(canvas: Image.Image, cx: float, cy: float, r: float,
                (cx, cy + r)], fill=color)
 
 
-_SEAL_GLYPH_DIR = Path(__file__).resolve().parent / "seal_glyphs"
+_SEAL_GLYPH_DIR = ROOT_DIR / "assets" / "seal_glyphs"
 
 
 def _glyph(canvas: Image.Image, hexcode: str, cx: float, cy: float,

@@ -24,7 +24,7 @@ from typing import Any, Dict
 
 from PIL import Image, ImageDraw
 
-import render_layouts as rl
+from inktime.render import render_layouts as rl
 
 # 槽位枚举 → 取值函数都走 rl 的原有拼装口径（像素级一致的根基）
 _SLOT_RESOLVERS = {

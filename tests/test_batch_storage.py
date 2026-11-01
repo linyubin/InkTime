@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from batch_storage import BatchValidationError, publish_batch, read_current
+from inktime.server.batch_storage import BatchValidationError, publish_batch, read_current
 
 
 def create_artifacts(root: Path, *, orientation="portrait", bad_palette=False) -> None:

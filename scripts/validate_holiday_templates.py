@@ -30,11 +30,11 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import holidays as holidays_mod  # noqa: E402
-import holiday_ai  # noqa: E402
-import holiday_render  # noqa: E402
-import render_layouts  # noqa: E402
-import render_daily_photo as rdp  # noqa: E402
+from inktime.render import holidays as holidays_mod  # noqa: E402
+from inktime.render import holiday_ai  # noqa: E402
+from inktime.render import holiday_render  # noqa: E402
+from inktime.render import render_layouts  # noqa: E402
+from inktime.render import render_daily_photo as rdp  # noqa: E402
 
 EXAMPLE = ROOT / "holidays-example.json"
 REPORT_DIR = ROOT / "docs" / "holiday-template-validation"
@@ -201,7 +201,7 @@ def _render_case(item: Dict[str, Any], layout: str, tpl: str, orient: str,
                  photo_tag: str) -> None:
     """真实管线渲染单张样张：加载 → 节日避让区并入裁切 → 主体框映射 →
     版式文字层 → 节日层 → 抖动。"""
-    from layout_strategy import CROP_RESERVES
+    from inktime.render.layout_strategy import CROP_RESERVES
     holiday = {"name": _TPL_CN[tpl], "greeting": _TPL_GREET[tpl],
                "template": tpl, "ai_hint": "测试"}
     if orient == "portrait":

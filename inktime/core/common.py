@@ -18,7 +18,7 @@ import json
 import re
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent
+from inktime import ROOT_DIR  # 仓库根锚点（inktime/ 上一级）
 
 
 # ---------- 1. config 路径解析 ----------

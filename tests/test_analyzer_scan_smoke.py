@@ -15,7 +15,7 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 from scripts.init_sqlite import initialize_database
-from photo_scan_safety import ScanIncompleteError
+from inktime.analysis.photo_scan_safety import ScanIncompleteError
 
 mode = sys.argv[1]
 with tempfile.TemporaryDirectory(prefix="inktime-scan-smoke-") as d:
@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="inktime-scan-smoke-") as d:
     if mode == "remount_log":
         cfg.NAS_MOUNT_URL = "smb://user:very-secret@nas.local/private"
     sys.modules["config"] = cfg
-    import analyze_photos as analyzer
+    import inktime.analysis.analyze_photos as analyzer
     analyzer.ROOT_DIR = root
     real_scandir = os.scandir
     calls = {"child": 0}
@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="inktime-scan-smoke-") as d:
             return ScanResult()
         return real_scandir(path)
 
-    with patch("photo_scan_safety.os.scandir", side_effect=fake_scandir):
+    with patch("inktime.analysis.photo_scan_safety.os.scandir", side_effect=fake_scandir):
         if mode == "remount_log":
             import io
             from contextlib import redirect_stdout

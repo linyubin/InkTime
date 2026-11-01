@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from holidays import DEFAULT_TEMPLATE, get_today_holiday, load_holidays  # noqa: E402
+from inktime.render.holidays import DEFAULT_TEMPLATE, get_today_holiday, load_holidays  # noqa: E402
 
 D = dt.date
 _passed = _failed = 0

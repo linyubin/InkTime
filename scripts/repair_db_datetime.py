@@ -4,7 +4,9 @@ import re
 import datetime
 import json
 from pathlib import Path
-from common import parse_datetime_from_filename
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接 python3 scripts/xxx.py 运行
+from inktime.core.common import parse_datetime_from_filename
 
 DB_PATH = Path("photos.db")
 

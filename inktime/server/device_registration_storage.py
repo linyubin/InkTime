@@ -14,10 +14,10 @@ from pathlib import Path
 import secrets
 import stat
 
-from device_endpoint_security import validate_device_endpoint
-from device_endpoint_storage import _MAX_BYTES, _check_target, _endpoint_lock
-from device_log_storage import _assert_journal_directory_identity
-from device_registration_identity import (
+from inktime.server.device_endpoint_security import validate_device_endpoint
+from inktime.server.device_endpoint_storage import _MAX_BYTES, _check_target, _endpoint_lock
+from inktime.server.device_log_storage import _assert_journal_directory_identity
+from inktime.server.device_registration_identity import (
     RegistrationIdentityError, validate_device_id, verify_registration_proof,
 )
 

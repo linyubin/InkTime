@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 from datetime import datetime
 import os
-from admin_security import install_admin_security
-from device_log_storage import device_log_paths, read_device_log_lines
-from download_key_security import resolve_download_keys
-from db_schema import open_current_readonly_database
+from inktime.server.admin_security import install_admin_security
+from inktime.server.device_log_storage import device_log_paths, read_device_log_lines
+from inktime.server.download_key_security import resolve_download_keys
+from inktime.core.db_schema import open_current_readonly_database
 import config as cfg
-from path_security import safe_join
-from common import extract_date_from_exif, parse_dirty_type, resolve_path
+from inktime.server.path_security import safe_join
+from inktime.core.common import extract_date_from_exif, parse_dirty_type, resolve_path
 import re
 
 # 以 Blueprint 形式挂载到 server.py（8765 统一入口，见 server.py 的 register_blueprint）；
@@ -21,7 +21,7 @@ import re
 bp = Blueprint("webui", __name__)
 
 # Config loading
-ROOT_DIR = Path(__file__).resolve().parent
+from inktime import ROOT_DIR  # 仓库根锚点（inktime/ 上一级）
 
 DB_PATH = resolve_path(getattr(cfg, "DB_PATH", "./photos.db"), "./photos.db")
 IMAGE_DIR = resolve_path(getattr(cfg, "IMAGE_DIR", ""))
@@ -405,10 +405,10 @@ import uuid
 
 from PIL import Image as PILImage, ImageOps
 
-import style_registry
-import style_runtime
+from inktime.render import style_registry
+from inktime.render import style_runtime
 
-STYLE_EDITOR_DIR = ROOT_DIR / "static" / "style_editor"
+STYLE_EDITOR_DIR = Path(__file__).resolve().parent / "static" / "style_editor"
 STYLE_UPLOAD_DIR = STYLE_EDITOR_DIR / "uploads"
 _STYLE_ID_RE = re.compile(r"^[A-Z]\d{2,3}$")
 
@@ -417,7 +417,7 @@ def _style_path(sid: str) -> Path:
     sid = str(sid or "").strip().upper()
     if not _STYLE_ID_RE.match(sid):
         abort(400, description="非法版式 ID")
-    return ROOT_DIR / "layouts" / f"{sid}.json"
+    return ROOT_DIR / "assets" / "layouts" / f"{sid}.json"
 
 
 def _validate_style_doc(doc) -> dict:
@@ -568,7 +568,7 @@ def api_style_photo():
     orientation = body.get("orientation", "portrait")
     w, h = (800, 480) if orientation == "landscape" else (480, 800)
     item = {"subjects_json": body.get("subjects_json", "")}
-    import render_daily_photo as rdp
+    from inktime.render import render_daily_photo as rdp
     cropped, _ = rdp._cover_crop(photo, w, h, item,
                                  dict(body.get("crop_reserve") or {}))
     buf = io.BytesIO()
@@ -607,7 +607,7 @@ def api_frame_state():
                             "subjects_json": row[2] or ""}
             except Exception:
                 pass
-    import style_registry
+    from inktime.render import style_registry
     layout = str(sidecar.get("layout") or "")
     return jsonify({
         "layout": layout,
@@ -635,7 +635,7 @@ def api_style_preview():
     photo = _load_editor_photo(body.get("photo", ""))
     canvas = PILImage.new("RGB", (w, h), (255, 255, 255))
     # 与 _render_with_layout 同一口径：避让区并入 cover 裁切（无主体信号时居中）
-    import render_daily_photo as rdp
+    from inktime.render import render_daily_photo as rdp
     cropped, _ = rdp._cover_crop(photo, w, h, item,
                                  dict(doc.get("crop_reserve") or {}))
     canvas.paste(cropped, (0, 0))
@@ -653,7 +653,7 @@ def api_style_preview():
 def style_asset_seal(hexcode):
     if not re.match(r"^[0-9A-Fa-f]{4,6}$", hexcode):
         abort(400)
-    p = ROOT_DIR / "seal_glyphs" / f"{hexcode.upper()}.png"
+    p = ROOT_DIR / "assets" / "seal_glyphs" / f"{hexcode.upper()}.png"
     if not p.exists():
         abort(404)
     return send_file(p)
@@ -663,7 +663,7 @@ def style_asset_seal(hexcode):
 def style_asset_font(fname):
     if fname not in ("SmileySans-Oblique.ttf", "LXGWHeartSerifMN.ttf"):
         abort(400)
-    return send_file(ROOT_DIR / "font" / fname)
+    return send_file(ROOT_DIR / "assets" / "font" / fname)
 
 
 # 编辑器自检页（selftest.html）的结果回传：无头 chromium 消费用

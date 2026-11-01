@@ -13,7 +13,9 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
-LAYOUTS_DIR = Path(__file__).resolve().parent / "layouts"
+from inktime import ROOT_DIR
+
+LAYOUTS_DIR = ROOT_DIR / "assets" / "layouts"
 
 _STYLES: Dict[str, dict] = {}
 

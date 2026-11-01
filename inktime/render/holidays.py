@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import config as cfg
 
+from inktime import ROOT_DIR
+
 # 实现的模板 ID（与 holiday_render.py 对齐；未知值回落 general_ribbon）。
 # 2026-09-13 改版：生日/纪念日模板细分出双方案（用户从提案页选定）。
 KNOWN_TEMPLATES = ("general_ribbon",
@@ -55,7 +57,7 @@ except Exception:  # ImportError 等：农历条目跳过，公历照常（见 �
 def _holidays_file() -> Path:
     p = Path(str(getattr(cfg, "HOLIDAYS_FILE", "./holidays.json") or "./holidays.json"))
     if not p.is_absolute():
-        p = (Path(__file__).resolve().parent / p).resolve()
+        p = (ROOT_DIR / p).resolve()
     return p
 
 

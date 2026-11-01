@@ -7,7 +7,7 @@ from multiprocessing import get_context
 from unittest import TestCase
 from unittest.mock import patch
 
-from device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
+from inktime.server.device_endpoint_storage import (load_device_endpoint, store_device_endpoint,
                                      DeviceEndpointLockTimeout, _endpoint_lock)
 
 
@@ -65,7 +65,7 @@ class EndpointStorageTests(TestCase):
             path = Path(d) / "endpoint.json"
             store_device_endpoint(path, {"ip": "192.168.1.8", "port": 80})
             old = path.read_bytes()
-            with patch("device_endpoint_storage.os.fsync", side_effect=OSError("fault")):
+            with patch("inktime.server.device_endpoint_storage.os.fsync", side_effect=OSError("fault")):
                 with self.assertRaises(OSError):
                     store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
             self.assertEqual(path.read_bytes(), old)
@@ -83,7 +83,7 @@ class EndpointStorageTests(TestCase):
                 if calls == 2:
                     raise OSError("directory fsync failed")
                 return real_fsync(fd)
-            with patch("device_endpoint_storage.os.fsync", side_effect=fail_directory):
+            with patch("inktime.server.device_endpoint_storage.os.fsync", side_effect=fail_directory):
                 with self.assertRaises(OSError):
                     store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
             self.assertEqual(calls, 2)
@@ -105,11 +105,11 @@ class EndpointStorageTests(TestCase):
             real_write = os.write
             def partial(fd, buf):
                 return real_write(fd, buf[:3])
-            with patch("device_endpoint_storage.os.write", side_effect=partial):
+            with patch("inktime.server.device_endpoint_storage.os.write", side_effect=partial):
                 store_device_endpoint(path, {"ip": "192.168.1.8", "port": 80})
             self.assertEqual(load_device_endpoint(path)["ip"], "192.168.1.8")
             old = path.read_bytes()
-            with patch("device_endpoint_storage.os.write", return_value=0):
+            with patch("inktime.server.device_endpoint_storage.os.write", return_value=0):
                 with self.assertRaises(OSError):
                     store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
             self.assertEqual(path.read_bytes(), old)
@@ -175,7 +175,7 @@ class EndpointStorageTests(TestCase):
                 lock.rename(root / "old.lock")
                 lock.write_bytes(b"replacement")
                 return result
-            with patch("device_endpoint_storage.os.replace", side_effect=swap_lock):
+            with patch("inktime.server.device_endpoint_storage.os.replace", side_effect=swap_lock):
                 with self.assertRaises(OSError):
                     store_device_endpoint(path, {"ip": "10.1.2.3", "port": 80})
             self.assertEqual(load_device_endpoint(path)["ip"], "10.1.2.3")
