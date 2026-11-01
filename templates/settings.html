@@ -29,31 +29,66 @@
                   linear-gradient(180deg, #07080b 0%, #0b0c10 40%, #0b0c10 100%);
       color: var(--text);
     }
-    .container{ max-width: 860px; margin: 26px auto 30px; padding: 0 18px; }
+    .container{ max-width: 1000px; margin: 26px auto 30px; padding: 0 18px; }
     h1{ font-size: 21px; margin: 0 0 6px; letter-spacing: 0.2px; }
     h1 .home-link{ font-size: 12.5px; font-weight: 400; margin-left: 12px; }
     h1 .home-link a{ color: var(--accent); text-decoration: none; }
-    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+    .subtitle{ font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6; }
+
+    /* ── 分节快捷导航 ── */
+    .secnav{
+      display:flex; flex-wrap:wrap; gap:6px; margin: 14px 0 4px;
+      position: sticky; top: 0; z-index: 30; padding: 8px 0;
+      background: linear-gradient(180deg, rgba(7,8,11,0.96), rgba(7,8,11,0.86));
+      backdrop-filter: blur(8px);
+    }
+    .secnav a{
+      font-size: 11px; color: var(--muted); text-decoration: none;
+      border:1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+      background: var(--panel);
+    }
+    .secnav a:hover{ color: var(--accent); border-color: var(--accent); }
+
+    /* ── 分组卡片 ── */
     .card{
       background: var(--card); border:1px solid var(--line); border-radius: var(--radius);
-      padding: 18px 20px; margin: 16px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
+      padding: 16px 18px; margin: 16px 0; box-shadow: var(--shadow2); backdrop-filter: blur(10px);
     }
-    .card h2{ font-size: 15.5px; margin: 0 0 12px; }
-    label{ display:block; font-size: 12.5px; color: var(--muted); margin: 12px 0 5px; }
-    input[type=text], input[type=password]{
-      width:100%; padding: 9px 12px; font-size: 13.5px; color: var(--text);
-      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 10px; outline: none;
+    .card h2{ font-size: 15px; margin: 0 0 4px; scroll-margin-top: 56px; }
+    .card .sec-sub{ font-size: 11px; color: var(--muted2); margin: 0 0 10px; }
+    .row{
+      display:grid; grid-template-columns: minmax(230px, 300px) 1fr;
+      gap: 6px 14px; align-items: start;
+      padding: 9px 0; border-top: 1px dashed rgba(255,255,255,0.08);
+    }
+    .row:first-of-type{ border-top: none; }
+    .row.changed input[type=text], .row.changed input[type=password],
+    .row.changed input[type=number]{ border-color: var(--warn); }
+    .key-cell{ padding-top: 7px; }
+    .key-name{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; font-weight: 600; }
+    .key-kind{ font-size: 10px; color: var(--muted2); margin-left: 6px; }
+    input[type=text], input[type=password], input[type=number]{
+      width:100%; padding: 8px 11px; font-size: 13px; color: var(--text);
+      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 9px; outline: none;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
     }
     input:focus{ border-color: var(--accent); }
+    input:disabled{ opacity: 0.55; }
+    select{ width:100%; padding: 8px 11px; font-size: 13px; color: var(--text);
+      background: rgba(0,0,0,0.35); border: 1px solid var(--line); border-radius: 9px; }
+    .ro-value{
+      margin:0; padding: 8px 11px; font-size: 12px; color: var(--muted);
+      background: rgba(0,0,0,0.45); border: 1px solid var(--line); border-radius: 9px;
+      font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+      max-height: 96px; overflow:auto;
+    }
     button{
-      margin-top: 14px; padding: 9px 18px; font-size: 13px; cursor: pointer;
-      color: var(--text); background: linear-gradient(135deg, #4361ee, #3a0ca3);
-      border: none; border-radius: 10px;
+      padding: 9px 18px; font-size: 13px; cursor: pointer; color: #fff;
+      background: linear-gradient(135deg, #4361ee, #3a0ca3); border: none; border-radius: 10px;
     }
     button:hover{ opacity: 0.9; }
+    button:disabled{ opacity: 0.5; cursor: wait; }
     .hint{ font-size: 11px; color: var(--muted2); line-height: 1.6; margin-top: 10px; }
-    .field-row{ display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
-    .field-row .cfg-field{ flex:1 1 180px; min-width:160px; }
     .result{
       margin-top: 12px; padding: 9px 12px; font-size: 12px; border-radius: 10px;
       background: rgba(0,0,0,0.45); border:1px solid var(--line); color: var(--muted);
@@ -61,6 +96,28 @@
     }
     .result.ok{ color: var(--accent2); border-color: rgba(156,255,214,0.4); }
     .result.err{ color: var(--danger); border-color: rgba(255,156,156,0.4); }
+
+    /* ── ❓ 悬停帮助 ── */
+    .help{
+      position: relative; display:inline-block; margin-left: 6px;
+      width: 15px; height: 15px; line-height: 14px; text-align: center;
+      font-size: 10.5px; font-weight: 700; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 50%; cursor: help;
+      user-select: none; vertical-align: 1px; opacity: 0.85;
+    }
+    .help:hover{ opacity: 1; background: rgba(138,180,255,0.15); }
+    .help .tip{
+      display: none; position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+      width: 420px; max-width: 78vw; padding: 9px 12px; z-index: 50;
+      font-size: 11.5px; font-weight: 400; line-height: 1.65; text-align: left;
+      color: var(--text); background: #161a24; border: 1px solid var(--line);
+      border-radius: 10px; box-shadow: var(--shadow2); white-space: pre-wrap; word-break: break-all;
+    }
+    .help .tip::after{
+      content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px;
+      border: 6px solid transparent; border-top-color: #161a24;
+    }
+    .help:hover .tip{ display: block; }
   </style>
   <script src="/static/admin_csrf.js?v=1"></script>
 </head>
@@ -69,35 +126,90 @@
   <h1>⚙️ 管理设置
     <span class="home-link"><a href="/">← 返回首页</a></span>
   </h1>
-  <p class="subtitle">凭据保存后立即生效(所有登录会话需重新登录);config.py 配置项保存后已落盘,重启服务生效。修改前自动备份。</p>
+  <p class="subtitle">
+    管理员凭据保存后<b>立即生效</b>(所有会话需重新登录);config.py 配置项完整展示,标量项可直接编辑——
+    保存时自动备份、AST 校验后落盘,<b>重启服务生效</b>。❓ 悬停查看每项说明(取自 config.py 注释)。
+  </p>
 
   <div class="card">
     <h2>🔐 管理员凭据</h2>
-    <label for="adm-user">用户名</label>
-    <input type="text" id="adm-user" value="{{ admin_username }}" autocomplete="username">
-    <label for="adm-pass">新密码(≥8 位;留空 = 不修改密码)</label>
-    <input type="password" id="adm-pass" autocomplete="new-password">
-    <label for="adm-pass2">确认新密码</label>
-    <input type="password" id="adm-pass2" autocomplete="new-password">
+    <div class="row">
+      <div class="key-cell"><span class="key-name">INKTIME_ADMIN_USERNAME</span>
+        <span class="help">?<span class="tip">管理后台登录用户名。Basic 认证与设置页保存共用;保存后立即生效。</span></span>
+      </div>
+      <div><input type="text" id="adm-user" value="{{ admin_username }}" autocomplete="username"></div>
+    </div>
+    <div class="row">
+      <div class="key-cell"><span class="key-name">INKTIME_ADMIN_PASSWORD</span>
+        <span class="help">?<span class="tip">管理后台登录密码(≥8 位)。保存后立即生效;CSRF 令牌与密码绑定,所有已登录会话将要求重新登录。留空 = 不修改。落盘 data/admin.env(0600)。</span></span>
+      </div>
+      <div class="field" style="display:grid; gap:8px;">
+        <input type="password" id="adm-pass" placeholder="新密码(留空 = 不修改)" autocomplete="new-password">
+        <input type="password" id="adm-pass2" placeholder="确认新密码" autocomplete="new-password">
+      </div>
+    </div>
     <button onclick="saveCredentials(this)">保存凭据</button>
-    <div class="hint">凭据落盘到 <code>data/admin.env</code>(0600),由 systemd EnvironmentFile 加载,重启服务后依然有效。当前凭据不会回显。</div>
     <div class="result" id="cred-result"></div>
   </div>
 
-  <div class="card">
-    <h2>🧩 常用配置(config.py)</h2>
-    <div class="field-row">
-      {% for name, value in config_values.items() %}
-      <div class="cfg-field">
-        <label for="cfg-{{ name }}">{{ name }}</label>
-        <input type="text" id="cfg-{{ name }}" data-key="{{ name }}" value="{{ value }}">
-      </div>
-      {% endfor %}
-    </div>
-    <button onclick="saveConfig(this)">保存配置</button>
-    <div class="hint">允许范围:DAILY_PHOTO_QUANTITY 1–20 · MEMORY_THRESHOLD 0–100 · SCORE_MEMORY_WEIGHT 0–1 · ESP32_SERVE_WAIT_MIN 1–240 · ENABLE_REVIEW_WEBUI 开/关。保存会按行改写 config.py 并自动备份为 <code>config.py.bak-时间戳</code>;该行原有的行内注释会被移除。重启服务后生效。</div>
-    <div class="result" id="cfg-result"></div>
+  <div class="secnav">
+    {% for group in groups %}
+    <a href="#sec-{{ loop.index }}">{{ group.title }}</a>
+    {% endfor %}
   </div>
+
+  {% for group in groups %}
+  <div class="card">
+    <h2 id="sec-{{ loop.index }}">{{ group.title }}</h2>
+    <p class="sec-sub">改动的行会高亮;点“保存配置修改”统一落盘(自动备份 + AST 校验)。</p>
+    {% for item in group["fields"] %}
+    <div class="row" id="row-{{ item.name }}">
+      <div class="key-cell">
+        <span class="key-name">{{ item.name }}</span><span class="key-kind">{{ item.kind }}</span>
+        <span class="help">?<span class="tip">{{ item.help or 'config.py 中无注释说明。' }}{% if item.inline_help %}
+
+行内注释:{{ item.inline_help }}{% endif %}{% if not item.editable %}
+
+⚠️ 复杂/多行/空值项,不支持在线修改,请直接编辑 config.py。{% endif %}{% if item.secret %}
+
+🔑 凭据类:页面掩码显示,留空保持不变。{% endif %}</span></span>
+      </div>
+      {% if item.editable and item.kind == 'bool' %}
+      <div>
+        <select data-key="{{ item.name }}" data-kind="bool" data-original="{{ 'true' if item.value else 'false' }}">
+          <option value="true" {{ 'selected' if item.value else '' }}>开 (True)</option>
+          <option value="false" {{ 'selected' if not item.value else '' }}>关 (False)</option>
+        </select>
+      </div>
+      {% elif item.editable and item.kind in ('int', 'float') %}
+      <div>
+        <input type="number" step="any" data-key="{{ item.name }}" data-kind="{{ item.kind }}"
+               data-original="{{ item.value }}" value="{{ item.value }}">
+      </div>
+      {% elif item.editable and item.kind == 'str' %}
+      <div>
+        {% if item.secret %}
+        <input type="password" data-key="{{ item.name }}" data-kind="str" data-original=""
+               placeholder="已设置 — 留空保持不变" autocomplete="new-password">
+        {% else %}
+        <input type="text" data-key="{{ item.name }}" data-kind="str"
+               data-original="{{ item.value }}" value="{{ item.value }}">
+        {% endif %}
+      </div>
+      {% else %}
+      <div><pre class="ro-value">{{ item.literal or '(空值 None)' }}</pre></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <button id="save-btn" onclick="saveConfig(this)">💾 保存配置修改</button>
+  <div class="result" id="cfg-result"></div>
+  <p class="hint">
+    编辑规则:仅单行标量(布尔/整数/浮点/字符串)可在线修改;复杂结构(dict/list 等)只读展示,请直接编辑 config.py。
+    保存 = 按值区间精确改写 + 时间戳备份(config.py.bak-*) + AST 校验 + 原子替换,行尾注释保留;重启服务后生效。
+  </p>
 </div>
 
 <script>
@@ -127,7 +239,7 @@ async function saveCredentials(btn){
   if (pass1 !== pass2){ show(el, '两次输入的新密码不一致', false); btn.disabled = false; return; }
   const body = { username: document.getElementById('adm-user').value };
   if (pass1) body.password = pass1;
-  await postJSON('/api/settings/credentials', body, el, (data) => {
+  await postJSON('/api/settings/credentials', body, el, () => {
     show(el, '✅ 凭据已保存并即时生效。旧登录已失效,浏览器将要求重新登录。', true);
     document.getElementById('adm-pass').value = '';
     document.getElementById('adm-pass2').value = '';
@@ -135,19 +247,34 @@ async function saveCredentials(btn){
   });
   btn.disabled = false;
 }
+document.querySelectorAll('input[data-key], select[data-key]').forEach(inp => {
+  inp.addEventListener('input', () => {
+    const row = inp.closest('.row');
+    if (inp.value !== inp.dataset.original){ row.classList.add('changed'); }
+    else { row.classList.remove('changed'); }
+  });
+});
 async function saveConfig(btn){
   btn.disabled = true;
   const el = document.getElementById('cfg-result');
   const updates = {};
-  document.querySelectorAll('input[data-key]').forEach(inp => {
-    const raw = inp.value.trim();
-    if (raw === '') return;
-    if (/^(开|关|True|False|true|false)$/.test(raw)) updates[inp.dataset.key] = /^(开|True|true)$/.test(raw);
-    else if (/^-?\d+$/.test(raw)) updates[inp.dataset.key] = parseInt(raw, 10);
-    else updates[inp.dataset.key] = parseFloat(raw);
+  let changed = 0;
+  document.querySelectorAll('[data-key]').forEach(inp => {
+    const kind = inp.dataset.kind;
+    if (kind === 'str' && inp.dataset.original === '' && inp.value === '') return; // 凭据未修改
+    if (inp.value === inp.dataset.original) return;
+    let v = inp.value;
+    if (kind === 'bool'){ v = (inp.value === 'true'); }
+    else if (kind === 'int'){ v = parseInt(v, 10); }
+    else if (kind === 'float'){ v = parseFloat(v); }
+    if (Number.isNaN(v)) return;
+    updates[inp.dataset.key] = v;
+    changed += 1;
   });
+  if (changed === 0){ show(el, '没有检测到改动。', true); btn.disabled = false; return; }
   await postJSON('/api/settings/config', updates, el, (data) => {
-    show(el, '✅ 已落盘(备份: ' + data.backup + ')。重启服务后生效: sudo systemctl restart inktime-server', true);
+    show(el, `✅ 已落盘 ${changed} 项(备份: ${data.backup})。重启服务后生效: sudo systemctl restart inktime-server`, true);
+    document.querySelectorAll('.row.changed').forEach(r => r.classList.remove('changed'));
   });
   btn.disabled = false;
 }

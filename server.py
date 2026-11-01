@@ -1928,18 +1928,13 @@ def api_device_debug():
     return jsonify({"ok": True, "device": st or None})
 
 
-# ── 管理端设置页（凭据热生效 + config.py 精选项落盘）────────
+# ── 管理端设置页（凭据热生效 + config.py 全量展示/标量编辑）──
 @app.get("/settings")
 def admin_settings_page():
-    current = {}
-    for name in admin_settings.EDITABLE_CONFIG_KEYS:
-        current[name] = getattr(cfg, name, "")
-    for name in admin_settings._BOOL_CONFIG_KEYS:
-        current[name] = "开" if getattr(cfg, name, False) else "关"
     return render_template(
         "settings.html",
         admin_username=os.environ.get("INKTIME_ADMIN_USERNAME", "admin"),
-        config_values=current,
+        groups=admin_settings.introspect_config_file(ROOT_DIR / "config.py"),
     )
 
 
