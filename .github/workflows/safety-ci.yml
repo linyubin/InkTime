@@ -2,9 +2,9 @@ name: Safety and Python smoke tests
 
 on:
   push:
-    branches: [local-fix, refactor/architecture-v1]
+    branches: [main, local-fix, refactor/architecture-v1]
   pull_request:
-    branches: [local-fix]
+    branches: [main, local-fix]
 
 jobs:
   safety:
