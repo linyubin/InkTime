@@ -518,19 +518,28 @@ static bool silentNoTimeRetryPending() {
   return on;
 }
 
-// ── 最后成功渲染的 UTC 日序号：静默恢复拿到时间后据此判断当日照片是否
-//    被停电跳过（停电跨越 refresh_hour），漏了就补拉一次当日照片。──
+// ── 最后成功渲染的设备本地日历日：refresh_hour 是本地时间，不能用 UTC
+//    日序号判断，否则 UTC 日界（如 UTC+8 的早 08:00）会造成重复补拉。
+//    rd_date 使用 YYYYMMDD 新 NVS 键；旧 rd_day(UTC epoch day) 不再读取，
+//    固件升级后首次静默恢复可能补拉一次，之后按本地日期判定。──
+static uint32_t localDateKey(const struct tm &t) {
+  return (uint32_t)(t.tm_year + 1900) * 10000UL
+       + (uint32_t)(t.tm_mon + 1) * 100UL + (uint32_t)t.tm_mday;
+}
+
 static void saveLastRenderDay() {
   time_t nowE = time(nullptr);
   if (nowE <= 1700000000) return;   // 时钟无效不写
+  struct tm localNow;
+  if (!localtime_r(&nowE, &localNow)) return;
   prefs.begin("dashcfg", false);
-  prefs.putULong("rd_day", (uint32_t)(nowE / 86400));
+  prefs.putULong("rd_date", localDateKey(localNow));
   prefs.end();
 }
 
 static uint32_t loadLastRenderDay() {
   prefs.begin("dashcfg", true);
-  uint32_t v = prefs.getULong("rd_day", 0);
+  uint32_t v = prefs.getULong("rd_date", 0);
   prefs.end();
   return v;
 }
@@ -3168,7 +3177,7 @@ void setup() {
   bool catchupFailed = false;
   if (g_wakeClass == WAKE_SILENT && hasTime) {
     uint32_t lastDay = loadLastRenderDay();
-    uint32_t today   = (uint32_t)(time(nullptr) / 86400);   // UTC 日序号，两端同式即可
+    uint32_t today   = localDateKey(timeinfo);   // 与 refresh_hour 一致的设备本地日期
     int curMinOfDay  = timeinfo.tm_hour * 60 + timeinfo.tm_min;
     catchupNeeded = (lastDay != today) && (curMinOfDay >= (int)g_cfg.refresh_hour * 60);
     if (catchupNeeded) {
