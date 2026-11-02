@@ -71,17 +71,21 @@ judge_round() {
     # BLE 成功：看 render.log 本轮标记
     echo "${round_log}" | grep -q "Step 2: BLE 推送完成 ✅" && ble_ok=1
     # ESP32 成功：只认「本轮渲染完成之后」的设备 .bin 拉取（200）。
-    # 锚点优先取本轮「Step 1: 渲染完成」时刻（此后 latest.bin 才是今日新图），
-    # 缺失时回退本轮编排启动时刻。（2026-11-02 盲区修复）
+    # 成功渲染是所有投递通道的必要前提。没有 Step 1 成功锚点时绝不
+    # 从编排启动时间回退，否则渲染失败后旧图的 GET 200 仍会被误判成功。
     local anchor_ts anchor_epoch line_ts line_epoch
-    anchor_ts=$(echo "${round_log}" | grep "Step 1: 渲染完成" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+\]' | tail -1 | tr -d '[]')
-    [[ -z "${anchor_ts}" ]] && anchor_ts="${round_ts}"
+    anchor_ts=$(echo "${round_log}" | grep "Step 1: 渲染完成 ✅" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+\]' | tail -1 | tr -d '[]')
+    [[ -n "${anchor_ts}" ]] || return 1
     anchor_epoch=$(date -d "${anchor_ts}" +%s 2>/dev/null || echo 0)
     if [[ -f "${TRANSFER_LOG}" && "${anchor_epoch}" -gt 0 ]]; then
         while IFS= read -r line; do
-            line_ts="${line:0:19}"  # YYYY-MM-DD HH:MM:SS（%% * 会把时间截掉，只剩日期）
+            # 只认成功拉取照片的设备 GET；排除本机回环测试、标定卡、json 和 404。
+            [[ "${line}" == *" | GET /static/inktime/"* ]] || continue
+            [[ "${line}" != *" | 127.0.0.1 | "* && "${line}" != *" | ::1 | "* ]] || continue
+            echo "${line}" | grep -qE '/(photo_[0-9]+|latest)\.bin \| 200 \|' || continue
+            line_ts="${line:0:19}"  # YYYY-MM-DD HH:MM:SS
             line_epoch=$(date -d "${line_ts}" +%s 2>/dev/null || echo 0)
-            if [[ "${line_epoch}" -ge "${anchor_epoch}" ]] && echo "${line}" | grep -qE "\.bin.*200"; then
+            if [[ "${line_epoch}" -ge "${anchor_epoch}" ]]; then
                 esp_ok=1
                 break
             fi
