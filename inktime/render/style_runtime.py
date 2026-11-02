@@ -20,7 +20,7 @@ _wrap_lines…），槽位文案的拼装口径也与被退役的逐款函数完
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from PIL import Image, ImageDraw
 
@@ -69,7 +69,8 @@ def _peer_draws(style: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def _draw_text_el(canvas, el: Dict[str, Any], item: Dict[str, Any],
-                  peers: Dict[str, bool]) -> None:
+                  peers: Dict[str, bool],
+                  wrap_counts: Optional[Dict[str, int]] = None) -> None:
     s = resolve_slot(el, item)
     cx = el.get("cx")
     fit = el.get("fit")
@@ -106,12 +107,17 @@ def _draw_text_el(canvas, el: Dict[str, Any], item: Dict[str, Any],
                                wrap["max_w"], max_lines)
         line_step = int(wrap["line_step"] * size / int(el.get("size", size)))
         y = float(el["y"])
+        # 记录实际行数，供 follow 元素（如日期行）计算下移量（2026-11-02）
+        if wrap_counts is not None and el.get("name"):
+            wrap_counts[str(el["name"])] = len(lines)
         for ln in lines:
             rl._draw_dark(canvas, el["x"], y, ln, size, fill=fill,
                           stroke=stroke, align=align, cx=cx, bold=bold,
                           font_id=font_id)
             y += line_step
         return
+    if wrap_counts is not None and el.get("name"):
+        wrap_counts[str(el["name"])] = 1  # 单行截断（fit 纪律）也计数
     rl._draw_dark(canvas, el["x"], el["y"], s, size, fill=fill,
                   stroke=stroke, align=align, cx=cx, bold=bold, font_id=font_id)
 
@@ -194,8 +200,19 @@ def render_style(canvas: Image.Image, style: Dict[str, Any],
                  item: Dict[str, Any]) -> None:
     """按声明式版式定义在已裁切好的画布上绘制文字层（元素顺序即层级，底→顶）。"""
     peers = _peer_draws(style, item)
+    wrap_counts: Dict[str, int] = {}
     for el in style.get("elements", []):
         kind = el.get("kind")
+        follow = el.get("follow")
+        if kind == "text" and follow and wrap_counts.get(str(follow.get("of", ""))):
+            # 跟随元素：按被跟随文本元素的实际折行数下移（2026-11-02 P03 叠压修复）。
+            # dy = (实际行数 - 1) × follow.step（可乘 step_ratio，默认 1.0）
+            src = wrap_counts[str(follow.get("of", ""))]
+            if src > 1:
+                step = int(follow.get("step", 0))
+                ratio = float(follow.get("step_ratio", 1.0))
+                el = dict(el)
+                el["y"] = float(el.get("y", 0)) + (src - 1) * int(step * ratio)
         if kind == "glass":
             rl._glass(canvas, el["rect"], radius=int(el.get("radius", 14)),
                       alpha=int(el.get("alpha", 184)), blur=int(el.get("blur", 12)),
@@ -204,7 +221,7 @@ def render_style(canvas: Image.Image, style: Dict[str, Any],
         elif kind == "veil":
             _draw_veil_el(canvas, el)
         elif kind == "text":
-            _draw_text_el(canvas, el, item, peers)
+            _draw_text_el(canvas, el, item, peers, wrap_counts)
         elif kind == "vtext":
             _draw_vtext_el(canvas, el, item)
         elif kind == "seal":
