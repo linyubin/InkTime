@@ -59,12 +59,33 @@ judge_round() {
     local round_log="$1"
     local today=$2
     local ble_ok=0 esp_ok=0
+    # 本轮必须发生在今天：抽取本轮头部时间戳比对日期。
+    # （2026-11-02 修复：当天编排整体未跑时，extract_round_log 抽到的是昨日旧记录，
+    #   配合旧的「当天任意 .bin 拉取」判定会误判成功 —— 设备清晨 05:00 拉到的是昨日旧图。）
+    local round_ts round_date
+    round_ts=$(echo "${round_log}" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+\]' | head -1 | tr -d '[]')
+    round_date="${round_ts%% *}"
+    if [[ "${round_date}" != "${today}" || -z "${round_ts}" ]]; then
+        return 1  # 当天无编排记录 → 判失败（进入重试分支）
+    fi
     # BLE 成功：看 render.log 本轮标记
     echo "${round_log}" | grep -q "Step 2: BLE 推送完成 ✅" && ble_ok=1
-    # ESP32 成功：看 transfer.log 当天是否有设备的 .bin 拉取（200）
-    # （server 常驻后不再有 "Step 3: 检测到拉取" 标记，改查实际拉取记录）
-    if [[ -f "${TRANSFER_LOG}" ]]; then
-        grep -q "${today}.*\.bin.*200" "${TRANSFER_LOG}" 2>/dev/null && esp_ok=1
+    # ESP32 成功：只认「本轮渲染完成之后」的设备 .bin 拉取（200）。
+    # 锚点优先取本轮「Step 1: 渲染完成」时刻（此后 latest.bin 才是今日新图），
+    # 缺失时回退本轮编排启动时刻。（2026-11-02 盲区修复）
+    local anchor_ts anchor_epoch line_ts line_epoch
+    anchor_ts=$(echo "${round_log}" | grep "Step 1: 渲染完成" | grep -oE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+\]' | tail -1 | tr -d '[]')
+    [[ -z "${anchor_ts}" ]] && anchor_ts="${round_ts}"
+    anchor_epoch=$(date -d "${anchor_ts}" +%s 2>/dev/null || echo 0)
+    if [[ -f "${TRANSFER_LOG}" && "${anchor_epoch}" -gt 0 ]]; then
+        while IFS= read -r line; do
+            line_ts="${line:0:19}"  # YYYY-MM-DD HH:MM:SS（%% * 会把时间截掉，只剩日期）
+            line_epoch=$(date -d "${line_ts}" +%s 2>/dev/null || echo 0)
+            if [[ "${line_epoch}" -ge "${anchor_epoch}" ]] && echo "${line}" | grep -qE "\.bin.*200"; then
+                esp_ok=1
+                break
+            fi
+        done < <(grep "^${today}" "${TRANSFER_LOG}" 2>/dev/null)
     fi
     # 任一启用通道成功
     { [ "${DO_BLE}" = "1" ]  && [ "${ble_ok}" = "1" ]; } && return 0
