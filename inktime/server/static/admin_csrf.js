@@ -4,14 +4,17 @@
  */
 (() => {
   "use strict";
-  const cookieName = "__Host-inktime-csrf";
+  const cookieNames = ["__Host-inktime-csrf", "inktime-csrf"]; // HTTPS 安全上下文 + HTTP 降级名
   const headerName = "X-InkTime-CSRF";
   const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
   function csrfToken() {
-    const item = document.cookie.split(";").map(s => s.trim())
-      .find(s => s.startsWith(cookieName + "="));
-    return item ? decodeURIComponent(item.slice(cookieName.length + 1)) : "";
+    const jar = document.cookie.split(";").map(s => s.trim());
+    for (const name of cookieNames) {
+      const item = jar.find(s => s.startsWith(name + "="));
+      if (item) return decodeURIComponent(item.slice(name.length + 1));
+    }
+    return "";
   }
 
   const nativeFetch = window.fetch;
