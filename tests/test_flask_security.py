@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from flask import Flask
-from inktime.server.admin_security import CSRF_COOKIE_NAME, install_admin_security
+from inktime.server.admin_security import (CSRF_COOKIE_NAME, CSRF_COOKIE_NAME_HTTP,
+                                           install_admin_security)
 
 
 def basic(username="admin", password="correct-password"):
@@ -76,6 +77,25 @@ class AdminGuardFlaskTests(unittest.TestCase):
                 "X-InkTime-CSRF": cookie.value, "Origin": "https://inktime.test"},
                 base_url="https://inktime.test")
             self.assertEqual(result.status_code, 200)
+
+    def test_http_downgrades_cookie_name_but_keeps_enforcement(self):
+        # 纯 HTTP（局域网管理）降级为普通名 cookie（无 Secure，__Host-/Secure 会被浏览器拒存），
+        # 但 CSRF 校验与 SameSite=Strict 保持不变（2026-11-02）。
+        app = self.make_app()
+        with app.test_client() as client:
+            response = client.get("/admin-read", headers=basic(), base_url="http://inktime.test")
+            self.assertEqual(response.status_code, 200)
+            header = response.headers.get("Set-Cookie", "")
+            self.assertIn(CSRF_COOKIE_NAME_HTTP + "=", header)
+            self.assertNotIn("Secure", header)
+            self.assertIn("SameSite=Strict", header)
+            cookie = client.get_cookie(CSRF_COOKIE_NAME_HTTP, domain="inktime.test")
+            self.assertIsNotNone(cookie)
+            self.assertEqual(client.post("/admin-write", headers=basic(),
+                base_url="http://inktime.test").status_code, 403)
+            self.assertEqual(client.post("/admin-write", headers={**basic(),
+                "X-InkTime-CSRF": cookie.value, "Origin": "http://inktime.test"},
+                base_url="http://inktime.test").status_code, 200)
 
     def test_device_path_bypass_only_with_explicit_opt_in(self):
         with self.make_app(device=True).test_client() as client:

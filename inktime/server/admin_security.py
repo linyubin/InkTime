@@ -9,8 +9,23 @@ from urllib.parse import urlsplit
 
 # A signed double-submit token is bound to the current admin password.
 # The cookie is host-only, Secure and SameSite=Strict at the Flask boundary.
-CSRF_COOKIE_NAME = "__Host-inktime-csrf"
+CSRF_COOKIE_NAME = "__Host-inktime-csrf"      # HTTPS 安全上下文专用（__Host- 前缀强制 Secure）
+CSRF_COOKIE_NAME_HTTP = "inktime-csrf"        # 纯 HTTP（局域网管理）降级名：__Host-/Secure 在 HTTP 页面会被浏览器静默拒存
 _CSRF_RE = re.compile(r"^[A-Za-z0-9_-]{43}\.[0-9a-f]{64}$")
+
+
+def csrf_cookie_name_for(request) -> str:
+    """按请求协议选 cookie 名：__Host- 前缀仅在 HTTPS 下被浏览器接受。"""
+    return CSRF_COOKIE_NAME if request.is_secure else CSRF_COOKIE_NAME_HTTP
+
+
+def read_csrf_cookie(request) -> str:
+    """双名兼容读取：优先 __Host-（HTTPS 会话），回退 HTTP 降级名。"""
+    for name in (CSRF_COOKIE_NAME, CSRF_COOKIE_NAME_HTTP):
+        value = request.cookies.get(name, "")
+        if value:
+            return value
+    return ""
 
 
 def _csrf_signature(nonce: str, password: str) -> str:
@@ -93,10 +108,10 @@ def install_admin_security(app, *, allow_device_routes: bool = False) -> None:
                 return Response("Cross-origin write blocked", status=403)
             submitted = (request.headers.get("X-InkTime-CSRF", "")
                          or request.form.get("csrf_token", ""))
-            if not valid_csrf_token(request.cookies.get(CSRF_COOKIE_NAME, ""), submitted, password):
+            if not valid_csrf_token(read_csrf_cookie(request), submitted, password):
                 return Response("CSRF token missing or invalid", status=403)
         elif request.method in ("GET", "HEAD"):
-            cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+            cookie = read_csrf_cookie(request)
             if not valid_csrf_token(cookie, cookie, password):
                 g.csrf_cookie = make_csrf_token(password)
         return None
@@ -105,6 +120,10 @@ def install_admin_security(app, *, allow_device_routes: bool = False) -> None:
     def _set_csrf_cookie(response):
         token = getattr(g, "csrf_cookie", None)
         if token and response.status_code < 400:
-            response.set_cookie(CSRF_COOKIE_NAME, token, secure=True, httponly=False,
+            # HTTP 页面下 __Host-/Secure cookie 会被浏览器静默丢弃（双提交机制失灵），
+            # 降级为普通名字 + 去掉 Secure；SameSite=Strict 与签名校验保持不变。
+            secure = bool(request.is_secure)
+            response.set_cookie(csrf_cookie_name_for(request), token,
+                                secure=secure, httponly=False,
                                 samesite="Strict", path="/")
         return response

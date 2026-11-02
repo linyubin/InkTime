@@ -13,7 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask, jsonify
-from inktime.server.admin_security import CSRF_COOKIE_NAME, install_admin_security
+from inktime.server.admin_security import (CSRF_COOKIE_NAME, CSRF_COOKIE_NAME_HTTP,
+                                           install_admin_security)
 from inktime.server import admin_settings
 from inktime.server.admin_settings import (SettingsError, apply_admin_credentials,
                             introspect_config_file, update_config_file,
@@ -265,7 +266,9 @@ class SettingsRouteGuardTests(unittest.TestCase):
     def _csrf_cookie(self, client) -> str:
         first = client.get("/settings", headers=basic())
         cookie = first.headers.get("Set-Cookie", "").split(";", 1)[0]
-        self.assertTrue(cookie.startswith(CSRF_COOKIE_NAME))
+        # HTTP test client 降级收 HTTP 名；HTTPS 场景仍为 __Host- 名
+        self.assertTrue(cookie.startswith(CSRF_COOKIE_NAME)
+                        or cookie.startswith(CSRF_COOKIE_NAME_HTTP))
         return cookie
 
     def test_get_requires_basic_auth(self):
