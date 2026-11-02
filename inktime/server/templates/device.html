@@ -193,7 +193,7 @@
     <!-- ── Debug / 常开 ── -->
     <div class="card">
       <div class="card-title">🔧 Debug / 常开</div>
-      <div class="card-desc">Debug：延长唤醒窗口（30 分钟无操作自动休眠）。常开：设备不休眠，Web 常驻、LAN 推送可用（NVS 持久化，重启仍生效）。</div>
+      <div class="card-desc">Debug：延长唤醒窗口（30 分钟无操作自动休眠）。常开：设备不休眠，Web 常驻、LAN 推送可用。上电手动唤醒（方案 B）：开启后上电/复位显示信息页并舵机归零；关闭（默认）则掉电重启全静默（均 NVS 持久化，重启仍生效）。</div>
       <div class="state-row">
         <span>Debug 模式：<b id="dbg-state">—</b></span>
         <button class="act" id="dbg-btn" onclick="debugToggle(this)"></button>
@@ -201,6 +201,10 @@
       <div class="state-row">
         <span>常开模式：<b id="aon-state">—</b></span>
         <button class="act" id="aon-btn" onclick="aonToggle(this)"></button>
+      </div>
+      <div class="state-row">
+        <span>上电手动唤醒：<b id="pwr-state">—</b></span>
+        <button class="act" id="pwr-btn" onclick="pwrToggle(this)"></button>
       </div>
       <div class="mini-note">退出 Debug 后设备进入深度休眠（常开开启中则保持常开）；关闭常开后按窗口规则休眠，恢复每日定时唤醒。</div>
     </div>
@@ -348,6 +352,7 @@ function renderStatus(){
     $('status-pills').innerHTML =
       pill(d.debug ? 'Debug 开' : 'Debug 关', d.debug ? 'on' : 'off') +
       pill(d.alwayson ? '常开 开' : '常开 关', d.alwayson ? 'on' : 'off') +
+      pill(d.pwrman ? '上电手动唤醒 开' : '上电全静默', d.pwrman ? 'warn' : 'on') +
       pill(d.epd ? '屏幕已连接' : '屏幕未检测到', d.epd ? 'on' : 'warn') +
       pill(d.sv_cal ? '舵机已标定' : '舵机未标定', d.sv_cal ? 'on' : 'warn') +
       (d.last_orientation ? pill('朝向 ' + d.last_orientation, '') : '');
@@ -355,6 +360,8 @@ function renderStatus(){
     $('dbg-btn').textContent = d.debug ? '退出 Debug（休眠）' : '开启 Debug';
     $('aon-state').textContent = d.alwayson ? '开启' : '关闭';
     $('aon-btn').textContent = d.alwayson ? '关闭常开模式' : '开启常开模式';
+    $('pwr-state').textContent = d.pwrman ? '开启（方案 B）' : '关闭（全静默）';
+    $('pwr-btn').textContent = d.pwrman ? '恢复全静默' : '开启方案 B';
     // 预填表单（只在值为空时填，避免覆盖用户正在编辑的内容）
     for (let i = 0; i < 3; ++i){
       if (!$(`ssid${i}`).value) $(`ssid${i}`).value = (d.wifi && d.wifi[i] && d.wifi[i].ssid) || '';
@@ -378,8 +385,10 @@ function renderStatus(){
     $('status-pills').innerHTML = '';
     $('dbg-state').textContent = '—';
     $('aon-state').textContent = '—';
+    $('pwr-state').textContent = '—';
     $('dbg-btn').textContent = '开启 Debug';
     $('aon-btn').textContent = '开启常开模式';
+    $('pwr-btn').textContent = '开启方案 B';
     $('wifi-cur-0').textContent = $('wifi-cur-1').textContent = $('wifi-cur-2').textContent = '';
     $('sv-last-ori').value = '';
     setActDisabled(true);
@@ -473,6 +482,16 @@ async function aonToggle(btn){
     await debugState('aon_on', btn);
   }
 }
+async function pwrToggle(btn){
+  const on = ST && ST.device && ST.device.pwrman;
+  if (on){
+    if (!confirm('恢复全静默？今后上电/复位零动作（不碰屏、不动舵机），75 秒隐形窗口。')) return;
+    await debugState('pwr_off', btn);
+  } else {
+    if (!confirm('开启方案 B（上电手动唤醒）？今后上电/复位将显示信息页并做舵机归零，开 3 分钟管理窗口。')) return;
+    await debugState('pwr_on', btn);
+  }
+}
 async function debugState(state, btn){
   try{
     await post('/api/device/debug', { state }, btn);
@@ -481,6 +500,8 @@ async function debugState(state, btn){
       : (state === 'confirm_off' ? false : ST.device.debug);
     if (ST && ST.device) ST.device.alwayson = state === 'aon_on' ? true
       : (state === 'aon_off' ? false : ST.device.alwayson);
+    if (ST && ST.device) ST.device.pwrman = state === 'pwr_on' ? true
+      : (state === 'pwr_off' ? false : ST.device.pwrman);
     renderStatus();
     setTimeout(loadStatus, 1500);
   }catch(e){ log('❌ 操作失败：' + e.message); }

@@ -1912,9 +1912,9 @@ def api_device_servo_sync():
 
 @app.post("/api/device/debug")
 def api_device_debug():
-    """debug / 常开开关（转发设备 /debug?state=...），返回切换后最新状态。"""
+    """debug / 常开 / 上电手动唤醒开关（转发设备 /debug?state=...），返回切换后最新状态。"""
     state = request.form.get("state", "")
-    if state not in ("on", "off", "confirm_off", "aon_on", "aon_off"):
+    if state not in ("on", "off", "confirm_off", "aon_on", "aon_off", "pwr_on", "pwr_off"):
         return jsonify({"error": "非法 state"}), 400
     code, text = _device_http("GET", f"/debug?state={state}", _DEVICE_PING_TIMEOUT_SEC)
     if code != 200:
