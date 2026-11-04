@@ -27,7 +27,7 @@ TRANSFER_LOG="/home/andy/inktime/logs/transfer.log"
 SERVER_LOG="/home/andy/inktime/logs/server.log"
 INKTIME_SCRIPT="/home/andy/inktime/scripts/inktime_daily.sh"
 NAZA_SENDER="/mnt/nas/Hermes_ws/scripts/naza_send_text.py"  # 原 openclaw CLI 已退役
-FEISHU_TARGET="chat:oc_86e8cdcfb2d5ae745ac8ef6340173675"  # NAZA与Andy的DM（旧openclaw的open_id在NAZA应用下无效）
+FEISHU_TARGET="chat:oc_24918ad1427e6a197871bfd726761068"  # Infra-Monitor 群（2026-11-04 Andy 指定迁移；原 DM 通道因发送参数 bug 从未送达）
 RETRY_LOG="/tmp/inktime_retry.log"
 PYTHON_BIN="/home/andy/inktime/venv/bin/python3"
 [ -x "${PYTHON_BIN}" ] || PYTHON_BIN="$(command -v python3 || command -v python)"
@@ -157,7 +157,6 @@ fi
 DAY_LOGS="$(collect_day_logs)"
 
 python3 "${NAZA_SENDER}" \
-    --channel feishu \
     --target "${FEISHU_TARGET}" \
     --message "⚠️ InkTime 每日投递失败（重试后仍失败）
 
@@ -167,4 +166,6 @@ python3 "${NAZA_SENDER}" \
 ${DAY_LOGS}
 
 完整日志: ${LOG_FILE}
-重试日志: ${RETRY_LOG}" 2>/dev/null || true
+重试日志: ${RETRY_LOG}"
+# 2026-11-04 修复：删掉 openclaw 时代遗留的 --channel feishu（argparse 不认→静默失败 26 天）；
+# 去掉 2>/dev/null 吞错（失败信息现在落 cron_check.log 可见）
