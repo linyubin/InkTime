@@ -2831,12 +2831,68 @@ static void runAlwaysOnMainLoop(bool &hasTime, struct tm &timeinfo) {
   uint32_t lastRenderMs    = millis();                   // 最近一次拉取（含启动时那次）
   uint32_t renderGapMs     = AON_DAILY_INTERVAL_MS;
   uint32_t lastTimeRetryMs = millis();
+  // 2026-11-04 加固：WiFi 链路守护（事故复盘：11-03 WiFi 掉线后主循环只会对空气重试，
+  // 直到人工断电。根因是常开循环无 WiFi 状态检查、无重连。）
+  uint32_t lastWifiCheckMs = millis();
+  bool     wifiWasDown     = false;
+  static const uint32_t AON_WIFI_CHECK_MS   = 30UL * 1000UL;           // 每 30s 查一次链路
+  static const uint32_t AON_RECONNECT_MS    = 60UL * 1000UL;           // 掉线后每 60s 重连一轮
+  static const uint32_t AON_REBOOT_AFTER_MS = 30UL * 60UL * 1000UL;    // 重连 30min 全败 → 自愈重启
+  uint32_t wifiDownSinceMs = 0;
 
   for (;;) {
     server.handleClient();
 
     // debug 页关闭常开 → 回到休眠调度
     if (!g_alwaysOnMode) break;
+
+    // ── WiFi 链路守护 ──
+    if (millis() - lastWifiCheckMs > AON_WIFI_CHECK_MS) {
+      lastWifiCheckMs = millis();
+      if (WiFi.status() != WL_CONNECTED) {
+        if (!wifiWasDown) {
+          wifiWasDown = true;
+          wifiDownSinceMs = millis();
+          journalEvent(EV_WIFI, "lost rssi=%d", WiFi.RSSI());
+          DBG_PRINTLN("[AON] WiFi 掉线，开始重连");
+        }
+        if (millis() - wifiDownSinceMs > AON_REBOOT_AFTER_MS) {
+          journalEvent(EV_WIFI, "reconnect_fail_30min reboot");
+          journalUpload();  // 尽力把黑匣子推出去（可能推不出去，但本地有底）
+          delay(500);
+          ESP.restart();    // 自愈重启：connectWiFi 全流程兜底
+        }
+        if (millis() - lastTimeRetryMs > AON_RECONNECT_MS) {
+          lastTimeRetryMs = millis();  // 复用授时计时器做重连节流
+          DBG_PRINTLN("[AON] WiFi 重连尝试...");
+          if (connectWiFi(g_cfg.wifi_ssid[g_cfg.active_wifi].c_str(),
+                          g_cfg.wifi_pass[g_cfg.active_wifi].c_str(),
+                          g_cfg.active_wifi)) {
+            journalEvent(EV_WIFI, "recovered downtime_ms=%u",
+                         (unsigned)(millis() - wifiDownSinceMs));
+            wifiWasDown = false;
+            if (!hasTime) {   // 顺手补授时
+              struct tm tmp;
+              if (fetchServerTime(g_cfg, tmp)) { timeinfo = tmp; hasTime = true; }
+            }
+          }
+        }
+      } else if (wifiWasDown) {
+        // 协议栈自己恢复了（罕见但可能）：补记
+        journalEvent(EV_WIFI, "self_recovered downtime_ms=%u",
+                     (unsigned)(millis() - wifiDownSinceMs));
+        wifiWasDown = false;
+      }
+    }
+
+    // ── 常开存活心跳（每小时一条，断联期可用重试记录对齐）──
+    static uint32_t lastHeartbeatMs = millis();
+    if (millis() - lastHeartbeatMs > 3600UL * 1000UL) {
+      lastHeartbeatMs = millis();
+      journalEvent(EV_AON, "hb heap=%u rssi=%d up=%uh",
+                   (unsigned)ESP.getFreeHeap(), WiFi.RSSI(),
+                   (unsigned)(millis() / 3600000UL));
+    }
 
     // 时间未同步：每 10 分钟向服务器重试授时，成功后按 refresh_hour 排程
     if (!hasTime && millis() - lastTimeRetryMs > AON_TIME_RETRY_MS) {
