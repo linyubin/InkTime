@@ -47,7 +47,9 @@ def unit_tests():
         ('翻车照: 脸碰 L01 毛玻璃卡', crash, 'L01', 'hard', 'face'),
         # 脸框大部分在渐变浅端(眼睛嘴可读)不拦；探进深端才拦
         ('翻车照: L04 脸多在浅端→不硬否', crash, 'L04', 'soft', 'subject'),
-        ('同一张无 face 数据: 退回主体级(仅 soft)', crash_noface, 'L10', 'soft', 'subject'),
+        # 2026-11-12 行为变更：该几何是全图大框（w=0.84,h=0.98 ≥ 0.55），
+        # 无 face 数据现在走 fullframe 硬否决（贴纸胡子合影翻车的教训）
+        ('同一张无 face 数据: 全图大框→fullframe 硬否决', crash_noface, 'L10', 'hard', 'fullframe'),
         ('脸在铭牌上方, 不误杀', item_with(subj('person', 0.9, 0.5, 0.2, 0.3, 0.2,
                                                 face=[0.5, 0.12, 0.18, 0.16])), 'L10', None, None),
         ('脸碰 L01 卡上缘', item_with(subj('person', 0.9, 0.5, 0.62, 0.5, 0.35,
@@ -108,8 +110,16 @@ def test_crash_pick():
 
 
 def regression(n=50, seed=20261024):
-    """老数据（无 face 字段）行为必须与 10-09 版完全一致。"""
+    """老数据（无 face 字段、补脸关闭）行为不变性回归。
+
+    2026-11-12 注：原契约「老数据绝不触发脸否决」已随 FACE_BACKFILL_ON_RENDER
+    （渲染端惰性补脸）与 fullframe 全图大框规则演进。本回归显式关闭补脸，
+    验证：①无异常；②无 face 字段时脸框零容忍绝不触发（fullframe 消息
+    不含「人脸」字样，其行为另见 test_fullframe_face_20261112.py）。
+    """
     random.seed(seed)
+    import config as _cfg
+    _cfg.FACE_BACKFILL_ON_RENDER = False
     rows = rdp.load_sim_rows()
     sample = random.sample(rows, min(n, len(rows)))
     errors, vetoed_face = 0, 0

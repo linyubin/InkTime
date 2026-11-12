@@ -290,6 +290,70 @@ def _subject_canvas_boxes(item: Dict[str, Any], layout: str,
     return out
 
 
+def _ensure_face_data(item: Dict[str, Any]) -> None:
+    """选型期惰性补脸（2026-11-12）：老数据 person 无 face 字段时现场跑 pose。
+
+    分析期 face 字段 2026-10-24 才上线，存量照片（约 2 万行）没有该字段，
+    脸框零容忍对它们形同虚设（2026-11-12 贴纸胡子合影翻车的直接原因）。
+    此处在选型时调用分析端 _attach_faces 现场推导脸框，只写回 item 内存
+    （subjects_json 原地更新，不落库）；pose 静默失败时退回主体级防护。
+    每 item 只补一次（_face_backfill_done 标记，12 款版式遍历不重复推理）。
+    """
+    if item.get("_face_backfill_done"):
+        return
+    item["_face_backfill_done"] = True
+    # 默认 False：PyPI torch aarch64 在 Pi4/ARMv8.0 上 import 随机 SIGILL（2026-11-12），
+    # 见 config.py FACE_BACKFILL_ON_RENDER 注释；显式开启前须连续 ≥3 次全链路无 SIGILL。
+    if not getattr(cfg, "FACE_BACKFILL_ON_RENDER", False):
+        return
+    try:
+        subs = json.loads(item.get("subjects_json", "") or "[]")
+    except Exception:
+        return
+    if not isinstance(subs, list):
+        return
+    persons = [s for s in subs if isinstance(s, dict) and s.get("label") == "person"]
+    if not persons or all(s.get("face") for s in persons):
+        return
+    try:
+        from inktime.render.render_daily_photo import resolve_photo_path
+        img_path = resolve_photo_path(str(item.get("path") or ""))
+        if img_path is None or not img_path.exists():
+            return
+        from inktime.analysis.analyze_photos import _attach_faces
+        _attach_faces(str(img_path), subs)
+        item["subjects_json"] = json.dumps(subs, ensure_ascii=False)
+    except Exception:
+        return
+
+
+def _has_unprotected_fullframe_person(item: Dict[str, Any]) -> bool:
+    """存在「无 face 字段的全图大框」person（归一化 w、h ≥ MIN_SPAN）。
+
+    全图大框 = 多人贴脸合影/特写的 YOLO 合并框：主体级遮挡率被画布
+    稀释失效（2026-11-12 实测 0.119 << 0.25 硬线），且无法定位单人脸。
+    已带 face 字段的合并框由脸框零容忍精确防护，不需要本规则；本规则
+    只兜底 pose 也没能给出脸的盲区（贴纸脸/侧脸/老数据），以及同一张
+    照片里「有人有脸、有人没脸」的混合场景——没脸的那个人正是不确定
+    脸位置的盲区。
+    """
+    lim = float(getattr(cfg, "COVERAGE_FULLFRAME_MIN_SPAN", 0.55))
+    try:
+        subs = json.loads(item.get("subjects_json", "") or "[]")
+    except Exception:
+        return False
+    for s in subs if isinstance(subs, list) else []:
+        try:
+            if s.get("label") != "person":
+                continue
+            _cx, _cy, bw, bh = (float(v) for v in s["bbox"])
+        except Exception:
+            continue
+        if bw >= lim and bh >= lim and not s.get("face"):
+            return True
+    return False
+
+
 def _face_canvas_boxes(item: Dict[str, Any], layout: str,
                        img_w: Optional[int], img_h: Optional[int]
                        ) -> Optional[List[Tuple[float, float, float, float]]]:
@@ -297,7 +361,9 @@ def _face_canvas_boxes(item: Dict[str, Any], layout: str,
 
     返回 [(x1, y1, x2, y2)]；无 face 数据返回 []（老数据退回主体级防护），
     无尺寸来源返回 None（宁可不判）。映射口径与 _subject_canvas_boxes 一致。
+    调用前先惰性补脸（_ensure_face_data，2026-11-12）：老数据现场跑 pose。
     """
+    _ensure_face_data(item)
     try:
         subs = json.loads(item.get("subjects_json", "") or "[]")
     except Exception:
@@ -327,7 +393,7 @@ def _face_canvas_boxes(item: Dict[str, Any], layout: str,
 def coverage_conflict(item: Dict[str, Any], layout: str,
                       img_w: Optional[int] = None,
                       img_h: Optional[int] = None
-                      ) -> Optional[Tuple[str, float, float]]:
+                      ) -> Optional[Tuple[str, float, float, str]]:
     """判定 layout 的覆盖区（glass 卡 + veil 底托）是否遮挡重要主体。
 
     返回 (类型, 遮挡率, 最大区域不透明度, 来源)：
@@ -335,7 +401,8 @@ def coverage_conflict(item: Dict[str, Any], layout: str,
       按各区域不透明度加权），或主体中心落入不透明度 ≥0.5 的区域；
       或覆盖区在任一人脸框上的有效不透明度 ≥ COVERAGE_FACE_VETO_OPACITY
       （脸部零容忍，veil 渐变按脸框行区间积分，2026-10-24）。
-      来源为 "face"（脸框命中）或 "subject"（主体级命中）；
+      来源为 "face"（脸框命中）、"fullframe"（全图大框压强遮区，2026-11-12）
+      或 "subject"（主体级命中）；
     - "soft"：有接触/贴边但未达硬线——返回 (类型, 冲突度 0-1, opac, "subject")，
       冲突度 = max(遮挡率/硬线比, 贴近距离比)。
     无覆盖区/无主体/无尺寸返回 None。
@@ -408,6 +475,15 @@ def coverage_conflict(item: Dict[str, Any], layout: str,
             focc *= 1.0 - min(1.0, opac * (ix * (iy1 - iy0)) / farea)
             if opac >= face_lim:
                 return ("hard", max(1.0 - focc, face_lim), 1.0, "face")
+    # 全图大框零容忍（2026-11-12）：无 face 字段的全图合并框 = 脸位置盲区，
+    # 任何强遮区必然压在某个未定位的脸上。有脸的合并框已由上面的脸框
+    # 规则精确防护，不在此列。
+    if _has_unprotected_fullframe_person(item):
+        strong = float(getattr(cfg, "COVERAGE_FACE_VETO_OPACITY", 0.5))
+        for (_px0, _py0, _px1, _py1), eff, _k in regions:
+            if eff >= strong:
+                deg = max(worst[1] if worst is not None else 0.0, eff)
+                return ("hard", deg, eff, "fullframe")
     return worst
 
 
@@ -608,6 +684,9 @@ def pick_layout(item: Dict[str, Any], orientation: str,
             if conf[3] == "face":
                 vetoed[k] = ("coverage: 覆盖区压到人脸框（有效不透明度 ≥ "
                              f"{float(getattr(cfg, 'COVERAGE_FACE_VETO_OPACITY', 0.5)):.0%}）")
+            elif conf[3] == "fullframe":
+                vetoed[k] = ("coverage: 人像充满画面（YOLO 全图合并框），"
+                             "强覆盖区必压脸，硬否决")
             else:
                 vetoed[k] = (f"coverage: 覆盖区遮挡主体 {conf[1]:.0%} ≥ "
                              f"{cfg.COVERAGE_VETO_RATIO:.0%} 或中心入强遮区")

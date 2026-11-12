@@ -195,6 +195,13 @@ TEXT_VEIL_OPACITY = 0.85
 # 相关微调项 COVERAGE_GLASS_FLOOR / COVERAGE_SOFT_DISTANCE_PX /
 # COVERAGE_SOFT_MAX_PENALTY / COVERAGE_FACE_VETO_OPACITY 代码内有默认值，
 # 需要覆盖时在 config.py 中显式添加即可（见 layout_strategy.py 注释）。
+# 全图大框零容忍（2026-11-12，贴纸胡子合影压脸事故）：person 框 w、h 同时
+# ≥ COVERAGE_FULLFRAME_MIN_SPAN（默认 0.55，人充满画面 = 多人贴脸合影的
+# YOLO 合并框，主体级遮挡率被画布稀释失效）且无 face 字段时，任何有效
+# 不透明度 ≥ COVERAGE_FACE_VETO_OPACITY 的覆盖区直接硬否决。
+# FACE_BACKFILL_ON_RENDER（默认 False）：渲染选型时对老数据现场跑 pose 补
+# 脸框。⚠️ 默认关闭——PyPI torch aarch64 在 Pi4/ARMv8.0 上 import 随机
+# SIGILL 且 try/except 拦不住；启用前须连续 ≥3 次全链路验证无崩溃。
 COVERAGE_VETO_RATIO = 0.25
 
 
